@@ -3,6 +3,11 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-09-09
+
+### Changed
+- The marketplace now lives at github.com/freewisl/ai-native-sdlc: install commands in both READMEs, the team-settings example, ENTERPRISE and the ELI5 page point there; `init.sh`'s default marketplace source for the CI workflows is `freewisl/ai-native-sdlc` (override with `--marketplace` or `SDLC_MARKETPLACE_SOURCE` for a mirror); owner metadata updated.
+
 ## [0.4.1] - 2026-09-09
 
 ### Fixed

@@ -20,7 +20,7 @@ init.sh — scaffold the AI-native SDLC layout into a project (idempotent, never
   --dry-run         print what would happen; write nothing
   --dir <root>      project root (default: $CLAUDE_PROJECT_DIR, git toplevel, or cwd)
   --commands k=v,.. override detected commands (build,test,lint,run,format,rollback)
-  --marketplace <s> marketplace source the CI workflows install the plugin from (default: $SDLC_MARKETPLACE_SOURCE or TODO-org/ai-native-sdlc)
+  --marketplace <s> marketplace source the CI workflows install the plugin from (default: $SDLC_MARKETPLACE_SOURCE or freewisl/ai-native-sdlc)
   --ci-workflow <n> name of the CI workflow that sdlc-ci-triage.yml listens to (default: first `name:` in .github/workflows/*.yml, else CI)
   --team <@org/team> code owner handle for CODEOWNERS (default: @<git org>/TODO-team)
   --no-github       do not install workflows even when the remote is GitHub   --no-solo  never set roles.solo automatically
@@ -393,7 +393,7 @@ fi
 # ---------- GitHub (explicit or auto when .github/ exists) ----------
 if [ "$DO_GITHUB" = 1 ] || [ -d "$ROOT/.github" ]; then
   TEAM="@TODO-org/TODO-team"; [ -n "$GIT_ORG" ] && TEAM="@$GIT_ORG/TODO-team"; [ -n "$TEAM_ARG" ] && TEAM="$TEAM_ARG"
-  [ -n "$MARKETPLACE_SOURCE" ] || MARKETPLACE_SOURCE="TODO-org/ai-native-sdlc"
+  [ -n "$MARKETPLACE_SOURCE" ] || MARKETPLACE_SOURCE="freewisl/ai-native-sdlc"   # where the CI workflows install the plugin from; --marketplace / SDLC_MARKETPLACE_SOURCE for a mirror
   if [ -z "$CI_WORKFLOW" ]; then   # the CI workflow sdlc-ci-triage.yml waits for: first `name:` of an existing non-sdlc workflow
     for f in "$ROOT"/.github/workflows/*.yml "$ROOT"/.github/workflows/*.yaml; do
       [ -f "$f" ] || continue; case "$(basename "$f")" in sdlc-*) continue;; esac

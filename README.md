@@ -17,7 +17,7 @@ Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blo
 ## 설치 (3줄)
 
 ```bash
-claude plugin marketplace add <조직>/ai-native-sdlc   # GitHub 이 아닌 Git 호스팅이면 저장소 URL(.git) 을, 로컬 시험이면 체크아웃 경로를
+claude plugin marketplace add freewisl/ai-native-sdlc   # 이 저장소(github.com). 로컬 체크아웃으로 시험할 때는 경로를 대신 넣습니다
 claude plugin install sdlc@ai-native-sdlc
 # 아무 저장소에서 claude 를 열고:  /sdlc:init   →   /sdlc:go "요청 한 줄" --autopilot --merge
 ```

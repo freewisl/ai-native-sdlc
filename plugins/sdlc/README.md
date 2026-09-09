@@ -2,7 +2,7 @@
 
 > 원문: Anthropic, [The AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook) — Louis Claxton, 2026-08-21 (acknowledgments: Jim Blackhurst, Will Steuk, Jamal Arif)
 > 쓰는 법은 두 명령입니다. 저장소마다 `/sdlc:init` 한 번, 변경마다 `/sdlc:go "요청 한 문장"` 한 줄.
-> 설치: `claude plugin marketplace add <조직>/ai-native-sdlc && claude plugin install sdlc@ai-native-sdlc`
+> 설치: `claude plugin marketplace add freewisl/ai-native-sdlc && claude plugin install sdlc@ai-native-sdlc`
 
 ## 요약
 
@@ -73,10 +73,10 @@ PRD·추정 의식·제품 보안 리뷰는 코드 작성이 가장 느리고 �
 ### 마켓플레이스에서 설치
 
 ```bash
-# 회사 GitHub(GitHub Enterprise 포함)에 올린 저장소
-claude plugin marketplace add <조직>/ai-native-sdlc
-# GitHub 이 아닌 Git 호스팅이면 저장소 URL 로
-claude plugin marketplace add https://<git 호스트>/<조직>/ai-native-sdlc.git
+# 이 저장소 (github.com/freewisl/ai-native-sdlc)
+claude plugin marketplace add freewisl/ai-native-sdlc
+# 다른 곳에 미러링했다면 그 저장소를 — GitHub 이 아니면 Git URL(.git) 로
+claude plugin marketplace add https://<git 호스트>/<미러 경로>/ai-native-sdlc.git
 # 로컬 체크아웃으로 시험할 때
 claude plugin marketplace add /path/to/ai-native-sdlc
 
@@ -100,7 +100,7 @@ claude plugin validate /path/to/ai-native-sdlc/plugins/sdlc --strict
 ```json
 {
   "extraKnownMarketplaces": {
-    "ai-native-sdlc": { "source": { "source": "github", "repo": "<조직>/ai-native-sdlc" } }
+    "ai-native-sdlc": { "source": { "source": "github", "repo": "freewisl/ai-native-sdlc" } }
   },
   "enabledPlugins": { "sdlc@ai-native-sdlc": true }
 }

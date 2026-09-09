@@ -67,8 +67,8 @@
 우선순위: 관리형 > `--settings` > `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`. 관리형 소스가 여럿이면 잠금 키(`allowManagedHooksOnly`, `permissions.disableBypassPermissionsMode`)는 가장 엄격한 값이, 제한 허용목록(`availableModels`, `allowedMcpServers`, `strictKnownMarketplaces`)은 최상위 소스의 목록이 통째로 적용됩니다. `requiredMinimumVersion` 은 세션 시작 시에만 읽히므로 이미 열린 세션은 종료시키지 않습니다.
 
 이 플러그인을 조직에 배포하는 절차:
-1. 이 마켓플레이스를 조직 저장소(예 `<조직>/ai-native-sdlc`)에 올리거나, 조직의 승인 플러그인 저장소의 `.claude-plugin/marketplace.json` 에 `sdlc` 를 등록한다.
-2. 관리형 설정에 `strictKnownMarketplaces: [{"source":"github","repo":"<조직>/ai-native-sdlc"}]` 와 `enabledPlugins: {"sdlc@ai-native-sdlc": true}` 를 넣는다.
+1. 이 마켓플레이스(`freewisl/ai-native-sdlc`)를 그대로 쓰거나 조직 저장소로 미러링하거나, 조직의 승인 플러그인 저장소의 `.claude-plugin/marketplace.json` 에 `sdlc` 를 등록한다.
+2. 관리형 설정에 `strictKnownMarketplaces: [{"source":"github","repo":"freewisl/ai-native-sdlc"}]`(미러면 그 경로) 와 `enabledPlugins: {"sdlc@ai-native-sdlc": true}` 를 넣는다.
 3. 훅을 조직 통제로 만들려면 `allowManagedHooksOnly: true` 를 켜고, 플러그인이 관리형 마켓플레이스에서 설치됐는지 `/sdlc:doctor` 의 훅 자가시험으로 확인한다.
 4. 팀 단위 훅(`.claude/settings.json`)은 git 으로, 타협 불가 훅은 관리형으로 — 블로그 Stage 5 "Team hooks go in .claude/settings.json in git, and non-negotiable hooks go in managed settings".
 

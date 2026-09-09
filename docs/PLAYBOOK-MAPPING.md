@@ -4,7 +4,7 @@
 원문을 검증 가능한 문장 단위로 쪼갠 349개 요구사항(R-ID)에 대해, **구현 파일을 직접 열어** 근거를 확인한 결과입니다.
 동작을 요구하는 행은 그 동작을 담은 파일만 근거로 인정합니다 — 훅·스크립트는 코드가, 스킬은 SKILL.md 의 단계가, 템플릿은 템플릿 본문이, CI 는 워크플로 파일이 실제로 담고 있어야 COVERED 입니다.
 원문이 설명·안내를 요구하는 행(전환표의 두 열, 플레이별 전제, 채택 순서, 외부 참조)은 그 서술이 사용자에게 배포되는 문서에 있어야 COVERED 이므로 `README.md`·SKILL.md 본문을 근거로 적었습니다.
-판정은 2차 감사(수정 반영 후) 기준이며, 이후 최종 검토(`_workspace/08_final_review.md`)의 반영분은 근거란의 괄호 주석으로 덧붙였습니다. 실행 검증(0.4.0): `bash plugins/sdlc/tests/run.sh` — 훅 206건 · 스크립트 163건 · `monitor.py --selftest` 7건 전부 통과, `claude plugin validate --strict` 는 플러그인·마켓플레이스 양쪽 통과.
+판정은 2차 감사(수정 반영 후) 기준이며, 이후 최종 검토(`_workspace/08_final_review.md`)의 반영분은 근거란의 괄호 주석으로 덧붙였습니다. 실행 검증(0.4.1): `bash plugins/sdlc/tests/run.sh` — 훅 206건 · 스크립트 163건 · `monitor.py --selftest` 7건 전부 통과, `claude plugin validate --strict` 는 플러그인·마켓플레이스 양쪽 통과.
 사용 형태는 `/sdlc:init` 한 번 + 변경마다 `/sdlc:go` 한 줄이며, `go` 는 아래 표의 단계 스킬(intent·spec·plan·verify·review)을 같은 순서로 부르므로 각 행의 근거는 `go` 경로에도 그대로 적용됩니다.
 
 ## 판정 기준

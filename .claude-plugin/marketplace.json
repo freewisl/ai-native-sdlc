@@ -1,11 +1,11 @@
 {
   "name": "ai-native-sdlc",
   "owner": {
-    "name": "mma platform team"
+    "name": "freewisl"
   },
   "metadata": {
     "description": "한 문장 요청을 /sdlc:go 한 번으로 intent→spec→plan→구현→검증→리뷰→PR 까지 끝내는 Claude Code 플러그인 마켓플레이스. 훅 가드레일·AI 리뷰·evals·배포 게이트는 그 밑에서 Anthropic AI-native SDLC 플레이북대로 자동으로 걸리고, /sdlc:init 한 번으로 어떤 저장소에나 붙습니다.",
-    "version": "0.4.1"
+    "version": "0.4.2"
   },
   "plugins": [
     {

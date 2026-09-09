@@ -98,7 +98,7 @@ has "paths.evals switched to sdlc-evals" "$(cat "$X/.sdlc/config.json")" '"evals
 left=$(grep -lE '\{\{[a-z_]+\}\}' "$X"/.github/workflows/sdlc-*.yml "$X/.github/CODEOWNERS" 2>/dev/null || true); check "no unrendered {{placeholders}} in installed .github files (GitHub \${{ }} expressions are fine)" "$([ -z "$left" ] && echo true || echo false)" "$left"
 has "CODEOWNERS owner lines rendered" "$(cat "$X/.github/CODEOWNERS")" "CLAUDE.md                 @"
 has "ci-triage listens to the detected CI workflow name" "$(cat "$X/.github/workflows/sdlc-ci-triage.yml")" 'workflows: ["CI"]'
-has "evals workflow installs from a marketplace source" "$(cat "$X/.github/workflows/sdlc-evals.yml")" "claude plugin marketplace add TODO-org/ai-native-sdlc"
+has "evals workflow installs from a marketplace source" "$(cat "$X/.github/workflows/sdlc-evals.yml")" "claude plugin marketplace add freewisl/ai-native-sdlc"
 out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/gh2" --github --marketplace acme/ai-native-sdlc --ci-workflow "Build and Test" --team @acme/platform 2>&1 || true); mkdir -p "$WORK/gh2" >/dev/null 2>&1
 mkdir -p "$WORK/gh3"; out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/gh3" --github --marketplace acme/ai-native-sdlc --ci-workflow "Build and Test" --team @acme/platform 2>&1)
 has "--marketplace rendered" "$(cat "$WORK/gh3/.github/workflows/sdlc-evals.yml")" "marketplace add acme/ai-native-sdlc"
