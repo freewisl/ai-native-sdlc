@@ -1,0 +1,20 @@
+schema_version: "1.0"
+name: trigger-plan
+description: An engineer wants to start implementing from an approved spec; sdlc:plan (plan mode, plan.md) should be used.
+tags: [trigger, stage-3]
+execution:
+  prompt: "The spec for claims-status-self-service is approved. Let's start implementing it — I want a proper plan committed first before any code."
+  max_turns: 6
+  timeout_seconds: 240
+graders:
+  - type: tool_used
+    name: plan-skill-fired
+    tool: Skill
+    input_match: "sdlc:plan"
+    min: 1
+    arm: with-only
+  - type: regex
+    name: mentions-plan-artifact
+    pattern: "plan\\.md|plan mode|Files that change"
+    flags: i
+    mode: contains

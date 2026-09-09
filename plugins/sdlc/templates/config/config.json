@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "language": "en",
+  "paths": {
+    "intent": "intent",
+    "spec": "spec",
+    "plan": "plan",
+    "evals": "evals",
+    "review": "REVIEW.md",
+    "lessons": ".sdlc/LESSONS.md"
+  },
+  "source_of_truth": {
+    "mode": "repo",
+    "system": "",
+    "record_field": "record_id",
+    "per_artifact": {
+      "intent": "",
+      "spec": "",
+      "plan": ""
+    }
+  },
+  "commands": {
+    "build": "",
+    "test": "",
+    "lint": "",
+    "run": "",
+    "format": "auto",
+    "rollback": "",
+    "lint_file": ""
+  },
+  "verify": {
+    "required_before_stop": false,
+    "commands": [
+      "test"
+    ]
+  },
+  "plan": {
+    "require_for_edits": false,
+    "enforce_sync": false,
+    "exempt_paths": [
+      "intent/",
+      "spec/",
+      "plan/",
+      "CLAUDE.md",
+      "REVIEW.md",
+      ".sdlc/",
+      "evals/",
+      ".claude/",
+      "docs/",
+      ".github/"
+    ]
+  },
+  "protect": {
+    "frozen_paths_file": ".sdlc/frozen-paths.txt",
+    "generated_paths": [],
+    "protect_tests": true,
+    "test_paths": [
+      "auto"
+    ],
+    "ticketed_paths": [],
+    "ticket_env": "CHANGE_TICKET",
+    "block_direct_push": true,
+    "default_branch": "main"
+  },
+  "secrets": {
+    "scan_edits": true,
+    "scan_commits": true,
+    "extra_patterns": []
+  },
+  "environments": {
+    "dev": {
+      "autonomy": "free",
+      "patterns": []
+    },
+    "staging": {
+      "autonomy": "constrained",
+      "patterns": [
+        "(deploy|release|rollout|promote)[^|;&]*(staging|stg)",
+        "kubectl [^|;&]*(apply|rollout|set image)[^|;&]*(staging|stg)",
+        "helm (upgrade|install)[^|;&]*(staging|stg)",
+        "terraform apply[^|;&]*(staging|stg)"
+      ],
+      "approval_env": ""
+    },
+    "production": {
+      "autonomy": "gated",
+      "patterns": [
+        "(deploy|release|rollout|promote)[^|;&]*(prod|production|live)",
+        "(prod|production|live)[^|;&]*(deploy|release|rollout|promote)",
+        "kubectl [^|;&]*(apply|rollout|set image)[^|;&]*(prod|production)",
+        "helm (upgrade|install)[^|;&]*(prod|production)",
+        "terraform apply[^|;&]*(prod|production)"
+      ],
+      "approval_env": "RELEASE_APPROVAL"
+    }
+  },
+  "gate": {
+    "mode": "deny",
+    "log": ".sdlc/logs/gate.log"
+  },
+  "hooks": {
+    "format_on_edit": true,
+    "log_events": true,
+    "session_context": true
+  },
+  "policies": [],
+  "evals": {
+    "model": "sonnet",
+    "max_turns": 30,
+    "threshold": 1.0,
+    "allowed_tools": "Read,Edit,Write,Grep,Glob,Bash"
+  },
+  "monitor": {
+    "bands": ".sdlc/bands.json",
+    "history_dir": ".sdlc/history",
+    "triage_dir": "intent/triage"
+  },
+  "auto_commit": true,
+  "claude_md": {
+    "max_lines": 120
+  },
+  "roles": {
+    "solo": false,
+    "product_owner": "",
+    "tech_lead": "",
+    "release_manager": "",
+    "autopilot": false
+  },
+  "ci": {
+    "auth": "api"
+  },
+  "loop": {
+    "enabled": false,
+    "max_items": 5,
+    "max_minutes": 120,
+    "item_max_minutes": 45,
+    "max_turns": 200,
+    "max_failures_per_slug": 3,
+    "self_check": true,
+    "model": "",
+    "allowed_tools": "Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash",
+    "pause_file": ".sdlc/state/pause"
+  }
+}

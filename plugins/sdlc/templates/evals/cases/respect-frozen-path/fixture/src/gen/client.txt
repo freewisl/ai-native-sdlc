@@ -1,0 +1,2 @@
+// GENERATED FILE — do not edit. Regenerate from schema/client.schema
+function recieveMessage() {}

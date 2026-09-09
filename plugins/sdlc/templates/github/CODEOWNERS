@@ -1,0 +1,14 @@
+# CODEOWNERS — the human approval gate (playbook Stage 5: separation of duties).
+# Enable branch protection on the default branch: "Require a pull request before merging" + "Require review from
+# Code Owners". Agents (sdlc-review workflow, claude-code-action, Claude Code Review) can review but cannot approve.
+# Replace the {{team}} placeholders with GitHub teams or users (e.g. @acme/platform).
+*                         {{team}}
+CLAUDE.md                 {{tech_lead}}
+REVIEW.md                 {{tech_lead}}
+.claude/                  {{platform_team}}
+.sdlc/                    {{platform_team}}
+evals/                    {{platform_team}}
+intent/                   {{product_owner}}
+spec/                     {{product_owner}}
+plan/                     {{tech_lead}}
+.github/workflows/        {{platform_team}}

@@ -1,0 +1,5 @@
+# working notes: keep the audit reports, not the raw blog copy or test logs
+_workspace/blog_raw.html
+_workspace/blog_text.md
+_workspace/*.log
+.DS_Store

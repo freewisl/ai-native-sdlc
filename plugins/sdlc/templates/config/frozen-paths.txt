@@ -1,0 +1,7 @@
+# Paths Claude must not edit. One entry per line, relative to the repository root.
+# A trailing slash protects a directory; glob patterns (*, **) are supported.
+# Examples:
+# src/gen/
+# **/generated/**
+# legacy/v1/
+# schemas/*.avsc

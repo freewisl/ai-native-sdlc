@@ -1,0 +1,292 @@
+<title>sdlc 도우미 상자</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap">
+<style>
+:root{
+  --paper:#F3F6EE; --paper-2:#E7EDE0; --ink:#1E2A22; --ink-soft:#5A6A5E;
+  --line:#CBD5C6; --accent:#2B4FCF; --accent-ink:#FFFFFF; --sun:#F2BE3C; --mint:#8FCBB0; --stop:#C8452B; --ok:#2E8B57;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#16201B; --paper-2:#1F2C25; --ink:#E9EFE8; --ink-soft:#A3B1A6;
+    --line:#354338; --accent:#86A3FF; --accent-ink:#0F1730; --sun:#F2BE3C; --mint:#4F9C7C; --stop:#E9705A; --ok:#5CC48A;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#16201B; --paper-2:#1F2C25; --ink:#E9EFE8; --ink-soft:#A3B1A6;
+  --line:#354338; --accent:#86A3FF; --accent-ink:#0F1730; --sun:#F2BE3C; --mint:#4F9C7C; --stop:#E9705A; --ok:#5CC48A;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:"Gowun Dodum","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-size:18px;line-height:1.65}
+h1,h2,h3{font-family:"Jua","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-weight:400;letter-spacing:-0.01em;text-wrap:balance;margin:0}
+h1{font-size:clamp(40px,7vw,64px);line-height:1.1}
+h2{font-size:clamp(28px,4.5vw,40px);line-height:1.15}
+h3{font-size:22px;line-height:1.25}
+p{margin:0}
+.wrap{max-width:960px;margin:0 auto;padding:0 20px}
+.eyebrow{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
+.tag{display:inline-block;font-size:13px;letter-spacing:.12em;color:var(--accent);text-transform:uppercase}
+code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:.88em;background:var(--paper-2);padding:1px 6px;border-radius:4px}
+svg text{font-family:"Jua","Apple SD Gothic Neo","Noto Sans KR",sans-serif;fill:var(--ink)}
+section{padding:48px 0;border-top:1px solid var(--line)}
+section:first-of-type{border-top:0}
+.lead{font-size:22px;max-width:36ch}
+.sub{color:var(--ink-soft);max-width:62ch}
+.hero{display:grid;grid-template-columns:1fr 320px;gap:32px;align-items:center;padding:56px 0 32px}
+.hero svg{width:100%}
+.grown{border-left:3px solid var(--accent);padding:6px 0 6px 14px;color:var(--ink-soft);font-size:15px}
+.grown b{color:var(--ink);font-weight:600}
+
+/* install picture */
+.install{display:grid;grid-template-columns:300px 1fr;gap:28px;align-items:center}
+.install ul{margin:0;padding:0;list-style:none;display:grid;gap:8px}
+.install li{display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:start;font-size:17px}
+.install li i{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-family:"Jua",sans-serif;color:#1E2A22;background:var(--sun)}
+.install li small{display:block;color:var(--ink-soft);font-size:14px}
+
+/* stage cards */
+.stage{display:grid;gap:14px;margin-top:26px}
+.stage-head{display:grid;grid-template-columns:56px 1fr;gap:14px;align-items:center}
+.stage-head .n{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;font-family:"Jua",sans-serif;font-size:24px;color:#1E2A22}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.card{background:var(--paper-2);border-radius:18px;padding:16px 16px 14px;display:grid;grid-template-columns:64px 1fr;gap:12px;align-items:start}
+.card svg{width:64px;height:64px}
+.card b{font-family:"Jua",sans-serif;font-weight:400;font-size:19px;display:block}
+.card .kid{font-size:16px;margin:2px 0 6px}
+.card .adult{font-size:13px;color:var(--ink-soft)}
+.card .adult code{font-size:12px}
+
+/* locks */
+.locks{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-top:22px}
+.lock{background:var(--paper-2);border-radius:16px;padding:14px;display:grid;gap:6px;text-align:center}
+.lock svg{width:70px;height:70px;margin:0 auto}
+.lock b{font-family:"Jua",sans-serif;font-weight:400;font-size:18px}
+.lock span{font-size:14px;color:var(--ink-soft)}
+
+/* helpers */
+.helpers{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-top:22px}
+.helper{display:grid;gap:6px;justify-items:center;text-align:center;font-size:15px}
+.helper svg{width:96px;height:96px}
+.helper b{font-family:"Jua",sans-serif;font-weight:400;font-size:18px}
+.helper span{color:var(--ink-soft);font-size:14px}
+
+/* never */
+.never{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:22px}
+.never div{background:var(--paper-2);border-radius:18px;padding:18px;display:grid;grid-template-columns:54px 1fr;gap:12px;align-items:center}
+.never .x{width:54px;height:54px;border-radius:50%;background:var(--stop);color:#fff;display:grid;place-items:center;font-family:"Jua",sans-serif;font-size:28px}
+.never b{font-family:"Jua",sans-serif;font-weight:400;font-size:18px;display:block}
+.never span{font-size:14px;color:var(--ink-soft)}
+
+/* watchers */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:22px}
+.two > div{background:var(--paper-2);border-radius:18px;padding:18px;display:grid;grid-template-columns:90px 1fr;gap:14px;align-items:center}
+.two svg{width:90px;height:90px}
+.two b{font-family:"Jua",sans-serif;font-weight:400;font-size:19px;display:block}
+.two span{font-size:14px;color:var(--ink-soft)}
+
+.foot{color:var(--ink-soft);font-size:15px;padding:24px 0 56px}
+@media (max-width:680px){.hero,.install,.two{grid-template-columns:1fr}.install svg,.hero svg{max-width:280px;margin:0 auto}}
+@media (prefers-reduced-motion:no-preference){.steam{animation:steam 3s ease-in-out infinite}@keyframes steam{0%,100%{transform:translateY(0);opacity:.7}50%{transform:translateY(-6px);opacity:1}}}
+</style>
+
+<main class="wrap">
+
+<section class="hero">
+  <div style="display:grid;gap:18px">
+    <p class="eyebrow">sdlc 플러그인 · 다섯 살 버전</p>
+    <h1>어느 주방에나 들고 가는<br>도우미 상자</h1>
+    <p class="lead">앞에서 본 "AI 주방 한 바퀴"를 <b>진짜로 돌게 만드는 상자</b>예요. 상자를 어떤 주방(코드 저장소)에 가져가서 열면, 규칙표·종이 3장·잠금장치·보조 요리사·종과 저울이 한꺼번에 생겨요.</p>
+    <p class="sub">이미 요리 중인 주방에 가져가도 원래 있던 물건은 하나도 버리지 않아요. 빈 주방에 가져가면 처음부터 다 차려 줘요.</p>
+    <div class="grown"><b>어른 말로</b> Claude Code 플러그인 <code>sdlc</code>. 설치하면 스킬 19종·훅 7종·에이전트 5종·스크립트·템플릿이 모든 프로젝트에서 쓸 수 있게 되고, 프로젝트별 값은 <code>.sdlc/config.json</code> 하나로 받아요. 쓰는 법은 두 마디 — 저장소마다 <code>/sdlc:init</code> 한 번, 변경마다 <code>/sdlc:go "요청 한 문장"</code>.</div>
+  </div>
+  <svg viewBox="0 0 320 320" role="img" aria-label="열린 도구 상자에서 규칙표, 종이, 잠금장치, 요리사 모자, 종이 튀어나오는 그림">
+    <rect x="40" y="150" width="240" height="130" rx="18" fill="var(--accent)" stroke="var(--ink)" stroke-width="5"/>
+    <path d="M40 160 h240" stroke="var(--ink)" stroke-width="5"/>
+    <rect x="130" y="135" width="60" height="26" rx="8" fill="var(--ink)"/>
+    <path d="M44 150 l24 -60 h184 l24 60 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="5"/>
+    <!-- items -->
+    <rect x="70" y="40" width="46" height="60" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="4"/><g stroke="var(--ink)" stroke-width="4" stroke-linecap="round"><line x1="80" y1="56" x2="106" y2="56"/><line x1="80" y1="70" x2="100" y2="70"/><line x1="80" y1="84" x2="106" y2="84"/></g>
+    <rect x="132" y="28" width="58" height="34" rx="8" fill="var(--mint)" stroke="var(--ink)" stroke-width="4"/><circle cx="161" cy="45" r="7" fill="var(--ink)"/><rect x="158" y="44" width="6" height="12" fill="var(--ink)"/>
+    <path d="M214 96 q-10 -34 22 -44 q32 -6 34 24 q0 20 -14 20 h-32 z" fill="#fff" stroke="var(--ink)" stroke-width="4"/>
+    <rect x="212" y="96" width="46" height="10" rx="4" fill="var(--ink)"/>
+    <path d="M256 60 q0 -18 16 -18 q16 0 16 18 v14 h-32z" fill="var(--sun)" stroke="var(--ink)" stroke-width="4"/><circle cx="272" cy="80" r="5" fill="var(--ink)"/>
+    <text x="160" y="235" text-anchor="middle" font-size="26" fill="var(--accent-ink)">sdlc</text>
+  </svg>
+</section>
+
+<section>
+  <span class="tag">쓰는 법 · 두 마디</span>
+  <h2>상자를 여는 말 하나, 요리를 시키는 말 하나</h2>
+  <p class="sub" style="margin-top:8px">그 밑에서 심부름 열여덟 가지와 잠금장치 일곱 개가 알아서 돌아요. 사람이 하는 말은 두 마디예요.</p>
+  <div class="cards" style="margin-top:22px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+    <div class="card"><svg viewBox="0 0 64 64"><rect x="8" y="26" width="48" height="28" rx="6" fill="var(--accent)" stroke="var(--ink)" stroke-width="3"/><path d="M10 26 l6 -12 h32 l6 12z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><text x="32" y="46" text-anchor="middle" font-size="12" fill="var(--accent-ink)">1회</text></svg><div><b>/sdlc:init — 저장소마다 한 번</b><p class="kid">주방을 둘러보고 알아서 차려요. GitHub 주방인지, 혼자 쓰는 주방인지, 열쇠가 이미 있는지 보고 — 심부름 붙이기, 열쇠 보관, 머지 설정, 문 잠금 규칙까지 해 둔 다음, 바뀐 것은 PR 로 올려요.</p><p class="adult">GitHub 원격·협업자 수·보관된 구독 토큰 감지 → 워크플로 6종·CODEOWNERS·시크릿·auto-merge·ruleset(요금제가 허용할 때) → doctor → 채택 커밋을 브랜치+PR 로. 사람 몫은 계정당 한 번의 GitHub 로그인 승인과 토큰 발급(브라우저)</p></div></div>
+    <div class="card"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="var(--line)" stroke-width="5"/><path d="M32 8 a24 24 0 0 1 24 24" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/><path d="M52 26 l4 6 l6 -4" fill="none" stroke="var(--accent)" stroke-width="4"/><text x="32" y="38" text-anchor="middle" font-size="16">go</text></svg><div><b>/sdlc:go "…" — 변경마다 한 줄</b><p class="kid">"이거 해줘" 한 마디면 주문서 → 레시피 → 순서표 → 요리 → 맛보기 → 검사 → 서빙 준비(PR)까지 이어서 해요. 정말 물어야 할 때만 멈춰요: 규칙이 서로 부딛힐 때, 세 번 맛봐도 실패할 때, 서빙(머지) 결정, 진짜 홀 문.</p><p class="adult"><code>/sdlc:go "요청" --autopilot --merge</code> · autopilot 은 1인 저장소 + 건강검진 auto mode ✓ + 사용자가 직접 입력했을 때만 순서표 허락을 생략. 팀 저장소는 주문서·순서표 승인이 남아요</p></div></div>
+    <div class="card"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="22" fill="none" stroke="var(--line)" stroke-width="5"/><path d="M32 10 a22 22 0 1 1 -22 22" fill="none" stroke="var(--stop)" stroke-width="6" stroke-linecap="round"/><path d="M10 26 v8 l8 -2" fill="none" stroke="var(--stop)" stroke-width="4"/><text x="32" y="37" text-anchor="middle" font-size="13">run</text></svg><div><b>/sdlc:run — 백로그 끝까지 (선택)</b><p class="kid">주문서가 쌓여 있으면 상자가 한 장씩 꺼내 요리 → 검사 → PR → 서빙까지 하고, 다 끝나면 자기 요리를 다시 검사해서 고칠 게 있으면 새 주문서를 써요. 고칠 게 없을 때까지요. 혼자 쓰는 주방에서, 주인이 스위치를 켰을 때만.</p><p class="adult"><code>loop.enabled: true</code> + <code>roles.solo</code> · 항목마다 새 세션의 <code>go --autopilot --merge</code> · 상한(건수·시간·연속 실패 3회)·slug 별 차단·정지 파일 <code>.sdlc/state/pause</code> · <code>sdlc-autopilot.yml</code> 이 30분마다 1건</p></div></div>
+  </div>
+  <p class="grown" style="margin-top:18px"><b>나머지 심부름은?</b> <code>go</code> 가 안에서 하나씩 부르는 부품이에요. 승인을 다른 사람이 하는 팀 주방이나 한 번에 담기지 않는 큰 요리에서만 따로 불러요.</p>
+</section>
+
+<section>
+  <span class="tag">상자를 열면 · /sdlc:init</span>
+  <h2>상자를 열면 주방에 이게 생겨요</h2>
+  <div class="install" style="margin-top:22px">
+    <svg viewBox="0 0 300 300" role="img" aria-label="주방 벽에 규칙표, 냉장고에 종이 세 장, 서랍에 잠금, 구석에 종과 저울">
+      <rect x="20" y="30" width="110" height="80" rx="8" fill="#fff" stroke="var(--ink)" stroke-width="4"/>
+      <text x="75" y="56" text-anchor="middle" font-size="16">규칙표</text>
+      <g stroke="var(--ink)" stroke-width="4" stroke-linecap="round"><line x1="34" y1="72" x2="116" y2="72"/><line x1="34" y1="88" x2="96" y2="88"/></g>
+      <rect x="160" y="30" width="120" height="150" rx="10" fill="var(--paper-2)" stroke="var(--ink)" stroke-width="4"/>
+      <rect x="176" y="46" width="40" height="52" rx="4" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><rect x="200" y="60" width="40" height="52" rx="4" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/><rect x="224" y="74" width="40" height="52" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="3"/>
+      <text x="220" y="160" text-anchor="middle" font-size="14">주문서·레시피·순서표</text>
+      <rect x="20" y="140" width="110" height="60" rx="8" fill="var(--paper-2)" stroke="var(--ink)" stroke-width="4"/>
+      <rect x="58" y="150" width="34" height="26" rx="6" fill="var(--stop)"/><path d="M66 150 v-8 q0 -9 9 -9 q9 0 9 9 v8" fill="none" stroke="var(--ink)" stroke-width="4"/>
+      <text x="75" y="192" text-anchor="middle" font-size="14">잠금 7개</text>
+      <path d="M50 260 q0 -30 30 -30 q30 0 30 30 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="4"/><circle cx="80" cy="268" r="6" fill="var(--ink)"/>
+      <text x="80" y="292" text-anchor="middle" font-size="14">종</text>
+      <path d="M190 262 h80" stroke="var(--ink)" stroke-width="5"/><path d="M230 262 v-26" stroke="var(--ink)" stroke-width="5"/><path d="M196 262 q17 22 34 0" fill="none" stroke="var(--ink)" stroke-width="4"/><path d="M236 262 q17 22 34 0" fill="none" stroke="var(--ink)" stroke-width="4"/>
+      <text x="230" y="292" text-anchor="middle" font-size="14">저울</text>
+    </svg>
+    <ul>
+      <li><i>규</i><div>벽에 <b>규칙표</b>를 붙여요. 이미 규칙표가 있으면 빈 칸(명령·규약·구조·자주 틀리는 것·검증)만 덧붙여요.<small>CLAUDE.md 5섹션 — 있는 글은 한 글자도 안 지움</small></div></li>
+      <li><i>종</i><div>냉장고에 <b>종이 3장 자리</b>를 만들어요: 주문서, 레시피, 순서표. 손님 불만이 들어오는 <b>대기 바구니</b>도요.<small>intent/ spec/ plan/ + intent/triage/</small></div></li>
+      <li><i>잠</i><div>서랍에 <b>잠금장치 7개</b>를 달아요. 만지면 딸깍 막히고, 왜 막혔는지·어떻게 열지 말해 줘요.<small>훅 7종은 플러그인이 자동 등록 — 프로젝트엔 권한 목록만 병합</small></div></li>
+      <li><i>검</i><div>검사원 규칙표와 <b>승인 도장 목록</b>을 놓아요.<small>REVIEW.md · .sdlc/APPROVALS.md</small></div></li>
+      <li><i>연</i><div>"규칙표 바꾸면 옛 요리 다시 만들어 보기" 연습장 3장을 넣어 줘요.<small>evals/cases 예시 3건 + 종·저울용 bands.json, LESSONS.md</small></div></li>
+      <li><i>원</i><div>블로그 원문의 종이 14장을 <b>그대로 복사</b>해 서랍에 넣어요. 우리가 바꾼 건 뭔지 비교할 수 있게요.<small>.sdlc/examples/ (intent·plan·CLAUDE.md·verifier·REVIEW·게이트 스크립트·bands.yaml…)</small></div></li>
+      <li><i>C</i><div>GitHub 주방이면 알아서 알아보고 <b>자동으로 도는 심부름 7개</b>를 붙이고, 열쇠 보관·머지 설정·문 잠금 규칙까지 해 둬요. 혼자 쓰는 주방이면 도장도 본인이 찍게 해 둬요.<small>GitHub 원격 감지 → evals·review·spec-on-intent·ci-triage·monitor·scan + CODEOWNERS, github-setup.sh(시크릿·auto-merge·ruleset), 협업자 1명 → roles.solo</small></div></li>
+    </ul>
+  </div>
+  <p class="grown" style="margin-top:18px"><b>비파괴 약속</b> 있는 파일은 절대 덮어쓰지 않아요(SKIPPED), 규칙표는 빠진 절만 붙이고, 권한은 합집합으로 합치고, 남의 <code>evals/</code>가 있으면 <code>sdlc-evals/</code>를 써요. 두 번 열어도 아무것도 안 바뀌어요(테스트로 확인).</p>
+</section>
+
+<section>
+  <span class="tag">19가지 심부름 · 스킬</span>
+  <h2>한 바퀴 돌 때 상자가 해 주는 일</h2>
+  <p class="sub" style="margin-top:8px">각 심부름은 <code>/sdlc:이름</code>으로 부르거나, 그냥 말로 부탁해도 알아들어요("인텐트 작성", "리뷰해줘").</p>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--stop);color:#fff">★</div><h3>지름길 · 한 문장으로 한 바퀴</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="var(--line)" stroke-width="5"/><path d="M32 8 a24 24 0 0 1 24 24" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/><path d="M52 26 l4 6 l6 -4" fill="none" stroke="var(--accent)" stroke-width="4"/><text x="32" y="38" text-anchor="middle" font-size="16">go</text></svg><div><b>go</b><p class="kid">"이거 해줘" 한 마디면 주문서 → 레시피 → 순서표 → 요리 → 맛보기 → 검사 → 서빙 준비(PR)까지 상자가 이어서 해요. 정말 물어야 할 때(규칙 충돌, 세 번 맛봐도 실패, 서빙(머지) 결정, 진짜 홀 문)만 멈춰요.</p><p class="adult"><code>/sdlc:go "요청" --autopilot --merge</code> · 1인 저장소(<code>roles.solo</code>)에서 승인 의식을 없애되 아티팩트·훅·리뷰·PR 은 그대로. 누가 무엇을 근거로 승인했는지는 <code>approved_by</code>·<code>approval_basis</code> 로 남아요</p></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--sun)">0</div><h3>준비 · 상자 열기와 건강검진</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="8" y="26" width="48" height="28" rx="6" fill="var(--accent)" stroke="var(--ink)" stroke-width="3"/><path d="M10 26 l6 -12 h32 l6 12z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/></svg><div><b>init</b><p class="kid">상자 열기. 주방을 둘러보고(어떤 도구를 쓰는지) 규칙표 빈칸을 채워 줘요.</p><p class="adult">빌드/테스트 명령 자동 감지, CLAUDE.md 채움, settings 병합, GitHub 원격·1인 저장소·토큰 감지 → github-setup, 채택 PR. 플래그는 감지를 뒤집을 때만(<code>--no-github --solo --auth …</code>)</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="22" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M20 32 l8 8 l16 -18" fill="none" stroke="var(--ok)" stroke-width="5" stroke-linecap="round"/></svg><div><b>doctor</b><p class="kid">건강검진. 뭐가 있고 없는지 ✓△✗ 로 보여 주고, 원문 순서대로 "다음엔 이거" 라고 알려 줘요.</p><p class="adult">훅 자가시험 6건, config 검사, auto mode 준비도, CI 인증 일관성·시크릿·ruleset·auto-merge, 의존성 그래프 5층 순서</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="10" y="12" width="44" height="40" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g stroke="var(--ink)" stroke-width="3"><line x1="18" y1="24" x2="46" y2="24"/><line x1="18" y1="34" x2="46" y2="34"/><line x1="18" y1="44" x2="36" y2="44"/></g></svg><div><b>status</b><p class="kid">종이 3장이 어디까지 갔는지 한 표로.</p><p class="adult">slug별 intent/spec/plan 상태·날짜·활성 plan·spec 재작업 수</p></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--sun)">1</div><h3>주문서 · Plan</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="14" y="8" width="36" height="48" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="3"/><circle cx="32" cy="8" r="4" fill="var(--stop)"/><g stroke="var(--ink)" stroke-width="3" stroke-linecap="round"><line x1="22" y1="24" x2="42" y2="24"/><line x1="22" y1="34" x2="38" y2="34"/><line x1="22" y1="44" x2="42" y2="44"/></g></svg><div><b>intent</b><p class="kid">"뭐가 불편해? 누가 아파? 어떻게 되면 좋아?" 여섯 개쯤 물어보고 주문서를 써서 냉장고에 붙여요.</p><p class="adult">intent/&lt;slug&gt;.md(문제·결과·영향·제약·미해결) + git 커밋 = 감사 기록. 승인은 사람이 <code>approve</code></p></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--mint)">2</div><h3>레시피 · Design</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="8" y="14" width="48" height="36" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><rect x="8" y="14" width="48" height="10" rx="6" fill="var(--mint)"/><g stroke="var(--ink)" stroke-width="3"><line x1="16" y1="34" x2="48" y2="34"/><line x1="16" y1="42" x2="40" y2="42"/></g></svg><div><b>spec</b><p class="kid">승인된 주문서로 레시피를 써요. 벽의 규칙 카드가 자동으로 끼어들고, 어기는 곳엔 <b>노란 딱지</b>를 붙여요.</p><p class="adult">정책 스킬을 제약으로 호출, Flagged concerns 표 필수, 원문 프롬프트 그대로</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="10" y="10" width="26" height="36" rx="5" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><rect x="24" y="18" width="26" height="36" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M30 36 l6 6 l10 -12" fill="none" stroke="var(--ink)" stroke-width="3"/></svg><div><b>policy</b><p class="kid">"땅콩 금지" 같은 규칙 하나를 <b>카드</b>로 만들어 벽에 붙여요. 붙이면 레시피 쓸 때, 검사할 때 자동으로 읽혀요.</p><p class="adult">.claude/skills/&lt;name&gt;/SKILL.md 스캐폴드 + config.policies 등록 + 트리거 테스트. 예시 <code>secure-api-review</code></p></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--accent);color:var(--accent-ink)">3</div><h3>요리 · Build</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="10" y="12" width="44" height="40" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g font-size="11" font-family="Jua"><text x="16" y="26">1.</text><text x="16" y="38">2.</text><text x="16" y="50">3.</text></g><g stroke="var(--ink)" stroke-width="3"><line x1="28" y1="23" x2="48" y2="23"/><line x1="28" y1="35" x2="48" y2="35"/><line x1="28" y1="47" x2="42" y2="47"/></g></svg><div><b>plan</b><p class="kid">요리 전에 "어떤 그릇을 만질지, 어떤 순서로, 뭐가 위험한지, 어떻게 맛있다고 증명할지" 순서표를 써서 <b>허락받고</b> 그다음에 요리해요.</p><p class="adult">플랜 모드 강제 → plan.md 4섹션 → 승인 커밋 → 활성 plan 등록 → 구현. 벗어나면 같은 커밋에 갱신</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="10" y="10" width="44" height="44" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M18 42 l8 -14 l6 8 l6 -12 l8 18" fill="none" stroke="var(--stop)" stroke-width="3" stroke-linejoin="round"/></svg><div><b>lesson</b><p class="kid">같은 실수를 <b>두 번</b> 하면 규칙표에 한 줄 적어요. 그러면 다음부터 안 틀려요.</p><p class="adult">"Things Claude gets wrong" 한 줄 추가(중복 검사, 한 페이지 초과 경고), 필요 시 eval 연계</p></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--sun)">4</div><h3>맛보기 · Test</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><path d="M14 46 l26 -26" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><ellipse cx="44" cy="18" rx="10" ry="7" transform="rotate(-30 44 18)" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/></svg><div><b>verify</b><p class="kid">내 요리는 내가 먼저 먹어봐요. 고장 고칠 땐 <b>먼저 "이거 맛없어" 시험을 만들고</b>, 그 시험은 못 바꾸게 잠근 채로 고쳐요. 마지막엔 다른 요리사가 한 번 더 먹어봐요.</p><p class="adult">build/test/lint 실행·출력 첨부, <code>--bugfix</code> 실패 테스트 먼저, <code>--ui</code> 스크린샷 루프, 끝에 sdlc-verifier 에이전트</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="8" y="30" width="14" height="24" rx="3" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/><rect x="25" y="18" width="14" height="36" rx="3" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/><rect x="42" y="24" width="14" height="30" rx="3" fill="var(--stop)" stroke="var(--ink)" stroke-width="3"/></svg><div><b>evals</b><p class="kid">규칙표나 카드를 바꾸면, 예전에 만든 요리 20~50개를 <b>다시 만들어 보고</b> 여전히 맛있는지 확인해요. 사고가 나면 그 요리도 목록에 넣어요.</p><p class="adult"><code>add</code> 케이스 생성(prompt+fixture+check.sh), <code>run</code> = run-evals.sh(claude -p, 임계치 미달 exit 1 → CI 게이트)</p></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--mint)">5</div><h3>서빙 · Deploy</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><circle cx="24" cy="26" r="12" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M33 35 l14 14" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><path d="M18 26 l4 4 l8 -8" fill="none" stroke="var(--ok)" stroke-width="3"/></svg><div><b>review</b><p class="kid">검사원이 세 번 봐요: 탔나(버그) · 이물질(보안) · 주문대로인가(레시피·순서표와 비교). 중요한 것과 잔소리를 나누고 잔소리는 5개까지만.</p><p class="adult">REVIEW.md 3 패스, sdlc-reviewer 에이전트, <code>--pr</code> 로 미해결 코멘트 스윕. <b>승인은 절대 안 함</b></p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="10" y="28" width="44" height="26" rx="4" fill="var(--paper)" stroke="var(--ink)" stroke-width="3"/><rect x="22" y="14" width="20" height="18" rx="10" fill="none" stroke="var(--ink)" stroke-width="3"/><circle cx="32" cy="42" r="4" fill="var(--stop)"/></svg><div><b>release</b><p class="kid">홀로 나가는 문. 연습 주방은 자유, 예행 주방은 "정말?" 한 번 묻고, <b>진짜 홀은 매니저 열쇠</b>가 있어야 열려요. 돌아가는 길(롤백)은 미리 연습해 둬요.</p><p class="adult">dev free / staging ask / production gated(<code>RELEASE_APPROVAL</code>), 롤백 명령 확인, gate.log 기록</p></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-head"><div class="n" style="background:var(--accent);color:var(--accent-ink)">6</div><h3>손님 반응 · Maintain</h3></div>
+    <div class="cards">
+      <div class="card"><svg viewBox="0 0 64 64"><path d="M16 44 q0 -22 16 -22 q16 0 16 22 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><circle cx="32" cy="50" r="4" fill="var(--ink)"/><path d="M32 22 v-6" stroke="var(--ink)" stroke-width="3"/></svg><div><b>monitor</b><p class="kid">종이 손님 얼굴을 지켜봐요. 조금 찌푸리면 메모, 많이 찌푸리면 <b>왜인지 살펴보고</b>, 아주 많이 찌푸리면 새 주문서를 써서 바구니에 넣어요. 종 자체는 계산기라 절대 착각하지 않아요.</p><p class="adult">monitor.py: 결정론 탐지(Western Electric 규칙) → 1σ log / 2σ 읽기 전용 진단 / 3σ PR·런북·보고서 → intent/triage/</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="10" y="12" width="44" height="40" rx="8" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g stroke="var(--ink)" stroke-width="3"><line x1="20" y1="26" x2="44" y2="26"/><line x1="20" y1="36" x2="44" y2="36"/></g><rect x="36" y="40" width="14" height="8" rx="2" fill="var(--ok)"/><rect x="20" y="40" width="14" height="8" rx="2" fill="var(--stop)"/></svg><div><b>triage</b><p class="kid">바구니의 주문서를 사람이 하나씩 봐요: 지금 고칠까 · 나중에 · 아냐 괜찮아(이유 적기).</p><p class="adult">상태 전이 기록·커밋, fix now → plan/spec 인계, dismiss 는 밴드 튜닝 메모</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><circle cx="28" cy="28" r="14" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M38 38 l12 12" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><path d="M22 28 h12 M28 22 v12" stroke="var(--stop)" stroke-width="3"/></svg><div><b>scan</b><p class="kid">정기적으로 주방 구석구석 <b>상한 것</b>을 찾아요. 작은 건 바로 고치자고 제안하고, 큰 건 주문서로 만들어요.</p><p class="adult">보안 체크리스트 12항목, 신뢰도·근거 첨부, 주간 워크플로. 호스팅 Claude Security 도입 체크리스트 포함</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><rect x="12" y="10" width="40" height="46" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M20 22 h24 M20 32 h24 M20 42 h14" stroke="var(--ink)" stroke-width="3"/><circle cx="46" cy="44" r="7" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/></svg><div><b>postmortem</b><p class="kid">불 났던 이야기를 <b>교훈 노트</b>에 적고, 규칙표에 한 줄, 다시-만들어보기 목록에 한 개, 큰 숙제는 주문서로.</p><p class="adult">.sdlc/LESSONS.md + lesson + evals add + intent --from-incident (Claude Tag 온콜 패턴의 로컬 버전)</p></div></div>
+      <div class="card"><svg viewBox="0 0 64 64"><path d="M10 50 h44" stroke="var(--ink)" stroke-width="4"/><path d="M14 46 l10 -14 l10 8 l10 -18 l10 10" fill="none" stroke="var(--accent)" stroke-width="4" stroke-linejoin="round"/></svg><div><b>metrics</b><p class="kid">저울. "주문서 쓰는 데 얼마나 걸렸나, 레시피를 나중에 몇 번 고쳤나, 종이 몇 번 울렸나"를 재요.</p><p class="adult">스테이지별 선행/후행 지표(git·이벤트·gate.log·히스토리), 없는 데이터는 "source needed"</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <span class="tag">잠금장치 · 훅 7종</span>
+  <h2>말해도 안 들으면, 딸깍</h2>
+  <p class="sub" style="margin-top:8px">규칙표는 "이렇게 해"라고 <b>말해 주는</b> 것이고, 잠금장치는 <b>손이 닿는 순간 막는</b> 거예요. 막을 때마다 이유와 여는 방법을 알려 주고, 시각을 적어 둬요.</p>
+  <div class="locks">
+    <div class="lock"><svg viewBox="0 0 70 70"><rect x="15" y="30" width="40" height="30" rx="7" fill="var(--stop)"/><path d="M24 30 v-8 q0 -11 11 -11 q11 0 11 11 v8" fill="none" stroke="var(--ink)" stroke-width="4"/></svg><b>만지면 안 되는 서랍</b><span>생성 코드·동결 패키지 편집 차단<br><code>frozen-paths.txt</code></span></div>
+    <div class="lock"><svg viewBox="0 0 70 70"><path d="M14 50 l26 -26" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><ellipse cx="46" cy="20" rx="10" ry="7" transform="rotate(-30 46 20)" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><rect x="40" y="44" width="22" height="16" rx="4" fill="var(--stop)"/></svg><b>맛보기 숟가락 잠금</b><span>고치는 동안 테스트 파일 편집 금지<br>계획에 "허용" 이 있을 때만 해제</span></div>
+    <div class="lock"><svg viewBox="0 0 70 70"><rect x="14" y="14" width="42" height="42" rx="8" fill="#fff" stroke="var(--ink)" stroke-width="3"/><text x="35" y="44" text-anchor="middle" font-size="26">🔑</text></svg><b>열쇠는 주머니에</b><span>비밀번호·토큰이 코드나 커밋에 들어가면 차단<br>편집·<code>git commit</code> 둘 다</span></div>
+    <div class="lock"><svg viewBox="0 0 70 70"><rect x="12" y="20" width="46" height="32" rx="6" fill="var(--paper)" stroke="var(--ink)" stroke-width="3"/><rect x="26" y="10" width="18" height="16" rx="9" fill="none" stroke="var(--ink)" stroke-width="3"/><text x="35" y="42" text-anchor="middle" font-size="12">PROD</text></svg><b>홀로 나가는 문</b><span>production 명령은 매니저 열쇠<br><code>RELEASE_APPROVAL</code> 없으면 차단</span></div>
+    <div class="lock"><svg viewBox="0 0 70 70"><rect x="14" y="16" width="42" height="38" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><text x="35" y="42" text-anchor="middle" font-size="14">티켓</text></svg><b>공사는 허가서</b><span>마이그레이션·인프라 편집은 변경 티켓<br><code>CHANGE_TICKET</code></span></div>
+    <div class="lock"><svg viewBox="0 0 70 70"><rect x="14" y="12" width="42" height="46" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g font-size="11" font-family="Jua"><text x="20" y="28">1.</text><text x="20" y="40">2.</text><text x="20" y="52">3.</text></g></svg><b>순서표 없이 요리 금지</b><span>켜면 승인된 plan 없이는 코드 편집 차단<br><code>plan.require_for_edits</code></span></div>
+    <div class="lock"><svg viewBox="0 0 70 70"><circle cx="35" cy="35" r="22" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M35 20 v16 l10 6" fill="none" stroke="var(--ink)" stroke-width="4" stroke-linecap="round"/></svg><b>"다 했어요" 전에 맛보기</b><span>편집 후 검증 없이 끝내려 하면 멈춤<br><code>verify.required_before_stop</code></span></div>
+    <div class="lock"><svg viewBox="0 0 70 70"><rect x="12" y="18" width="46" height="34" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M12 35 h46" stroke="var(--ink)" stroke-width="3"/><text x="35" y="31" text-anchor="middle" font-size="12">main</text><path d="M26 49 l18 -10 M26 39 l18 10" stroke="var(--stop)" stroke-width="4" stroke-linecap="round"/></svg><b>정문은 잠겨 있어요</b><span>기본 브랜치로 바로 <code>git push</code> 금지<br>옆문(브랜치)으로 나가 PR 로만</span></div>
+  </div>
+  <p class="grown" style="margin-top:18px"><b>덤으로</b> 편집 직후 포매터/린터를 자동으로 돌리고, 세션이 시작될 때 "지금 활성 plan은 이거, 대기 주문서 2건, 규칙 3줄"을 귓속말해 줘요. 모든 결정은 <code>.sdlc/logs/events.jsonl</code>에 시각과 함께 남아요.</p>
+</section>
+
+<section>
+  <span class="tag">보조 요리사 5명 · 에이전트</span>
+  <h2>혼자 다 하지 않아요</h2>
+  <div class="helpers">
+    <div class="helper"><svg viewBox="0 0 96 96"><circle cx="48" cy="40" r="20" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M28 34 q20 -22 40 0" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M20 90 q28 -30 56 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/><path d="M40 62 l16 -16" stroke="var(--ink)" stroke-width="4"/></svg><b>verifier</b><span>다 됐다고 하면 <b>새 눈으로</b> 직접 실행해 보고 보고만 해요. 고치지 않아요.</span></div>
+    <div class="helper"><svg viewBox="0 0 96 96"><circle cx="48" cy="40" r="20" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><circle cx="40" cy="38" r="7" fill="none" stroke="var(--ink)" stroke-width="3"/><circle cx="58" cy="38" r="7" fill="none" stroke="var(--ink)" stroke-width="3"/><path d="M20 90 q28 -30 56 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/></svg><b>reviewer</b><span>검사원. 세 번 보고 중요/잔소리 나눠요. <b>도장은 못 찍어요.</b></span></div>
+    <div class="helper"><svg viewBox="0 0 96 96"><circle cx="48" cy="40" r="20" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M20 90 q28 -30 56 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/><circle cx="72" cy="66" r="12" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M80 74 l8 8" stroke="var(--ink)" stroke-width="4"/></svg><b>diagnoser</b><span>종이 울리면 읽기만 하며 "왜?"를 추리해 주문서 초안을 써요.</span></div>
+    <div class="helper"><svg viewBox="0 0 96 96"><circle cx="48" cy="40" r="20" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M20 90 q28 -30 56 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/><path d="M62 70 l16 -16" stroke="var(--ink)" stroke-width="6" stroke-linecap="round"/><rect x="74" y="48" width="10" height="10" fill="var(--stop)"/></svg><b>simplifier</b><span>요리 끝난 뒤 불필요하게 복잡한 부분을 정리해요. 맛은 그대로.</span></div>
+    <div class="helper"><svg viewBox="0 0 96 96"><circle cx="48" cy="40" r="20" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M20 90 q28 -30 56 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/><rect x="64" y="56" width="20" height="26" rx="3" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M68 64 h12 M68 70 h12" stroke="var(--ink)" stroke-width="2"/></svg><b>researcher</b><span>주방 어디에 뭐가 있는지 찾아와서 짧게 알려 줘요.</span></div>
+  </div>
+  <p class="grown" style="margin-top:18px"><b>어른 말로</b> 각자 컨텍스트 창과 도구 제한이 따로예요(verifier·researcher는 읽기·실행만). 큰 일은 worktree 별로 세션을 2~3개 열어 병렬로 돌리고, 사람은 조율만 해요.</p>
+</section>
+
+<section>
+  <span class="tag">종과 저울 · 자동으로 도는 것</span>
+  <h2>사람이 안 시켜도 도는 것</h2>
+  <div class="two">
+    <div><svg viewBox="0 0 90 90"><path d="M25 62 q0 -30 20 -30 q20 0 20 30 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><circle cx="45" cy="70" r="5" fill="var(--ink)"/><path d="M45 32 v-8" stroke="var(--ink)" stroke-width="3"/></svg><div><b>종 (monitor)</b><span>30분마다 손님 얼굴(지표)을 재고 30일 평균과 비교해요. 평균에서 얼마나 벗어났는지에 따라 메모 → 진단 → 제안. 탐지에는 AI를 쓰지 않아요. GitHub 심부름 <code>sdlc-monitor.yml</code>이 돌려요.</span></div></div>
+    <div><svg viewBox="0 0 90 90"><path d="M20 66 h50" stroke="var(--ink)" stroke-width="4"/><path d="M45 66 v-30" stroke="var(--ink)" stroke-width="4"/><path d="M24 66 q10 16 22 0" fill="none" stroke="var(--ink)" stroke-width="3"/><path d="M44 66 q10 16 22 0" fill="none" stroke="var(--ink)" stroke-width="3"/><circle cx="45" cy="33" r="5" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/></svg><div><b>저울 (metrics)</b><span>원문이 "이걸 재라"고 한 지표를 스테이지마다 계산해요. 주방에 없는 숫자는 지어내지 않고 "어디서 가져오면 되는지"만 적어요.</span></div></div>
+    <div><svg viewBox="0 0 90 90"><rect x="18" y="14" width="54" height="62" rx="8" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g stroke="var(--ink)" stroke-width="3"><line x1="28" y1="30" x2="62" y2="30"/><line x1="28" y1="44" x2="62" y2="44"/><line x1="28" y1="58" x2="50" y2="58"/></g><circle cx="64" cy="64" r="10" fill="var(--ok)"/></svg><div><b>심부름 7개 (GitHub Actions)</b><span>규칙표가 바뀌면 다시-만들어보기, PR마다 검사원, 주문서가 승인되면 레시피 자동 초안, 빌드가 깨지면 3줄 원인 메모, 종 울리기, 주간 상한 것 찾기, 그리고 켰을 때만 30분마다 백로그 한 장을 처리하는 자동 루프. 전부 PR로 도착하고 main엔 직접 못 써요.</span></div></div>
+    <div><svg viewBox="0 0 90 90"><circle cx="45" cy="45" r="34" fill="var(--paper)" stroke="var(--line)" stroke-width="3"/><circle cx="45" cy="45" r="24" fill="var(--mint)" opacity=".6"/><circle cx="45" cy="45" r="14" fill="var(--sun)"/><circle cx="45" cy="45" r="6" fill="var(--accent)"/></svg><div><b>사장님 설정 (기업용)</b><span>규제 회사면 관리자가 "아무도 끌 수 없는" 설정으로 잠금장치·울타리를 고정할 수 있어요. 그 파일과 설치 위치는 상자에 들어 있어요(<code>docs/ENTERPRISE.md</code>).</span></div></div>
+  </div>
+</section>
+
+<section>
+  <span class="tag">약속</span>
+  <h2>상자가 절대 안 하는 것</h2>
+  <div class="never">
+    <div><div class="x">✕</div><div><b>도장 찍기</b><span>PR 승인은 사람(코드 오너)만. 검사원·심부름 어느 것도 approve 를 안 해요.</span></div></div>
+    <div><div class="x">✕</div><div><b>혼자 홀에 나가기</b><span>production 배포는 매니저 열쇠 없이는 불가. 돌아가는 길(롤백)은 늘 허용.</span></div></div>
+    <div><div class="x">✕</div><div><b>남의 물건 버리기</b><span>기존 CLAUDE.md·설정·CI·evals 폴더를 덮어쓰거나 지우지 않아요.</span></div></div>
+    <div><div class="x">✕</div><div><b>종이 착각하기</b><span>밴드 탐지는 계산기(결정론). AI는 밴드가 깨진 뒤에만, 허락된 만큼만.</span></div></div>
+  </div>
+</section>
+
+<section>
+  <span class="tag">설치</span>
+  <h2>상자를 가져오는 법</h2>
+  <p class="lead" style="font-size:19px"><code>claude plugin marketplace add &lt;조직&gt;/ai-native-sdlc</code> → <code>claude plugin install sdlc@ai-native-sdlc</code>. 그다음 어느 저장소에서든 Claude Code 를 열고 <code>/sdlc:init</code> 한 번, 변경마다 <code>/sdlc:go "요청 한 문장"</code>.</p>
+  <p class="grown" style="margin-top:14px"><b>검증</b> 블로그 요구사항 349건 대응 감사(COVERED 341 · 호스팅 제품 안내 7 · MISSING 0 · 의도적 편차 1), 훅 테스트 206건·스크립트 163건·validate 통과, 설치본으로 실제 실행 확인. 플러그인을 갱신하면 <code>/reload-plugins</code> 뒤 <code>/sdlc:init</code> 을 다시 — 있는 파일은 두고 새 설정만 병합해요.</p>
+</section>
+
+<p class="foot">원문: claude.com/blog/the-ai-native-sdlc-playbook · 플러그인 문서: plugins/sdlc/README.md · "루프는 계속 돈다. 사람의 판단은 그 위에 남는다."</p>
+</main>

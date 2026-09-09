@@ -1,0 +1,109 @@
+{
+  "_comment": "JSON form of the playbook's bands.yaml (original kept in .sdlc/examples/bands.yaml). Detection is deterministic (mean/stddev over a rolling window + Western Electric rules). Claude is invoked only when a band is breached and the tier sets what it may do: 1sigma log, 2sigma diagnose (read-only), 3sigma propose via routes pull_request | runbook:<name> (pre-approved) | report (writes .sdlc/reports/<ts>-<metric>.md for leadership). Metrics with \"enabled\": false are examples — set the command and flip to true. \"_tuning\" collects dismissal notes from /sdlc:triage.",
+  "metrics": [
+    {
+      "name": "ci_test_failure_rate",
+      "description": "Share of CI runs that failed in the last 24h (0..1)",
+      "command": "gh run list --limit 50 --json conclusion --jq '[.[] | select(.conclusion==\"failure\")] | length / 50'",
+      "baseline": {
+        "window": 30
+      },
+      "rules": "western_electric",
+      "tiers": {
+        "1sigma": {
+          "action": "log"
+        },
+        "2sigma": {
+          "action": "diagnose",
+          "tools": "Read,Grep,Glob,Bash(gh run view *),Bash(gh run list *),Bash(git log *)"
+        },
+        "3sigma": {
+          "action": "propose",
+          "routes": [
+            "pull_request",
+            "runbook:rollback-deploy"
+          ]
+        }
+      }
+    },
+    {
+      "name": "eval_pass_rate",
+      "description": "Pass rate of the configuration eval suite (appended by run-evals.sh)",
+      "history_only": true,
+      "baseline": {
+        "window": 20
+      },
+      "rules": "western_electric",
+      "tiers": {
+        "1sigma": {
+          "action": "log"
+        },
+        "2sigma": {
+          "action": "diagnose",
+          "tools": "Read,Grep,Glob,Bash(git log *),Bash(git diff *)"
+        },
+        "3sigma": {
+          "action": "propose",
+          "routes": [
+            "pull_request"
+          ]
+        }
+      }
+    },
+    {
+      "name": "post_deploy_5xx_rate",
+      "enabled": false,
+      "description": "Share of 5xx responses in the 15 minutes after the latest deploy (0..1). Example command: Prometheus HTTP API via curl + jq",
+      "command": "curl -s 'http://prometheus.internal/api/v1/query?query=sum(rate(http_requests_total{code=~\"5..\"}[15m]))/sum(rate(http_requests_total[15m]))' | jq -r '.data.result[0].value[1] // 0'",
+      "baseline": {
+        "window": 30
+      },
+      "rules": "western_electric",
+      "tiers": {
+        "1sigma": {
+          "action": "log"
+        },
+        "2sigma": {
+          "action": "diagnose",
+          "tools": "Read,Grep,Glob,Bash(gh run view *),Bash(git log *)"
+        },
+        "3sigma": {
+          "action": "propose",
+          "routes": [
+            "runbook:rollback-deploy",
+            "pull_request"
+          ]
+        }
+      }
+    },
+    {
+      "name": "pr_cycle_time_hours",
+      "enabled": false,
+      "description": "Median hours from PR open to merge over the last 20 merged PRs (process metric — a drift rule writes a report for engineering leadership)",
+      "command": "gh pr list --state merged --limit 20 --json createdAt,mergedAt --jq '[.[] | ((.mergedAt|fromdate) - (.createdAt|fromdate))/3600] | sort | .[length/2|floor]'",
+      "baseline": {
+        "window": 30
+      },
+      "rules": "western_electric",
+      "tiers": {
+        "1sigma": {
+          "action": "log"
+        },
+        "2sigma": {
+          "action": "diagnose",
+          "tools": "Read,Grep,Glob,Bash(gh pr list *),Bash(gh pr view *)"
+        },
+        "3sigma": {
+          "action": "propose",
+          "routes": [
+            "report"
+          ]
+        }
+      }
+    }
+  ],
+  "runbooks": {
+    "rollback-deploy": "{{rollback_cmd}}"
+  },
+  "_tuning": []
+}

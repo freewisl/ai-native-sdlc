@@ -1,0 +1,12 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": { "allowedDomains": ["{{git_host}}", "{{package_registry}}"] },
+    "credentials": {
+      "files": [ { "path": "~/.ssh", "mode": "deny" }, { "path": "~/.aws/credentials", "mode": "deny" } ],
+      "envVars": [ { "name": "GITHUB_TOKEN", "mode": "deny" } ]
+    }
+  }
+}

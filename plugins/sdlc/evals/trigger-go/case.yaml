@@ -1,0 +1,20 @@
+schema_version: "1.0"
+name: trigger-go
+description: A one-sentence "just do it end to end" request should invoke sdlc:go rather than plan/verify individually.
+tags: [trigger, loop]
+execution:
+  prompt: "이거 끝까지 알아서 해줘: 포털에서 청구 진행 상태를 볼 수 있게 만들고 PR까지 올려."
+  max_turns: 6
+  timeout_seconds: 240
+graders:
+  - type: tool_used
+    name: go-skill-fired
+    tool: Skill
+    input_match: "sdlc:go"
+    min: 1
+    arm: with-only
+  - type: regex
+    name: mentions-loop-artifacts
+    pattern: "intent|plan|PR|pull request"
+    flags: i
+    mode: contains

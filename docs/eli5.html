@@ -1,0 +1,297 @@
+<title>AI 주방 한 바퀴</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap">
+<style>
+:root{
+  --paper:#F3F6EE; --paper-2:#E7EDE0; --ink:#1E2A22; --ink-soft:#5A6A5E;
+  --line:#CBD5C6; --accent:#2B4FCF; --accent-ink:#FFFFFF; --sun:#F2BE3C; --mint:#8FCBB0; --stop:#C8452B;
+  --ok:#2E8B57; --warn:#D28A0A;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#16201B; --paper-2:#1F2C25; --ink:#E9EFE8; --ink-soft:#A3B1A6;
+    --line:#354338; --accent:#86A3FF; --accent-ink:#0F1730; --sun:#F2BE3C; --mint:#4F9C7C; --stop:#E9705A;
+    --ok:#5CC48A; --warn:#F0B44A;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#16201B; --paper-2:#1F2C25; --ink:#E9EFE8; --ink-soft:#A3B1A6;
+  --line:#354338; --accent:#86A3FF; --accent-ink:#0F1730; --sun:#F2BE3C; --mint:#4F9C7C; --stop:#E9705A;
+  --ok:#5CC48A; --warn:#F0B44A;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:"Gowun Dodum","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-size:18px;line-height:1.65}
+h1,h2,h3,.big{font-family:"Jua","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-weight:400;letter-spacing:-0.01em;text-wrap:balance;margin:0}
+h1{font-size:clamp(40px,7vw,64px);line-height:1.1}
+h2{font-size:clamp(28px,4.5vw,40px);line-height:1.15}
+h3{font-size:24px;line-height:1.2}
+p{margin:0}
+.wrap{max-width:900px;margin:0 auto;padding:0 20px}
+.eyebrow{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft)}
+code,.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:.9em;background:var(--paper-2);padding:1px 6px;border-radius:4px}
+a{color:var(--accent)}
+svg text{font-family:"Jua","Apple SD Gothic Neo","Noto Sans KR",sans-serif;fill:var(--ink)}
+
+/* hero */
+.hero{padding:56px 0 24px;display:grid;gap:20px}
+.hero .lead{font-size:22px;max-width:34ch;color:var(--ink)}
+.hero .sub{color:var(--ink-soft);max-width:60ch}
+.loop{margin:12px auto 0;width:100%;max-width:560px}
+
+/* stages */
+.stages{display:grid;gap:56px;padding:48px 0}
+.stage{display:grid;grid-template-columns:260px 1fr;gap:28px;align-items:center}
+.stage:nth-child(even){grid-template-columns:1fr 260px}
+.stage:nth-child(even) .pic{order:2}
+.pic{width:100%;aspect-ratio:1/1;display:grid;place-items:center;background:var(--paper-2);border-radius:28px}
+.pic svg{width:78%;height:78%}
+.txt{display:grid;gap:12px;max-width:52ch}
+.txt .kid{font-size:20px}
+.grown{border-left:3px solid var(--accent);padding:6px 0 6px 14px;color:var(--ink-soft);font-size:16px;display:grid;gap:4px}
+.grown b{color:var(--ink);font-weight:600}
+.tag{display:inline-block;font-size:13px;letter-spacing:.12em;color:var(--accent);text-transform:uppercase}
+
+/* rings */
+.rings{padding:48px 0;display:grid;grid-template-columns:320px 1fr;gap:28px;align-items:center;border-top:1px solid var(--line)}
+.rings ol{margin:0;padding:0;list-style:none;display:grid;gap:14px}
+.rings li{display:grid;grid-template-columns:14px 1fr;gap:12px;align-items:start}
+.rings li i{display:block;width:14px;height:14px;border-radius:50%;margin-top:9px}
+.rings li b{font-weight:600}
+
+/* status board */
+.board{padding:48px 0;border-top:1px solid var(--line);display:grid;gap:20px}
+.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:0;padding:0;list-style:none}
+.chips li{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:center;padding:12px 14px;background:var(--paper-2);border-radius:14px;font-size:16px}
+.chips .m{font-family:"Jua",sans-serif;font-size:20px;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:#fff}
+.m.ok{background:var(--ok)} .m.warn{background:var(--warn)} .m.no{background:var(--stop)}
+.chips small{display:block;color:var(--ink-soft);font-size:13px}
+
+/* steps */
+.steps{padding:48px 0 72px;border-top:1px solid var(--line);display:grid;gap:20px}
+.steps ol{margin:0;padding:0;list-style:none;display:grid;gap:12px;counter-reset:s}
+.steps li{display:grid;grid-template-columns:44px 1fr;gap:14px;align-items:start;counter-increment:s}
+.steps li::before{content:counter(s);font-family:"Jua",sans-serif;font-size:24px;width:44px;height:44px;border-radius:50%;background:var(--sun);color:#1E2A22;display:grid;place-items:center}
+.steps li div{padding-top:6px}
+.steps li b{font-weight:600}
+.steps li span{display:block;color:var(--ink-soft);font-size:16px}
+.foot{color:var(--ink-soft);font-size:15px;border-top:1px solid var(--line);padding:24px 0 48px}
+
+@media (max-width:640px){
+  .stage,.stage:nth-child(even),.rings{grid-template-columns:1fr}
+  .stage:nth-child(even) .pic{order:0}
+  .pic{max-width:300px;margin:0 auto}
+}
+@media (prefers-reduced-motion:no-preference){
+  .steam{animation:steam 3s ease-in-out infinite}
+  @keyframes steam{0%,100%{transform:translateY(0);opacity:.7}50%{transform:translateY(-6px);opacity:1}}
+}
+</style>
+
+<main class="wrap">
+
+<section class="hero">
+  <p class="eyebrow">Anthropic 블로그 · The AI-native SDLC playbook · 다섯 살 버전</p>
+  <h1>AI 주방 한 바퀴</h1>
+  <p class="lead">옛날 식당은 <b>요리하는 데</b> 가장 오래 걸렸어요.<br>이제 로봇 요리사가 요리는 금방 해요.<br>그래서 <b>나머지 다섯 가지</b>가 중요해졌어요.</p>
+  <p class="sub">주문서 → 레시피 → 요리 → 맛보기 → 서빙 → 손님 반응, 그리고 다시 주문서. 한 줄로 서 있던 일을 <b>빙글빙글 도는 고리</b>로 바꾸는 이야기예요. 각 칸은 종이 한 장(마크다운 파일)으로 끝나고, 다음 칸이 그 종이를 읽어요.</p>
+
+  <svg class="loop" viewBox="0 0 560 560" role="img" aria-label="여섯 단계가 고리로 이어진 그림">
+    <defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/></marker></defs>
+    <circle cx="280" cy="280" r="190" fill="none" stroke="var(--line)" stroke-width="10"/>
+    <!-- arrows along the ring (6 arcs) -->
+    <g fill="none" stroke="var(--accent)" stroke-width="6" marker-end="url(#ar)">
+      <path d="M 280 90 A 190 190 0 0 1 425 148"/>
+      <path d="M 444.5 185 A 190 190 0 0 1 465 300"/>
+      <path d="M 456 340 A 190 190 0 0 1 385 435"/>
+      <path d="M 350 455 A 190 190 0 0 1 220 462"/>
+      <path d="M 180 447 A 190 190 0 0 1 100 350"/>
+      <path d="M 92 310 A 190 190 0 0 1 128 165"/>
+      <path d="M 150 140 A 190 190 0 0 1 240 92"/>
+    </g>
+    <!-- nodes -->
+    <g>
+      <circle cx="280" cy="90" r="46" fill="var(--sun)"/>
+      <text x="280" y="86" text-anchor="middle" font-size="18" fill="#1E2A22">주문서</text>
+      <text x="280" y="106" text-anchor="middle" font-size="12" fill="#1E2A22">intent.md</text>
+    </g>
+    <g>
+      <circle cx="444" cy="185" r="46" fill="var(--mint)"/>
+      <text x="444" y="181" text-anchor="middle" font-size="18" fill="#1E2A22">레시피</text>
+      <text x="444" y="201" text-anchor="middle" font-size="12" fill="#1E2A22">spec.md</text>
+    </g>
+    <g>
+      <circle cx="444" cy="375" r="46" fill="var(--accent)"/>
+      <text x="444" y="371" text-anchor="middle" font-size="18" fill="var(--accent-ink)">요리</text>
+      <text x="444" y="391" text-anchor="middle" font-size="12" fill="var(--accent-ink)">plan.md → 코드</text>
+    </g>
+    <g>
+      <circle cx="280" cy="470" r="46" fill="var(--sun)"/>
+      <text x="280" y="466" text-anchor="middle" font-size="18" fill="#1E2A22">맛보기</text>
+      <text x="280" y="486" text-anchor="middle" font-size="12" fill="#1E2A22">tests · evals</text>
+    </g>
+    <g>
+      <circle cx="116" cy="375" r="46" fill="var(--mint)"/>
+      <text x="116" y="371" text-anchor="middle" font-size="18" fill="#1E2A22">서빙</text>
+      <text x="116" y="391" text-anchor="middle" font-size="12" fill="#1E2A22">PR · deploy</text>
+    </g>
+    <g>
+      <circle cx="116" cy="185" r="46" fill="var(--accent)"/>
+      <text x="116" y="181" text-anchor="middle" font-size="18" fill="var(--accent-ink)">손님 반응</text>
+      <text x="116" y="201" text-anchor="middle" font-size="12" fill="var(--accent-ink)">monitor</text>
+    </g>
+    <text x="280" y="270" text-anchor="middle" font-size="26">사람은 가운데서</text>
+    <text x="280" y="302" text-anchor="middle" font-size="26">“좋아 / 안 돼” 만 해요</text>
+  </svg>
+</section>
+
+<section class="stages">
+
+  <article class="stage">
+    <div class="pic" aria-hidden="true">
+      <svg viewBox="0 0 200 200">
+        <rect x="45" y="30" width="110" height="140" rx="8" fill="#fff" stroke="var(--ink)" stroke-width="4"/>
+        <circle cx="100" cy="30" r="9" fill="var(--stop)"/>
+        <g stroke="var(--ink)" stroke-width="5" stroke-linecap="round"><line x1="65" y1="70" x2="135" y2="70"/><line x1="65" y1="95" x2="125" y2="95"/><line x1="65" y1="120" x2="135" y2="120"/><line x1="65" y1="145" x2="105" y2="145"/></g>
+        <path d="M150 150 l22 -22" stroke="var(--sun)" stroke-width="9" stroke-linecap="round"/><path d="M172 128 l6 -6" stroke="var(--ink)" stroke-width="9" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="txt">
+      <span class="tag">1 · Plan</span>
+      <h2>먹고 싶은 걸 종이에 써요</h2>
+      <p class="kid">“왜 배고픈지, 뭘 먹으면 좋을지, 못 먹는 건 뭔지” 로봇이랑 얘기하면서 한 장에 적어요. 그리고 냉장고에 붙여요. 붙인 날짜가 자동으로 남아요.</p>
+      <div class="grown"><b>어른 말로</b> <span>Claude 와 브레인스토밍해 <code>intent/xxx.md</code>(문제·결과·영향·제약·미해결 질문)를 쓰고 <b>git 에 커밋</b>. 커밋이 곧 감사 추적. 몇 주 → 몇 시간.</span></div>
+    </div>
+  </article>
+
+  <article class="stage">
+    <div class="pic" aria-hidden="true">
+      <svg viewBox="0 0 200 200">
+        <rect x="30" y="45" width="140" height="110" rx="10" fill="#fff" stroke="var(--ink)" stroke-width="4"/>
+        <rect x="30" y="45" width="140" height="26" rx="10" fill="var(--mint)"/>
+        <g stroke="var(--ink)" stroke-width="5" stroke-linecap="round"><line x1="50" y1="95" x2="150" y2="95"/><line x1="50" y1="118" x2="130" y2="118"/><line x1="50" y1="141" x2="110" y2="141"/></g>
+        <rect x="118" y="120" width="52" height="52" rx="10" fill="var(--sun)" stroke="var(--ink)" stroke-width="4"/>
+        <path d="M130 147 l10 10 l20 -22" fill="none" stroke="var(--ink)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="txt">
+      <span class="tag">2 · Design</span>
+      <h2>레시피를 써요. 규칙 카드가 자동으로 들어가요</h2>
+      <p class="kid">주문서를 보고 레시피를 써요. 벽에 걸린 카드북(“땅콩 금지”, “뜨거운 건 뚜껑”)이 <b>알아서 끼어들어요</b>. 어기면 노란 딱지가 붙어요.</p>
+      <div class="grown"><b>어른 말로</b> <span>승인된 intent 로 <code>spec/xxx.md</code> 생성. <code>.claude/skills/</code> 의 스킬(보안·규약·UX 정책)이 제약으로 작동하고, 충돌은 “플래그” 로 명시. 스킬은 <b>권고</b>, 강제는 아님.</span></div>
+    </div>
+  </article>
+
+  <article class="stage">
+    <div class="pic" aria-hidden="true">
+      <svg viewBox="0 0 200 200">
+        <g class="steam" fill="none" stroke="var(--ink-soft)" stroke-width="5" stroke-linecap="round"><path d="M80 60 q8 -12 0 -24"/><path d="M100 56 q8 -12 0 -24"/><path d="M120 60 q8 -12 0 -24"/></g>
+        <rect x="40" y="80" width="120" height="70" rx="14" fill="var(--accent)" stroke="var(--ink)" stroke-width="4"/>
+        <rect x="30" y="72" width="140" height="14" rx="7" fill="var(--ink)"/>
+        <rect x="18" y="100" width="22" height="10" rx="5" fill="var(--ink)"/><rect x="160" y="100" width="22" height="10" rx="5" fill="var(--ink)"/>
+        <rect x="128" y="150" width="60" height="30" rx="6" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/>
+        <circle cx="158" cy="165" r="6" fill="var(--ink)"/><rect x="155" y="163" width="6" height="10" fill="var(--ink)"/>
+      </svg>
+    </div>
+    <div class="txt">
+      <span class="tag">3 · Build</span>
+      <h2>요리 전에 순서를 먼저 말해요</h2>
+      <p class="kid">로봇은 “뭘 먼저 하고 뭘 나중에 할지” 먼저 말하고, 사람이 “좋아” 하면 그때 요리해요. 주방 벽에는 <b>규칙표</b>가 있고, 만지면 안 되는 서랍엔 <b>잠금장치</b>가 있어요. 보조 요리사도 여럿 있어요.</p>
+      <div class="grown"><b>어른 말로</b> <span><b>Plan mode</b>(읽기 전용)에서 <code>plan/xxx.md</code>(변경 파일·순서·위험·증명) 승인 후 구현. 규칙표 = <code>CLAUDE.md</code>(명령·규약·구조·“Claude 가 자꾸 틀리는 것”, 같은 실수 2번이면 한 줄 추가). 잠금 = <b>hooks</b>(결정론적 스크립트, 차단/허용). 보조 = 서브에이전트·<code>--worktree</code> 병렬 세션.</span></div>
+    </div>
+  </article>
+
+  <article class="stage">
+    <div class="pic" aria-hidden="true">
+      <svg viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="62" fill="var(--sun)" stroke="var(--ink)" stroke-width="4"/>
+        <circle cx="78" cy="88" r="6" fill="var(--ink)"/><circle cx="122" cy="88" r="6" fill="var(--ink)"/>
+        <path d="M74 118 q26 24 52 0" fill="none" stroke="var(--ink)" stroke-width="6" stroke-linecap="round"/>
+        <path d="M150 40 l32 -18" stroke="var(--ink)" stroke-width="7" stroke-linecap="round"/>
+        <ellipse cx="148" cy="44" rx="14" ry="9" transform="rotate(-30 148 44)" fill="#fff" stroke="var(--ink)" stroke-width="4"/>
+        <rect x="24" y="150" width="60" height="32" rx="6" fill="var(--stop)"/>
+        <text x="54" y="173" text-anchor="middle" font-size="16" fill="#fff">잠금</text>
+      </svg>
+    </div>
+    <div class="txt">
+      <span class="tag">4 · Test</span>
+      <h2>내 요리는 내가 먼저 먹어봐요</h2>
+      <p class="kid">로봇은 내놓기 전에 꼭 스스로 맛봐요. 맛보기 숟가락은 <b>바꿀 수 없게</b> 잠가 놨어요. 규칙표를 고치면, 예전에 만든 요리 20개를 <b>다시 만들어 보고</b> 여전히 맛있는지 확인해요.</p>
+      <div class="grown"><b>어른 말로</b> <span>CLAUDE.md 의 Commands 로 검증 명령 명시, 정량 목표(“모든 테스트 통과”, “스크린샷 일치”). 버그 수정 때 <b>테스트 파일 편집 금지 훅</b>. <b>Evals</b>: 최근 작업 20~50건을 “프롬프트+수용 기준” 으로 만들어 CLAUDE.md·스킬·훅이 바뀔 때 CI 에서 재실행. 사고 1건 = eval 1개 추가.</span></div>
+    </div>
+  </article>
+
+  <article class="stage">
+    <div class="pic" aria-hidden="true">
+      <svg viewBox="0 0 200 200">
+        <ellipse cx="100" cy="150" rx="80" ry="16" fill="#fff" stroke="var(--ink)" stroke-width="4"/>
+        <path d="M40 148 a60 60 0 0 1 120 0 z" fill="var(--mint)" stroke="var(--ink)" stroke-width="4"/>
+        <circle cx="100" cy="82" r="7" fill="var(--ink)"/>
+        <g><rect x="130" y="30" width="54" height="54" rx="27" fill="var(--sun)" stroke="var(--ink)" stroke-width="4"/>
+        <path d="M147 40 v22 a10 10 0 0 0 20 0 v-22" fill="none" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><circle cx="157" cy="70" r="5" fill="var(--ink)"/></g>
+      </svg>
+    </div>
+    <div class="txt">
+      <span class="tag">5 · Deploy</span>
+      <h2>서빙 전에 검사원이 세 번 봐요</h2>
+      <p class="kid">접시가 나가기 전에 로봇 검사원이 “탔나? 이물질? 주문대로?” 세 번 봐요. 사람은 “진짜 내보낼까” 만 정해요. 홀로 나가는 문은 <b>매니저 열쇠</b>가 있어야 열려요.</p>
+      <div class="grown"><b>어른 말로</b> <span><code>REVIEW.md</code> 로 3 패스(bugs·security·compliance), Important 기준·nit 상한 5. 에이전트는 <b>승인 못 함</b>(branch protection). 배포 게이트 훅: prod 배포 명령은 <code>RELEASE_APPROVAL</code> 없으면 exit 2. 환경별 자율도 dev 자유 → staging 제한 → prod 승인. 롤백 명령 1줄 미리 검증.</span></div>
+    </div>
+  </article>
+
+  <article class="stage">
+    <div class="pic" aria-hidden="true">
+      <svg viewBox="0 0 200 200">
+        <path d="M30 40 h120 a14 14 0 0 1 14 14 v60 a14 14 0 0 1 -14 14 h-70 l-30 26 v-26 h-20 a14 14 0 0 1 -14 -14 v-60 a14 14 0 0 1 14 -14 z" fill="#fff" stroke="var(--ink)" stroke-width="4"/>
+        <circle cx="70" cy="80" r="6" fill="var(--ink)"/><circle cx="120" cy="80" r="6" fill="var(--ink)"/>
+        <path d="M72 108 q23 -16 46 0" fill="none" stroke="var(--ink)" stroke-width="6" stroke-linecap="round"/>
+        <g stroke="var(--accent)" stroke-width="6" fill="none" stroke-linecap="round"><path d="M150 150 q30 -5 30 -35" /><path d="M172 118 l8 -6 l6 10" /></g>
+        <rect x="118" y="152" width="18" height="18" rx="4" fill="var(--sun)"/><rect x="142" y="140" width="18" height="30" rx="4" fill="var(--sun)"/><rect x="166" y="126" width="18" height="44" rx="4" fill="var(--stop)"/>
+      </svg>
+    </div>
+    <div class="txt">
+      <span class="tag">6 · Maintain</span>
+      <h2>손님 얼굴이 찌푸려지면 종이 울려요</h2>
+      <p class="kid">조금 찌푸리면 메모만, 많이 찌푸리면 로봇이 <b>왜인지 살펴보고</b>, 아주 많이 찌푸리면 <b>새 주문서</b>를 써서 맨 앞 냉장고에 붙여요. 그러면 한 바퀴가 다시 돌아요.</p>
+      <div class="grown"><b>어른 말로</b> <span>결정론적 스크립트가 지표를 감시, 밴드 위반 시 <code>claude -p</code> 호출. 1σ 로그 · 2σ 읽기 전용 진단 · 3σ PR/런북 제안. 진단 결과는 <b>intent.md 형식</b>으로 큐에 들어가 Stage 1 재진입. 정기 코드 스캔(Claude Security), Slack 온콜(Claude Tag)도 여기.</span></div>
+    </div>
+  </article>
+
+</section>
+
+<section class="rings">
+  <svg viewBox="0 0 320 320" role="img" aria-label="네 겹의 안전장치">
+    <circle cx="160" cy="160" r="150" fill="var(--paper-2)" stroke="var(--line)" stroke-width="3"/>
+    <circle cx="160" cy="160" r="112" fill="var(--mint)" opacity=".55"/>
+    <circle cx="160" cy="160" r="76" fill="var(--sun)" opacity=".8"/>
+    <circle cx="160" cy="160" r="40" fill="var(--accent)"/>
+    <text x="160" y="166" text-anchor="middle" font-size="16" fill="var(--accent-ink)">로봇</text>
+    <text x="160" y="72" text-anchor="middle" font-size="15" fill="#1E2A22">규칙표 · 카드북</text>
+    <text x="160" y="36" text-anchor="middle" font-size="15">잠금장치</text>
+    <text x="160" y="300" text-anchor="middle" font-size="15">울타리</text>
+    <text x="160" y="258" text-anchor="middle" font-size="15" fill="#1E2A22">사장님 설정</text>
+  </svg>
+  <div class="txt">
+    <span class="tag">모든 칸에 다 있는 것</span>
+    <h2>안전장치는 네 겹이에요</h2>
+    <ol>
+      <li><i style="background:var(--sun)"></i><div><b>규칙표·카드북</b> — CLAUDE.md, 스킬. “이렇게 해” 라고 <b>말해 주는</b> 것. 권고.</div></li>
+      <li><i style="background:var(--mint)"></i><div><b>잠금장치</b> — hooks. 손을 대면 <b>딸깍 막히는</b> 것. 매번 강제, 로그 남음.</div></li>
+      <li><i style="background:var(--line)"></i><div><b>울타리</b> — sandbox + permissions. 방 밖(파일·네트워크)으로 못 나감. OS 수준.</div></li>
+      <li><i style="background:var(--accent)"></i><div><b>사장님 설정</b> — managed settings. 요리사가 <b>못 바꾸는</b> 규칙. 규제 기업용.</div></li>
+    </ol>
+  </div>
+</section>
+
+<section class="steps">
+  <span class="tag">어느 저장소에서든</span>
+  <h2>내 주방은 어디까지 왔을까</h2>
+  <p>플러그인을 설치한 뒤 저장소에서 <code>/sdlc:doctor</code> 를 실행하면 여섯 칸과 안전장치 네 겹 중 무엇이 있고 무엇이 없는지 ✓ △ ✗ 로 보여 주고, 원문의 채택 순서대로 다음 할 일을 알려 줍니다. 처음 시작은 <code>/sdlc:init</code> 한 번, 그다음은 변경마다 <code>/sdlc:go "요청 한 문장"</code> 한 줄입니다 — 이 여섯 칸을 한 세션에서 이어 돌고, 사람에게는 판단이 필요한 곳에서만 묻습니다.</p>
+  <ol>
+    <li><div><b>냉장고 만들기</b> — git 저장소<span>이게 없으면 "누가·언제·왜" 가 없어요. 모든 단계의 전제.</span></div></li>
+    <li><div><b>규칙표·종이 3장·잠금장치</b> — <code>/sdlc:init</code><span>CLAUDE.md 의 다섯 절, intent/spec/plan 폴더, 훅과 권한이 한 번에 생겨요(있는 파일은 건드리지 않아요). GitHub 주방이면 심부름·열쇠·문 잠금 규칙까지 알아서 붙여요.</span></div></li>
+    <li><div><b>첫 변경</b> — <code>/sdlc:go "요청 한 문장"</code><span>주문서 → 레시피 → 순서표 → 요리 → 맛보기 → 검사 → PR 까지 한 번에. 하나씩 하고 싶으면 <code>/sdlc:intent</code> → <code>/sdlc:spec</code> → <code>/sdlc:plan</code> → <code>/sdlc:verify</code> → <code>/sdlc:review</code>.</span></div></li>
+    <li><div><b>다시 만들어보기와 종</b> — <code>/sdlc:evals</code>, <code>/sdlc:monitor</code><span>규칙표를 바꿀 때마다 예전 요리를 다시 만들어 보고, 손님 얼굴은 스크립트가 지켜봐요.</span></div></li>
+  </ol>
+</section>
+<p class="foot">원문: claude.com/blog/the-ai-native-sdlc-playbook · “루프는 계속 돈다. 사람의 판단은 그 위에 남는다.”</p>
+
+</main>

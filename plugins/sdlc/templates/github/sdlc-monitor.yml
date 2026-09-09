@@ -1,0 +1,44 @@
+# sdlc — Closing the loop (playbook Stage 6): deterministic control-band detection on a schedule.
+# monitor.py observes each metric in .sdlc/bands.json, appends history, applies Western Electric rules and, on a breach,
+# invokes Claude at the tier's autonomy (2σ read-only diagnosis, 3σ propose via PR / pre-approved runbook).
+# Findings arrive as intent/triage/*.md and enter the normal pipeline. Secrets: ANTHROPIC_API_KEY (init.sh --auth api) or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token` (init.sh --auth oauth, subscription billing) (only used ≥2σ).
+name: sdlc monitor
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+# Nothing is pushed to the default branch: observations and triage intents arrive as a pull request (branch protection applies).
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: Install the sdlc plugin (marketplace)
+        run: |
+          claude plugin marketplace add {{marketplace_source}}
+          claude plugin install sdlc@ai-native-sdlc
+          echo "SDLC_PLUGIN=$(ls -d ~/.claude/plugins/cache/ai-native-sdlc/sdlc/*/ | tail -1)" >> "$GITHUB_ENV"
+      - name: Observe, detect, respond by tier
+        env:
+          {{cli_auth_env}}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 "$SDLC_PLUGIN/scripts/monitor.py" --json | tee monitor.json
+      - name: Open a PR with new history points and triage intents (no direct push to the default branch)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: sdlc/monitor-${{ github.run_id }}
+          title: "monitor: observations and triage intents"
+          commit-message: "monitor: observations ${{ github.run_id }}"
+          committer: sdlc-monitor <sdlc-monitor@users.noreply.github.com>
+          author: sdlc-monitor <sdlc-monitor@users.noreply.github.com>
+          body: |
+            Deterministic control-band run. New history points under `.sdlc/history/` and, when a band was breached,
+            a diagnosis as `{{intent_dir}}/triage/*.md` (Stage 1 format). Triage with `/sdlc:triage` — this PR adds records only.
+          add-paths: |
+            .sdlc/history/**
+            {{intent_dir}}/triage/**

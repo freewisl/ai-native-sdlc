@@ -1,0 +1,63 @@
+# sdlc — CI/CD integration, read-only judgment step (playbook Stage 5): triage a failed build without paging a human.
+# Runs after the CI workflow completes with failure, reads the log, and posts a three-line summary on the PR thread.
+# The agent has no write access to the repository here. Secrets: ANTHROPIC_API_KEY (init.sh --auth api) or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token` (init.sh --auth oauth, subscription billing).
+# Non-interactive runs act under their own identity (github-actions[bot] comments, sdlc-* committers in other workflows),
+# so the pipeline log separates what the agent did from what the engineer who triggered it did.
+# Two more read-only judgment steps from the playbook are included below as optional jobs (uncomment to enable):
+# "flaky-check" re-runs the failed job once and compares, "changelog" drafts release notes on a tag push.
+name: Triage failed build
+on:
+  workflow_run:
+    workflows: ["{{ci_workflow_name}}"]
+    types: [completed]
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+jobs:
+  triage:
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the failed run log
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          mkdir -p out
+          gh run view ${{ github.event.workflow_run.id }} --log-failed > out/build.log 2>&1 || gh run view ${{ github.event.workflow_run.id }} --log > out/build.log 2>&1 || true
+          tail -c 200000 out/build.log > out/build.tail.log && mv out/build.tail.log out/build.log
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: Triage failed build
+        env:
+          {{cli_auth_env}}
+        run: >
+          claude -p "Read the build log at out/build.log. Identify the most
+          likely cause, say whether the failure looks flaky or real, and write a
+          three-line summary for the PR thread." --allowedTools "Read" --max-turns 6 >> triage.md
+      - name: Post the summary on the PR
+        if: github.event.workflow_run.pull_requests[0] != null
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+        run: |
+          { echo "**Build triage (sdlc, read-only):** run ${{ github.event.workflow_run.html_url }}"; echo; cat triage.md; } > comment.md
+          gh pr comment ${{ github.event.workflow_run.pull_requests[0].number }} --body-file comment.md
+
+#  flaky-check:
+#    if: github.event.workflow_run.conclusion == 'failure'
+#    runs-on: ubuntu-latest
+#    steps:
+#      - env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+#        run: gh run rerun ${{ github.event.workflow_run.id }} --failed && gh run watch ${{ github.event.workflow_run.id }} --exit-status > rerun.log 2>&1; echo "rerun_rc=$?" >> "$GITHUB_ENV"
+#      - run: npm install -g @anthropic-ai/claude-code
+#      - env: { ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }
+#        run: claude -p "The failed job was re-run once; its second result is in rerun.log (rerun_rc=$rerun_rc). Summarize in three lines whether the failure is flaky (passes on rerun) or real, and name the test." --allowedTools "Read" --max-turns 4 > flaky.md
+#  changelog:
+#    # separate trigger: add `push: tags: ['v*']` to `on:` when enabling
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@v4
+#        with: { fetch-depth: 0 }
+#      - run: npm install -g @anthropic-ai/claude-code
+#      - env: { ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }
+#        run: prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD); claude -p "Draft the changelog for $prev..${{ github.ref_name }} from git log, grouped Added/Changed/Fixed, one line per change, no speculation." --allowedTools "Bash(git log *),Read" --max-turns 6 > CHANGELOG.draft.md
+#      - uses: peter-evans/create-pull-request@v6
+#        with: { branch: "sdlc/changelog-${{ github.ref_name }}", title: "changelog: ${{ github.ref_name }}", add-paths: CHANGELOG.draft.md }

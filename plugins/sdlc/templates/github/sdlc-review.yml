@@ -1,0 +1,60 @@
+# sdlc — AI in the PR review loop (playbook Stage 5).
+# Job 1 reviews every PR with the three passes from REVIEW.md and posts ONE review comment. It never approves:
+# branch protection + CODEOWNERS keep approval with a human. Job 2 lets a reviewer or the author tag @claude on a
+# review comment; Claude addresses it and pushes the fix, so the thread records both request and change.
+# Auth: init.sh --auth api → anthropic_api_key from secret ANTHROPIC_API_KEY (API billing); --auth oauth → claude_code_oauth_token from secret
+# CLAUDE_CODE_OAUTH_TOKEN (a long-lived token from `claude setup-token`, billed to the subscription). Cloud: use_bedrock / use_vertex inputs.
+# Managed alternative: Claude Code Review (admin enables it per repository); then keep only the @claude job.
+name: sdlc review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+jobs:
+  review:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: anthropics/claude-code-action@v1
+        with:
+          {{action_auth_line}}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}  PR: ${{ github.event.pull_request.number }}
+            Read REVIEW.md at the repo root and apply it exactly: run the three passes (Bugs, Security, Compliance),
+            tag every finding with its pass and with Important or Nit, report at most five nits and summarize the rest
+            as a count, and skip the paths REVIEW.md says not to report. For the Compliance pass, find the change's slug
+            in the PR title/body or branch name and check the diff against spec/<slug>.md and plan/<slug>.md (Files that
+            change, Order of work, Proof); say when the diff departs from the plan or when a change made CLAUDE.md outdated.
+            Use `gh pr diff` for the diff and `gh pr comment` to post exactly one review comment ending with a
+            machine-readable line: SDLC_REVIEW_TALLY {"important":N,"nits":N}. Do not approve, request changes, or merge.
+          claude_args: '--allowedTools "Read,Grep,Glob,Bash(gh pr diff *),Bash(gh pr view *),Bash(gh pr comment *),Bash(git diff *),Bash(git log *)" --max-turns 30'
+      # Optional merge gate on the tally (findings never approve; this only blocks on Important counts):
+      #- name: Gate on Important findings
+      #  env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+      #  run: |
+      #    gh pr view ${{ github.event.pull_request.number }} --comments --json comments --jq '.comments[].body' > review-comments.txt
+      #    bash "$SDLC_PLUGIN/scripts/review-gate.sh" review-comments.txt --max-important 0
+  address-comment:
+    if: (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') && contains(github.event.comment.body, '@claude')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: anthropics/claude-code-action@v1
+        with:
+          {{action_auth_line}}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # default trigger phrase is @claude; the comment text is the request. CLAUDE.md conventions apply.
+          claude_args: '--max-turns 40'

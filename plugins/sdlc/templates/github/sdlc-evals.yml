@@ -1,0 +1,55 @@
+# sdlc — Continuous evals in CI (playbook Stage 4).
+# Runs the configuration-regression suite whenever the files that steer the agent change, and nightly.
+# Secrets: ANTHROPIC_API_KEY (init.sh --auth api) or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token` (init.sh --auth oauth, subscription billing). Cloud alternatives: set CLAUDE_CODE_USE_BEDROCK=1 (+AWS creds) or CLAUDE_CODE_USE_VERTEX=1 (+GCP creds)
+# in `env` instead of the API key — see https://code.claude.com/docs/en/third-party-integrations
+# Gate: make this workflow a required status check so a CLAUDE.md/skill/hook change with a lower pass rate cannot merge unreviewed.
+#   A required check must REPORT on every PR, so the job runs on all PRs and finishes green immediately when none of the
+#   configuration paths changed (a `paths:` filter would leave code-only PRs waiting forever for the check).
+# Cadence: to run only on a schedule instead of on pull requests, delete the `pull_request:` block and keep `schedule`.
+# Shape: this is the playbook's agent-evals.yml (PR paths + nightly cron); its inline `for eval in evals/*.json … ./evals/check.sh`
+# loop is replaced by run-evals.sh, which runs directory cases (prompt.md + fixture/ + check.sh) inside a temporary git repo so the
+# plugin's hooks fire during the eval. The original file is kept verbatim in .sdlc/examples/agent-evals.yml.
+name: Agent evals
+on:
+  pull_request:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Did the agent configuration change?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(CLAUDE\.md|REVIEW\.md|\.claude/|\.sdlc/|evals/)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "No agent-configuration change in this PR — evals not needed; reporting success so the required check is satisfied."
+          fi
+      - if: steps.changed.outputs.run == 'true'
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Install the sdlc plugin (marketplace)
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          claude plugin marketplace add {{marketplace_source}}
+          claude plugin install sdlc@ai-native-sdlc
+          echo "SDLC_PLUGIN=$(ls -d ~/.claude/plugins/cache/ai-native-sdlc/sdlc/*/ | tail -1)" >> "$GITHUB_ENV"
+      - name: Run eval suite
+        if: steps.changed.outputs.run == 'true'
+        env:
+          {{cli_auth_env}}
+        run: |
+          bash "$SDLC_PLUGIN/scripts/run-evals.sh" --threshold "${{ vars.SDLC_EVAL_THRESHOLD || '1.0' }}" --plugin-dir "$SDLC_PLUGIN" --json > eval-results.json
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.changed.outputs.run == 'true'
+        with:
+          name: eval-results
+          path: |
+            evals/results/
+            eval-results.json

@@ -1,0 +1,15 @@
+{
+  "_comment": "Example: expose deployment as MCP tools (deploy, status, rollback) scoped per environment, so the agent's deployment powers are an allowlist rather than a shell script with credentials. Replace with your deployment platform's MCP server.",
+  "mcpServers": {
+    "deploy-staging": {
+      "command": "npx",
+      "args": ["-y", "@your-org/deploy-mcp", "--env", "staging"],
+      "env": { "DEPLOY_TOKEN": "${DEPLOY_TOKEN_STAGING}" }
+    },
+    "deploy-production": {
+      "command": "npx",
+      "args": ["-y", "@your-org/deploy-mcp", "--env", "production", "--tools", "status,rollback"],
+      "env": { "DEPLOY_TOKEN": "${DEPLOY_TOKEN_PRODUCTION}" }
+    }
+  }
+}

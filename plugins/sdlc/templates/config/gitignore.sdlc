@@ -1,0 +1,4 @@
+# sdlc plugin — local state and logs (audit copies go to OpenTelemetry / CI artifacts)
+.sdlc/logs/
+.sdlc/state/
+evals/results/

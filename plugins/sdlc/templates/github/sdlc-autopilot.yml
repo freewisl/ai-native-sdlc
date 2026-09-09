@@ -1,0 +1,50 @@
+# sdlc — Autopilot loop, unattended (/sdlc:run --once on a schedule). Solo repositories only: run-loop.sh refuses unless
+# .sdlc/config.json has roles.solo=true AND loop.enabled=true — turning the loop on is a deliberate, committed decision.
+# Each run takes ONE approved intent through /sdlc:go (autopilot, merge on green) in a fresh session; the schedule is the cadence.
+# Caps, the pause file (.sdlc/state/pause) and per-slug blocking are the same as a local /sdlc:run.
+# Token: pull requests and pushes made with the default GITHUB_TOKEN do not trigger other workflows, so the loop's PRs would never
+#   get their review/evals checks. Add the secret SDLC_GH_TOKEN (fine-grained PAT on this repository: Contents and Pull requests
+#   read/write) — the loop uses it when present and falls back to GITHUB_TOKEN (then it leaves PRs open for a human).
+# Secrets: the same CI auth secret as the other sdlc workflows + SDLC_GH_TOKEN.
+name: sdlc autopilot
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: sdlc-autopilot
+  cancel-in-progress: false
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SDLC_GH_TOKEN || github.token }}
+      - run: |
+          git config user.name "sdlc-autopilot"
+          git config user.email "sdlc-autopilot@users.noreply.github.com"
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: Install the sdlc plugin (marketplace)
+        run: |
+          claude plugin marketplace add {{marketplace_source}}
+          claude plugin install sdlc@ai-native-sdlc
+          echo "SDLC_PLUGIN=$(ls -d ~/.claude/plugins/cache/ai-native-sdlc/sdlc/*/ | tail -1)" >> "$GITHUB_ENV"
+      - name: One loop item
+        env:
+          {{cli_auth_env}}
+          GH_TOKEN: ${{ secrets.SDLC_GH_TOKEN || github.token }}
+        run: |
+          bash "$SDLC_PLUGIN/scripts/run-loop.sh" --once --plugin-dir "$SDLC_PLUGIN" --json | tee loop-summary.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdlc-autopilot
+          path: |
+            loop-summary.txt
+            .sdlc/logs/loop-*.log

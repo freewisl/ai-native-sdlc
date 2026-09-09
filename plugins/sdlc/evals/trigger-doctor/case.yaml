@@ -1,0 +1,15 @@
+schema_version: "1.0"
+name: trigger-doctor
+description: Asking how far the repo has adopted the AI-native SDLC should invoke sdlc:doctor.
+tags: [trigger, adoption]
+execution:
+  prompt: "How much of the AI-native SDLC playbook does this repository already have set up, and what should we do next?"
+  max_turns: 6
+  timeout_seconds: 240
+graders:
+  - type: tool_used
+    name: doctor-skill-fired
+    tool: Skill
+    input_match: "sdlc:(doctor|init)"
+    min: 1
+    arm: with-only

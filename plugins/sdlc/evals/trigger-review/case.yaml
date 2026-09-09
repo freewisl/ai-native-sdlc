@@ -1,0 +1,19 @@
+schema_version: "1.0"
+name: trigger-review
+description: A request to review changes should invoke sdlc:review (REVIEW.md three passes).
+tags: [trigger, stage-5]
+execution:
+  prompt: "리뷰해줘 — review my current changes against our review policy before I open the PR."
+  max_turns: 6
+  timeout_seconds: 240
+graders:
+  - type: tool_used
+    name: review-skill-fired
+    tool: Skill
+    input_match: "sdlc:review"
+    min: 1
+    arm: with-only
+  - type: regex
+    name: mentions-passes
+    pattern: "Bugs|Security|Compliance|REVIEW\\.md"
+    mode: contains

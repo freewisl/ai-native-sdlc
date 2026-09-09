@@ -1,0 +1,19 @@
+schema_version: "1.0"
+name: trigger-intent
+description: A product person describes a raw idea; the sdlc:intent skill should be invoked to capture it as intent.md.
+tags: [trigger, stage-1]
+execution:
+  prompt: "Customers keep phoning our contact center to ask where their claim is. I want them to see the status in the portal instead. Help me write this up properly so the product owner can pick it up."
+  max_turns: 6
+  timeout_seconds: 240
+graders:
+  - type: tool_used
+    name: intent-skill-fired
+    tool: Skill
+    input_match: "sdlc:intent"
+    min: 1
+    arm: with-only
+  - type: llm
+    name: asks-analyst-questions-or-drafts-intent
+    criteria: "The response either asks clarifying analyst questions (scope, affected users, constraints, success criteria) or drafts an intent document with sections Problem, Proposed outcome, Affected users and systems, Constraints, Open questions."
+    focus: last_message
