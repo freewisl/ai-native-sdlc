@@ -1,0 +1,44 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>훅 7종</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
+<style>
+body{height:640px}
+.time{display:grid;grid-template-columns:1fr 1.6fr 1.6fr 1fr;gap:14px;margin-top:26px;position:relative}
+.time:before{content:"";position:absolute;left:24px;right:24px;top:30px;height:4px;background:var(--line);border-radius:2px}
+.mo{display:grid;gap:10px;position:relative;align-content:start}
+.mo .dot{width:64px;height:64px;border-radius:50%;background:var(--paper-2);border:3px solid var(--ink);display:grid;place-items:center;justify-self:center;position:relative;z-index:1}
+.mo .dot span{font-family:"Jua",sans-serif;font-size:15px;text-align:center;line-height:1.1}
+.mo h3{text-align:center;font-size:18px}
+.locks{display:grid;gap:8px}
+.lock{background:var(--paper-2);border-radius:14px;padding:10px 12px;display:grid;grid-template-columns:40px 1fr;gap:10px;align-items:center}
+.lock svg{width:40px;height:40px}
+.lock b{font-family:"Jua",sans-serif;font-weight:400;font-size:15px;display:block}
+.lock span{font-size:12.5px;color:var(--soft);line-height:1.3}
+.lock.block{border:2px solid var(--stop)}
+.lock.soft{border:2px solid var(--line)}
+</style></head><body>
+<div style="display:flex;justify-content:space-between;align-items:end">
+  <div><span class="tag">훅 7종 · 플러그인이 자동 등록</span><h1>말해도 안 들으면, 딸깍</h1></div>
+  <p class="soft" style="font-size:15px;max-width:560px;text-align:right">규칙표(CLAUDE.md)는 권고, 훅은 손이 닿는 순간 막는 결정론.<br>막을 때마다 <b>이유</b>와 <b>여는 방법</b>을 말하고 시각을 남깁니다.</p>
+</div>
+<div class="time">
+  <div class="mo"><div class="dot"><span>세션<br>시작</span></div><h3>SessionStart</h3>
+    <div class="locks"><div class="lock soft"><svg viewBox="0 0 40 40"><path d="M8 30 q0 -16 12 -16 q12 0 12 16 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="2.5"/><circle cx="20" cy="33" r="3" fill="var(--ink)"/></svg><div><b>귓속말</b><span>활성 plan · 대기 주문서 건수 · 규칙 3줄 주입</span></div></div></div></div>
+  <div class="mo"><div class="dot"><span>편집</span></div><h3>Edit / Write</h3>
+    <div class="locks">
+      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg><div><b>만지면 안 되는 서랍</b><span>frozen · 생성 코드 · 티켓 필요 경로 편집 차단</span></div></div>
+      <div class="lock block"><svg viewBox="0 0 40 40"><path d="M8 30 l14 -14" stroke="var(--ink)" stroke-width="3.5" stroke-linecap="round"/><ellipse cx="26" cy="12" rx="6" ry="4.5" transform="rotate(-30 26 12)" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><rect x="22" y="24" width="12" height="9" rx="2" fill="var(--stop)"/></svg><div><b>숟가락 잠금</b><span>고치는 동안 테스트 파일 편집 금지 · plan 필수 옵션</span></div></div>
+      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="8" y="8" width="24" height="24" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="15">🔑</text></svg><div><b>열쇠는 주머니에</b><span>비밀번호·토큰이 파일에 들어가면 차단</span></div></div>
+      <div class="lock soft"><svg viewBox="0 0 40 40"><path d="M10 28 l8 -12 l6 6 l6 -10" fill="none" stroke="var(--accent)" stroke-width="3"/></svg><div><b>덤</b><span>편집 직후 포매터 · 파일 린트 자동</span></div></div>
+    </div></div>
+  <div class="mo"><div class="dot"><span>명령</span></div><h3>Bash</h3>
+    <div class="locks">
+      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="7" y="13" width="26" height="18" rx="4" fill="var(--paper)" stroke="var(--ink)" stroke-width="2"/><rect x="14" y="7" width="12" height="10" rx="6" fill="none" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="8">PROD</text></svg><div><b>홀로 나가는 문</b><span>운영 배포 명령은 승인 변수 없이는 차단 · staging 은 확인</span></div></div>
+      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="8" y="12" width="24" height="18" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M8 21 h24" stroke="var(--ink)" stroke-width="2"/><text x="20" y="19" text-anchor="middle" font-size="7">main</text><path d="M15 28 l10 -6 M15 22 l10 6" stroke="var(--stop)" stroke-width="2.5" stroke-linecap="round"/></svg><div><b>정문은 잠겨 있어요</b><span>기본 브랜치 직접 push 차단 — 브랜치 + PR 로만</span></div></div>
+      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="8" y="8" width="24" height="24" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="15">🔑</text></svg><div><b>커밋에도 열쇠 금지</b><span><code>git commit</code> 스테이지 diff 비밀 스캔</span></div></div>
+      <div class="lock soft"><svg viewBox="0 0 40 40"><path d="M10 22 l6 6 l14 -16" fill="none" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round"/></svg><div><b>기록</b><span>verify 명령 결과를 세션 상태에 남김</span></div></div>
+    </div></div>
+  <div class="mo"><div class="dot"><span>끝내려<br>할 때</span></div><h3>Stop</h3>
+    <div class="locks"><div class="lock block"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="14" fill="var(--sun)" stroke="var(--ink)" stroke-width="2.5"/><path d="M20 10 v10 l7 4" fill="none" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/></svg><div><b>"다 했어요" 전에 맛보기</b><span>편집 후 성공한 검증이 없으면 멈춤 (옵션)</span></div></div></div></div>
+</div>
+<div class="legend"><span><i style="background:var(--paper-2);border:2px solid var(--stop)"></i>막을 수 있음 — 차단 메시지: 무엇을 · 왜 · 어떻게 풀지</span><span><i style="background:var(--paper-2);border:2px solid var(--line)"></i>기록·도움만</span><span>· 모든 결정은 <code>.sdlc/logs/events.jsonl</code></span></div>
+</body></html>

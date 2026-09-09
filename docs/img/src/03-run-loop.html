@@ -1,0 +1,57 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>run 루프</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
+<style>
+body{height:640px}
+.grid{display:grid;grid-template-columns:830px 1fr;gap:28px;margin-top:20px;align-items:start}
+.loop{position:relative;height:470px;width:830px}
+.node{position:absolute;width:210px;background:var(--paper-2);border-radius:18px;padding:12px 14px;display:grid;grid-template-columns:52px 1fr;gap:10px;align-items:center}
+.node svg{width:52px;height:52px}
+.node b{font-family:"Jua",sans-serif;font-weight:400;font-size:17px;display:block}
+.node span{font-size:13px;color:var(--soft);line-height:1.3}
+.node.q{left:0;top:160px}
+.node.g{left:300px;top:10px}
+.node.m{left:600px;top:160px}
+.node.c{left:300px;top:340px;width:230px}
+.exit{position:absolute;left:600px;top:355px;background:#E3F1E7;border:2px solid var(--ok);border-radius:18px;padding:12px 14px;width:210px;text-align:center}
+.exit b{font-family:"Jua",sans-serif;font-weight:400;color:var(--ok);font-size:17px;display:block}
+.exit span{font-size:13px;color:var(--soft)}
+.lbl{position:absolute;font-size:13px;color:var(--accent);font-family:"Jua",sans-serif;background:var(--paper);padding:0 4px}
+svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.side{display:grid;gap:12px}
+</style></head><body>
+<div style="display:flex;justify-content:space-between;align-items:end">
+  <div><span class="tag">/sdlc:run · 선택 · 1인 저장소</span><h1>고칠 게 없을 때까지 도는 루프</h1></div>
+  <p class="soft" style="font-size:15px;max-width:520px;text-align:right">승인된 주문서가 입력이고, 사람의 일은 "다음 문장 치기"에서<br>"머지된 PR 목록을 나중에 읽기"로 옮겨갑니다.</p>
+</div>
+<div class="grid">
+  <div class="loop">
+    <svg class="wires" viewBox="0 0 830 470" preserveAspectRatio="none">
+      <defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#2B4FCF"/></marker><marker id="g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#2E8B57"/></marker></defs>
+      <g fill="none" stroke="#2B4FCF" stroke-width="4" marker-end="url(#a)">
+        <path d="M212 190 C 250 150, 260 70, 294 62"/>
+        <path d="M512 62 C 550 70, 570 150, 594 190"/>
+        <path d="M700 262 C 690 320, 610 372, 536 380"/>
+        <path d="M298 410 C 230 410, 130 330, 108 262"/>
+      </g>
+      <path d="M534 430 L 594 430" fill="none" stroke="#2E8B57" stroke-width="4" marker-end="url(#g)"/>
+    </svg>
+    <div class="node q"><svg viewBox="0 0 64 64"><path d="M12 26 h40 l-6 28 h-28 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><rect x="20" y="10" width="14" height="18" rx="2" fill="#fff" stroke="var(--ink)" stroke-width="2"/><rect x="30" y="8" width="14" height="20" rx="2" fill="#fff" stroke="var(--ink)" stroke-width="2"/></svg><div><b>큐</b><span>승인된 intent 중 아직 끝나지 않은 것, 만든 순서로</span></div></div>
+    <div class="node g"><svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="var(--line)" stroke-width="5"/><path d="M32 8 a24 24 0 0 1 24 24" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/><text x="32" y="38" text-anchor="middle" font-size="16">go</text></svg><div><b>새 세션의 go</b><span><code>--autopilot --merge</code> · 항목마다 깨끗한 문맥 · 45분/200턴 상한</span></div></div>
+    <div class="node m"><svg viewBox="0 0 64 64"><path d="M14 32 h22" stroke="var(--ok)" stroke-width="5" stroke-linecap="round"/><path d="M30 20 l12 12 l-12 12" fill="none" stroke="var(--ok)" stroke-width="5" stroke-linecap="round"/><circle cx="48" cy="32" r="7" fill="var(--ok)"/></svg><div><b>머지</b><span>체크 초록 · 리뷰어 Important 0 · 훅 통과일 때만. 아니면 PR 을 열어 두고 사람에게</span></div></div>
+    <div class="node c"><svg viewBox="0 0 64 64"><circle cx="24" cy="26" r="12" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M33 35 l14 14" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><path d="M18 26 l4 4 l8 -8" fill="none" stroke="var(--ok)" stroke-width="3"/></svg><div><b>자기 점검</b><span>머지된 diff 를 리뷰어 + 보안 체크리스트로 다시 봄. <b style="font-size:13px;color:#7A5A00">Important 만</b> 새 intent 로 (PR 경유) → 큐</span></div></div>
+    <div class="lbl" style="left:226px;top:110px">다음 항목</div>
+    <div class="lbl" style="left:540px;top:110px">결과</div>
+    <div class="lbl" style="left:640px;top:318px">큐가 비면 1회</div>
+    <div class="lbl" style="left:150px;top:346px">새 주문서</div>
+    <div class="lbl" style="left:538px;top:404px;color:var(--ok)">Important 없음</div>
+    <div class="exit"><b>끝</b><span>고칠 것 없음</span></div>
+  </div>
+  <div class="side">
+    <div class="stopbox"><b>상한</b><br>한 번에 5건 · 120분 · 연속 실패 3회면 멈춤</div>
+    <div class="stopbox"><b>같은 항목 3회 실패</b><br>차단 목록에 적고 건너뜀 — 네 번째 시도 대신 사람</div>
+    <div class="stopbox"><b>정지 스위치</b><br><code>touch .sdlc/state/pause</code> — 현재 항목이 끝난 뒤 멈춤</div>
+    <div class="human"><b>켜는 것이 결정</b><br><code>loop.enabled: true</code> + <code>roles.solo</code>. 팀 저장소는 거부. 운영 배포는 여전히 사람.</div>
+    <p class="soft" style="font-size:13px">세션 없이: <code>sdlc-autopilot.yml</code> 이 30분마다 1건 (PR 체크를 받으려면 <code>SDLC_GH_TOKEN</code>)</p>
+  </div>
+</div>
+</body></html>

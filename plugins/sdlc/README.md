@@ -121,19 +121,7 @@ OS 별 파일 경로·MDM·서버 관리형 콘솔·sandbox·OTel 은 [docs/ENTE
 /sdlc:go "청구 상태를 포털에서 보이게 해줘"        # 변경마다 한 줄 (1인 저장소: --autopilot --merge)
 ```
 
-```mermaid
-flowchart LR
-  subgraph once["저장소마다 한 번"]
-    I["/sdlc:init"] --> R["CLAUDE.md · intent/spec/plan 폴더 · 훅 권한<br/>CI 워크플로 · GitHub 시크릿·룰셋·auto-merge"]
-  end
-  subgraph each["변경마다 한 줄"]
-    G["/sdlc:go 요청 한 문장"] --> A["intent → spec → plan"] --> B["구현 → 검증 → 리뷰"] --> PR["PR → 체크 초록 → 머지"]
-  end
-  R --> G
-  H(["사람이 답하는 곳: 정책 충돌 · 검증 3회 실패<br/>머지 결정(--merge 없을 때) · 운영 배포 승인"]) -. 그 외는 묻지 않음 .-> B
-  classDef human fill:#fff3cd,stroke:#b8860b,color:#222;
-  class H human;
-```
+<p align="center"><img src="../../docs/img/01-two-commands.png" alt="두 명령이 전부: /sdlc:init 한 번, /sdlc:go 한 줄, 사람이 답하는 곳 넷" width="1000"></p>
 
 **`/sdlc:init`** 은 플래그 없이 저장소를 읽어 결정합니다. GitHub 원격이면 CI 워크플로 7종과 CODEOWNERS 를 설치하고, 협업자가 1명이면 `roles.solo` 를 켜고,
 보관된 구독 토큰이 있으면 CI 인증을 `oauth` 로 잡아 `ci.auth` 에 기록합니다. 이어서 `github-setup.sh` 로 시크릿 등록 · auto-merge 설정 · 기본 브랜치 ruleset(요금제가
@@ -143,30 +131,9 @@ flowchart LR
 **`/sdlc:go`** 는 한 문장 요청으로 intent → spec → plan → 구현 → 검증(최대 3회 재시도) → 리뷰 → PR → 체크 초록까지 한 세션에서 이어 돌립니다. 사람에게 묻는 곳은
 정책 충돌(또는 모순 요구사항) · 검증 3회 실패 · 머지(`--merge` 없을 때) · production 배포뿐이고, 팀 저장소(`roles.solo: false`)는 intent·plan 승인 지점이 남습니다.
 `--autopilot` 은 1인 저장소이고 doctor 의 auto mode 준비도가 ✓ 이며 사용자가 직접 입력했을 때만 plan 정지를 건너뜁니다. 아티팩트·훅·리뷰·브랜치 보호는 그대로이고
-"응" 을 누르는 의식만 없앴습니다. 노란 상자가 사람이 답하는 자리이고, 나머지는 전부 자동입니다.
+"응" 을 누르는 의식만 없앴습니다. 노란 말풍선이 사람이 답할 수 있는 자리이고, 나머지는 전부 자동입니다.
 
-```mermaid
-flowchart TD
-  S(["요청 한 문장"]) --> B0["브랜치 sdlc/slug 생성"] --> I["intent.md 작성·승인 기록"]
-  I --> Q1{"범위·성공 기준이 모호?"}
-  Q1 -- "예: 질문 최대 2개" --> I
-  Q1 -- 아니오 --> SP["spec.md + Flagged concerns"]
-  SP --> Q2{"정책 충돌·모순 요구?"}
-  Q2 -- 예 --> H1(["사람이 결정"]) --> PL
-  Q2 -- 아니오 --> PL["plan.md: 바뀌는 파일·순서·위험·증명"]
-  PL --> Q3{"autopilot?"}
-  Q3 -- "아니오" --> H2(["사람: 계획 승인"]) --> C
-  Q3 -- "예: solo + auto mode 준비 완료" --> C["구현 (테스트 파일 잠금)"]
-  C --> V["검증: build · test · lint"] --> Q4{"통과?"}
-  Q4 -- "아니오 (3회 미만)" --> C
-  Q4 -- "3회 실패" --> H3(["사람이 결정"])
-  Q4 -- 예 --> RV["리뷰 3패스 → Important 수정 → 재검증"] --> PR["PR 생성 → 체크 초록까지 돌봄"]
-  PR --> Q5{"--merge?"}
-  Q5 -- "예 (solo)" --> M(["squash 머지"])
-  Q5 -- 아니오 --> H4(["사람: 머지"])
-  classDef human fill:#fff3cd,stroke:#b8860b,color:#222;
-  class H1,H2,H3,H4 human;
-```
+<p align="center"><img src="../../docs/img/02-go-flow.png" alt="/sdlc:go 흐름: intent → spec → plan → 구현 → 검증 → 리뷰 → PR → 머지, 사람이 답할 수 있는 자리 표시" width="1000"></p>
 
 플러그인을 갱신한 뒤에는 `/reload-plugins`(또는 세션 재시작) 후 `/sdlc:init` 을 다시 실행하면 됩니다. 있는 파일은 건너뛰고 새 설정 키(`ci.auth`, `protect.default_branch`)만
 병합하며, 워크플로의 인증 줄이 `ci.auth` 와 다르면 그 줄만 맞춥니다.
@@ -222,22 +189,7 @@ claude
 사람에게 남는 것은 사후 검토입니다 — 머지된 PR 목록과 `loop.item` 로그. 상한(`max_items` 5 · `max_minutes` 120 · 연속 실패 3회), slug 별 차단, 정지 파일(`touch .sdlc/state/pause`)이
 폭주를 막고, 팀 저장소에서는 스크립트가 거부합니다. 세션 없이 돌리려면 `sdlc-autopilot.yml`(30분마다 1건, `SDLC_GH_TOKEN` 필요)을 켭니다. `/sdlc:run --dry-run` 이 큐와 명령을 먼저 보여 줍니다.
 
-```mermaid
-flowchart LR
-  Q["승인된 intent 큐<br/>(plan 미완료 · 차단 아님 · 열린 PR 없음)"] --> N{"다음 항목?"}
-  N -- 있음 --> G["새 세션: go --autopilot --merge"] --> O{"결과"}
-  O -- 머지됨 --> Q
-  O -- "PR 열림 (체크 미통과)" --> W["사람 확인 대기"] --> Q
-  O -- 실패 --> F["실패 횟수 +1<br/>3회면 slug 차단"] --> Q
-  N -- 없음 --> SC{"이번에 머지된 게 있나?"}
-  SC -- 예 --> R["자기 점검: 리뷰어 + 스캔 체크리스트"] --> IM{"Important 발견?"}
-  IM -- 있음 --> NI["새 intent 작성 → PR → 머지"] --> Q
-  IM -- 없음 --> E(["끝: 고칠 것 없음"])
-  SC -- 아니오 --> E
-  X(["상한: 건수 · 시간 · 연속 실패 3회<br/>정지 파일 .sdlc/state/pause"]) -. 언제든 중단 .-> N
-  classDef stop fill:#fde2e1,stroke:#c0392b,color:#222;
-  class X stop;
-```
+<p align="center"><img src="../../docs/img/03-run-loop.png" alt="/sdlc:run 루프: 큐 → 새 세션의 go → 머지 → 자기 점검 → 새 intent, 상한과 정지 스위치" width="1000"></p>
 
 ## 채택 순서
 
@@ -354,21 +306,7 @@ R-ID 단위의 전수 대응표는 [docs/PLAYBOOK-MAPPING.md](../../docs/PLAYBOO
 
 한 세션에서 훅이 걸리는 자리입니다.
 
-```mermaid
-sequenceDiagram
-  participant C as Claude
-  participant H as sdlc 훅 (플러그인)
-  Note over C,H: SessionStart — 활성 plan · 대기열 건수 · 규칙 3줄을 컨텍스트에 주입
-  C->>H: Edit / Write
-  H-->>C: guard-edit — frozen·generated 경로, 테스트 잠금, plan 필수, 비밀 패턴 → 차단 또는 통과
-  H-->>C: post-edit — 포매터 · 파일 린트 자동 실행
-  C->>H: Bash
-  H-->>C: guard-bash — 배포 티어 게이트, 커밋 diff 비밀, 기본 브랜치 직접 push → 차단 / ask / 통과
-  H-->>C: post-bash — verify 명령 결과 기록
-  C->>H: 세션 종료 시도
-  H-->>C: stop-verify — 편집 후 성공한 검증이 없으면 멈춤 (verify.required_before_stop)
-  Note over C,H: 모든 결정은 .sdlc/logs/events.jsonl 에 시각과 함께 남음
-```
+<p align="center"><img src="../../docs/img/04-hooks.png" alt="훅 7종이 걸리는 자리: 세션 시작, 편집, 명령, 종료" width="1000"></p>
 
 | # | 이벤트 (matcher) | 스크립트 | 하는 일 | 관련 설정 키 | 차단 시 해제 경로 |
 |---|---|---|---|---|---|

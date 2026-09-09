@@ -1,0 +1,23 @@
+:root{--paper:#F3F6EE;--paper-2:#E7EDE0;--ink:#1E2A22;--soft:#5A6A5E;--line:#CBD5C6;--accent:#2B4FCF;--accent-ink:#fff;--sun:#F2BE3C;--mint:#8FCBB0;--stop:#C8452B;--ok:#2E8B57}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink);font-family:"Gowun Dodum","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-size:18px;line-height:1.45}
+body{width:1200px;overflow:hidden;padding:36px 44px}
+h1,h2,h3,.jua{font-family:"Jua","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-weight:400;margin:0;letter-spacing:-.01em}
+h1{font-size:34px;line-height:1.15}
+h2{font-size:24px}
+h3{font-size:20px}
+p{margin:0}
+code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.86em;background:var(--paper-2);padding:1px 7px;border-radius:5px}
+.tag{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.soft{color:var(--soft)}
+.card{background:var(--paper-2);border-radius:18px;padding:16px 18px}
+.human{background:#FFF2C8;border:2px dashed #C9A227;border-radius:14px;padding:10px 14px;font-size:15px}
+.human b{font-family:"Jua",sans-serif;font-weight:400;color:#7A5A00;font-size:16px}
+.stopbox{background:#FBE3E0;border:2px solid var(--stop);border-radius:14px;padding:10px 14px;font-size:15px}
+.stopbox b{font-family:"Jua",sans-serif;font-weight:400;color:var(--stop);font-size:16px}
+svg text{font-family:"Jua","Apple SD Gothic Neo",sans-serif;fill:var(--ink)}
+.icon{width:64px;height:64px;flex:none}
+.arrow{display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:34px;font-family:"Jua",sans-serif}
+.legend{display:flex;gap:18px;align-items:center;font-size:14px;color:var(--soft);margin-top:14px}
+.legend i{display:inline-block;width:18px;height:18px;border-radius:5px;vertical-align:-4px;margin-right:6px}
+.foot{margin-top:18px;font-size:13px;color:var(--soft);text-align:right}

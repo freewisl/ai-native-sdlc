@@ -1,0 +1,60 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>두 명령</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
+<style>
+body{height:600px}
+.row{display:grid;grid-template-columns:400px 60px 1fr;gap:0;align-items:stretch;margin-top:22px}
+.panel{background:var(--paper-2);border-radius:22px;padding:22px 24px;display:grid;gap:14px;align-content:start}
+.panel .head{display:flex;align-items:center;gap:14px}
+.panel .head svg{width:64px;height:64px}
+.items{display:grid;gap:8px;font-size:15px}
+.items div{display:grid;grid-template-columns:26px 1fr;gap:8px;align-items:start}
+.items i{width:26px;height:26px;border-radius:7px;background:var(--sun);display:grid;place-items:center;font-family:"Jua",sans-serif;font-size:14px;color:#1E2A22}
+.chain{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;align-items:start}
+.step{display:grid;justify-items:center;gap:6px;text-align:center;font-size:14px;line-height:1.25}
+.step svg{width:58px;height:58px}
+.step small{color:var(--soft);font-size:12px}
+.chain-wrap{position:relative;padding-top:10px}
+.chain-wrap:before{content:"";position:absolute;left:30px;right:30px;top:38px;height:4px;background:var(--line);border-radius:2px}
+.step svg{position:relative;background:var(--paper-2);border-radius:50%}
+</style></head><body>
+<div style="display:flex;justify-content:space-between;align-items:end">
+  <div><span class="tag">sdlc 플러그인 · 쓰는 법</span><h1>두 명령이 전부입니다</h1></div>
+  <p class="soft" style="font-size:15px;max-width:520px;text-align:right">그 밑에서 스킬 19종·훅 7종·에이전트 5종이 알아서 돌고,<br>사람은 판단이 필요한 곳에서만 답합니다.</p>
+</div>
+<div class="row">
+  <div class="panel">
+    <div class="head">
+      <svg viewBox="0 0 64 64"><rect x="8" y="26" width="48" height="28" rx="6" fill="var(--accent)" stroke="var(--ink)" stroke-width="3"/><path d="M10 26 l6 -12 h32 l6 12z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><text x="32" y="46" text-anchor="middle" font-size="12" fill="#fff">1회</text></svg>
+      <div><div class="tag">저장소마다 한 번</div><h2><code style="font-size:.9em">/sdlc:init</code></h2></div>
+    </div>
+    <p style="font-size:15px">저장소를 읽고 알아서 결정해서 차립니다. 플래그 없이.</p>
+    <div class="items">
+      <div><i>규</i><span><b>CLAUDE.md</b> 5섹션 — 있는 글은 그대로, 빈 절만 추가</span></div>
+      <div><i>종</i><span><b>intent / spec / plan</b> 폴더와 템플릿, 리뷰 규칙 REVIEW.md</span></div>
+      <div><i>잠</i><span><b>훅 7종</b>이 쓸 권한 병합 — 훅 자체는 플러그인이 제공</span></div>
+      <div><i>C</i><span>GitHub 원격이면 <b>워크플로 7종</b> + 시크릿·룰셋·auto-merge 설정</span></div>
+      <div><i>1</i><span>협업자 1명이면 <b>solo</b>, 보관된 구독 토큰이 있으면 <b>oauth</b></span></div>
+    </div>
+    <p class="soft" style="font-size:13px">사람 몫: 계정당 한 번의 GitHub 로그인·토큰 발급(브라우저)</p>
+  </div>
+  <div class="arrow">→</div>
+  <div class="panel">
+    <div class="head">
+      <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="var(--line)" stroke-width="5"/><path d="M32 8 a24 24 0 0 1 24 24" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/><path d="M52 26 l4 6 l6 -4" fill="none" stroke="var(--accent)" stroke-width="4"/><text x="32" y="38" text-anchor="middle" font-size="16">go</text></svg>
+      <div><div class="tag">변경마다 한 줄</div><h2><code style="font-size:.9em">/sdlc:go "요청 한 문장"</code></h2></div>
+    </div>
+    <div class="chain-wrap"><div class="chain">
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="14" y="8" width="36" height="48" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="3"/><circle cx="32" cy="8" r="4" fill="var(--stop)"/><g stroke="var(--ink)" stroke-width="3" stroke-linecap="round"><line x1="22" y1="24" x2="42" y2="24"/><line x1="22" y1="34" x2="38" y2="34"/><line x1="22" y1="44" x2="42" y2="44"/></g></svg><b>intent</b><small>주문서</small></div>
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="8" y="14" width="48" height="36" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><rect x="8" y="14" width="48" height="10" rx="6" fill="var(--mint)"/><g stroke="var(--ink)" stroke-width="3"><line x1="16" y1="34" x2="48" y2="34"/><line x1="16" y1="42" x2="40" y2="42"/></g></svg><b>spec</b><small>레시피</small></div>
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="10" y="12" width="44" height="40" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g font-size="11"><text x="16" y="26">1.</text><text x="16" y="38">2.</text><text x="16" y="50">3.</text></g><g stroke="var(--ink)" stroke-width="3"><line x1="28" y1="23" x2="48" y2="23"/><line x1="28" y1="35" x2="48" y2="35"/><line x1="28" y1="47" x2="42" y2="47"/></g></svg><b>plan</b><small>순서표</small></div>
+      <div class="step"><svg viewBox="0 0 64 64"><path d="M14 40 q0 -18 18 -18 q18 0 18 18 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><rect x="10" y="40" width="44" height="8" rx="3" fill="var(--ink)"/><path d="M26 22 q6 -10 12 0" fill="none" stroke="var(--ink)" stroke-width="3"/></svg><b>구현</b><small>요리</small></div>
+      <div class="step"><svg viewBox="0 0 64 64"><path d="M14 46 l26 -26" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><ellipse cx="44" cy="18" rx="10" ry="7" transform="rotate(-30 44 18)" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/></svg><b>검증</b><small>맛보기</small></div>
+      <div class="step"><svg viewBox="0 0 64 64"><circle cx="24" cy="26" r="12" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M33 35 l14 14" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><path d="M18 26 l4 4 l8 -8" fill="none" stroke="var(--ok)" stroke-width="3"/></svg><b>리뷰</b><small>검사</small></div>
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="10" y="14" width="44" height="36" rx="8" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g stroke="var(--ink)" stroke-width="3"><line x1="20" y1="26" x2="44" y2="26"/><line x1="20" y1="36" x2="36" y2="36"/></g><circle cx="44" cy="42" r="8" fill="var(--ok)"/><path d="M40 42 l3 3 l6 -6" fill="none" stroke="#fff" stroke-width="3"/></svg><b>PR</b><small>서빙 준비</small></div>
+    </div></div>
+    <div class="human"><b>사람이 답하는 곳은 넷</b><br>규칙이 서로 부딛힐 때 · 검증이 3번 실패했을 때 · 머지 결정(<code>--merge</code> 없을 때) · 운영 배포 승인. 나머지는 묻지 않습니다.</div>
+    <p class="soft" style="font-size:14px">선택: <code>/sdlc:run</code> — 승인된 주문서가 쌓여 있으면 한 장씩 위 과정을 돌고, 끝나면 자기 요리를 다시 검사해 고칠 게 없을 때까지 반복(1인 저장소, 스위치를 켠 경우만).</p>
+  </div>
+</div>
+<p class="foot">github.com/freewisl/ai-native-sdlc · Anthropic “The AI-native SDLC playbook” 구현</p>
+</body></html>
