@@ -1,0 +1,55 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>구성</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
+<style>
+body{height:900px}
+.cols{display:grid;grid-template-columns:1fr 54px 1fr 54px 1fr;gap:0;margin-top:22px;align-items:stretch}
+.col{background:var(--paper-2);border-radius:22px;padding:18px 18px 14px;display:grid;gap:10px;align-content:start}
+.col .head{display:grid;gap:2px;margin-bottom:4px}
+.col .head small{font-size:12.5px;color:var(--soft)}
+.box{background:#fff;border-radius:14px;padding:10px 12px;display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:center;border:2px solid transparent}
+.box svg{width:34px;height:34px}
+.box b{font-family:"Jua",sans-serif;font-weight:400;font-size:15.5px;display:block}
+.box span{font-size:12.5px;color:var(--soft);line-height:1.3}
+.box.advise{border-color:var(--mint)}
+.box.force{border-color:var(--stop)}
+.box.core{border-color:var(--accent)}
+.gap{display:grid;align-content:center;justify-items:center;gap:6px;color:var(--accent)}
+.gap .ar{font-family:"Jua",sans-serif;font-size:30px;line-height:1}
+.gap small{font-size:11.5px;color:var(--soft);text-align:center;line-height:1.25;writing-mode:vertical-rl;text-orientation:upright;letter-spacing:-.05em}
+.band{margin-top:14px;background:#E6EAF9;border:2px solid var(--accent);border-radius:16px;padding:10px 16px;display:flex;gap:16px;align-items:center;font-size:14px}
+.band b{font-family:"Jua",sans-serif;font-weight:400;color:var(--accent);font-size:16px;white-space:nowrap}
+.band span{color:var(--soft)}
+</style></head><body>
+<div style="display:flex;justify-content:space-between;align-items:end">
+  <div><span class="tag">구성 · 세 층</span><h1>어디에 무엇이 있고, 무엇이 무엇을 읽는가</h1></div>
+  <p class="soft" style="font-size:15px;max-width:560px;text-align:right">플러그인은 기기에, 설정과 아티팩트는 프로젝트 저장소에,<br>게이트의 마지막 줄은 GitHub 에 있습니다.</p>
+</div>
+<div class="cols">
+  <div class="col">
+    <div class="head"><h3>Claude Code · 개발자 기기</h3><small>플러그인 <code>sdlc@ai-native-sdlc</code> — 마켓플레이스에서 설치, 모든 프로젝트에 공통</small></div>
+    <div class="box advise"><svg viewBox="0 0 40 40"><rect x="8" y="6" width="24" height="28" rx="4" fill="var(--mint)" stroke="var(--ink)" stroke-width="2"/><path d="M14 16 h12 M14 22 h12 M14 28 h8" stroke="var(--ink)" stroke-width="2"/></svg><div><b>스킬 19 — 권고</b><span>init · go · run 과 단계 스킬(intent…release). 절차와 말을 정함</span></div></div>
+    <div class="box advise"><svg viewBox="0 0 40 40"><circle cx="20" cy="15" r="8" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><path d="M8 36 q12 -14 24 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="2"/></svg><div><b>에이전트 5 — 새 문맥</b><span>verifier · reviewer · diagnoser · researcher · simplifier. 보고만, 승인 없음</span></div></div>
+    <div class="box force"><svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg><div><b>훅 7 — 결정론 강제</b><span>Edit · Bash · Stop 을 가로채 막거나 기록. 세션마다 자동</span></div></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="8" width="28" height="24" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M11 15 l5 4 l-5 4 M18 23 h10" stroke="var(--ink)" stroke-width="2" fill="none"/></svg><div><b>스크립트</b><span>init · doctor · github-setup · run-loop · run-evals · monitor · metrics</span></div></div>
+  </div>
+  <div class="gap"><div class="ar">→</div><small>설정을 읽고 아티팩트·코드를 쓴다</small></div>
+  <div class="col">
+    <div class="head"><h3>프로젝트 저장소</h3><small><code>/sdlc:init</code> 이 만든 것 — 전부 git 에 커밋, 프로젝트별 값은 여기만</small></div>
+    <div class="box core"><svg viewBox="0 0 40 40"><rect x="8" y="6" width="24" height="28" rx="4" fill="#fff" stroke="var(--accent)" stroke-width="2.5"/><text x="20" y="25" text-anchor="middle" font-size="9" fill="var(--accent)">{ }</text></svg><div><b>.sdlc/config.json — 유일한 설정</b><span>명령 · 보호 경로 · 환경 티어 · roles · ci.auth · loop. 훅·스킬·스크립트가 모두 이것을 읽음</span></div></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="8" width="28" height="24" rx="3" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M11 15 h18 M11 21 h18 M11 27 h10" stroke="var(--ink)" stroke-width="2"/></svg><div><b>CLAUDE.md · REVIEW.md · APPROVALS.md</b><span>규칙표 5섹션 · 리뷰 3패스 규칙 · 승인 게이트 등록부</span></div></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="10" width="12" height="16" rx="2" fill="var(--sun)" stroke="var(--ink)" stroke-width="1.5"/><rect x="14" y="13" width="12" height="16" rx="2" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="22" y="16" width="12" height="16" rx="2" fill="#fff" stroke="var(--ink)" stroke-width="1.5"/></svg><div><b>intent/ · spec/ · plan/</b><span>아티팩트 체인 = 감사 추적(누가 무엇을 요청·승인했나). <code>intent/triage/</code> 는 대기열</span></div></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="7" y="20" width="7" height="12" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="16" y="12" width="7" height="20" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="25" y="16" width="7" height="16" fill="var(--stop)" stroke="var(--ink)" stroke-width="1.5"/></svg><div><b>evals/ · bands.json · LESSONS.md</b><span>설정 회귀 테스트 · 감시 밴드 · 교훈 노트</span></div></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="7" y="8" width="26" height="24" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M12 20 l5 5 l11 -11" fill="none" stroke="var(--ok)" stroke-width="2.5"/></svg><div><b>.claude/settings.json · .github/workflows/</b><span>안전한 명령의 사전 허용(훅은 넣지 않음) · sdlc-*.yml 7종</span></div></div>
+  </div>
+  <div class="gap"><div class="ar">→</div><small>브랜치 push · PR · 체크</small></div>
+  <div class="col">
+    <div class="head"><h3>GitHub</h3><small>기본 브랜치로 가는 유일한 길은 PR — 훅과 룰셋이 양쪽에서 지킴</small></div>
+    <div class="box force"><svg viewBox="0 0 40 40"><circle cx="12" cy="10" r="4" fill="var(--ink)"/><circle cx="12" cy="30" r="4" fill="var(--ink)"/><circle cx="28" cy="20" r="4" fill="var(--ok)"/><path d="M12 14 v12 M12 14 q0 6 16 6" fill="none" stroke="var(--ink)" stroke-width="2"/></svg><div><b>브랜치 sdlc/&lt;slug&gt; → PR → 머지</b><span>룰셋: PR 필수 · 필수 체크 <code>evals</code> · force-push 금지 · auto-merge 허용</span></div></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="8" width="28" height="24" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><circle cx="14" cy="20" r="3" fill="var(--ok)"/><circle cx="20" cy="20" r="3" fill="var(--sun)"/><circle cx="26" cy="20" r="3" fill="var(--accent)"/></svg><div><b>Actions 7</b><span>review · evals · spec-on-intent · ci-triage · monitor · scan · autopilot — 러너가 같은 플러그인을 설치해 실행</span></div></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="8" y="8" width="24" height="24" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="15">🔑</text></svg><div><b>시크릿</b><span>CI 인증 토큰(<code>ci.auth</code> 가 정한 이름) · 무인 루프용 <code>SDLC_GH_TOKEN</code></span></div></div>
+    <div class="box advise"><svg viewBox="0 0 40 40"><circle cx="14" cy="16" r="7" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M19 21 l9 9" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/></svg><div><b>리뷰 코멘트 · 체크 결과</b><span>go 가 초록이 될 때까지 되돌아와 처리. PR 승인은 사람(코드 오너)만</span></div></div>
+  </div>
+</div>
+<div class="band"><b>관리형 설정 · 기업 · 선택</b><span><code>allowManagedHooksOnly</code> · <code>strictKnownMarketplaces</code> · sandbox — 개인이 끌 수 없는 층. 파일 위치·MDM·관리자 콘솔은 docs/ENTERPRISE.md</span></div>
+<div class="legend"><span><i style="background:#fff;border:2px solid var(--mint)"></i>권고(스킬·에이전트)</span><span><i style="background:#fff;border:2px solid var(--stop)"></i>강제(훅·룰셋)</span><span><i style="background:#E6EAF9;border:2px solid var(--accent)"></i>우회 불가(관리형) · 단일 설정</span><span>· 마켓플레이스: github.com/freewisl/ai-native-sdlc</span></div>
+</body></html>

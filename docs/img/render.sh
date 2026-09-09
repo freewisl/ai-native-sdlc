@@ -14,3 +14,4 @@ render 01-two-commands 600
 render 02-go-flow 640
 render 03-run-loop 640
 render 04-hooks 640
+render 05-architecture 900

@@ -3,6 +3,15 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.5] - 2026-09-09
+
+### Added
+- Architecture picture (`docs/img/05-architecture.png`): device → repository → GitHub, the three layers (advisory skills/agents, enforcing hooks/rulesets, managed settings) and the single config file everything reads.
+- The repository is public and GitHub Pages serves `docs/`; both READMEs link the rendered ELI5 pages.
+
+### Fixed
+- PLAYBOOK-MAPPING still said 18 skills / 6 CI templates in three rows.
+
 ## [0.4.4] - 2026-09-09
 
 ### Changed

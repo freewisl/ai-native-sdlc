@@ -4,7 +4,7 @@
 원문을 검증 가능한 문장 단위로 쪼갠 349개 요구사항(R-ID)에 대해, **구현 파일을 직접 열어** 근거를 확인한 결과입니다.
 동작을 요구하는 행은 그 동작을 담은 파일만 근거로 인정합니다 — 훅·스크립트는 코드가, 스킬은 SKILL.md 의 단계가, 템플릿은 템플릿 본문이, CI 는 워크플로 파일이 실제로 담고 있어야 COVERED 입니다.
 원문이 설명·안내를 요구하는 행(전환표의 두 열, 플레이별 전제, 채택 순서, 외부 참조)은 그 서술이 사용자에게 배포되는 문서에 있어야 COVERED 이므로 `README.md`·SKILL.md 본문을 근거로 적었습니다.
-판정은 2차 감사(수정 반영 후) 기준이며, 이후 최종 검토(`_workspace/08_final_review.md`)의 반영분은 근거란의 괄호 주석으로 덧붙였습니다. 실행 검증(0.4.1): `bash plugins/sdlc/tests/run.sh` — 훅 206건 · 스크립트 163건 · `monitor.py --selftest` 7건 전부 통과, `claude plugin validate --strict` 는 플러그인·마켓플레이스 양쪽 통과.
+판정은 2차 감사(수정 반영 후) 기준이며, 이후 최종 검토(`_workspace/08_final_review.md`)의 반영분은 근거란의 괄호 주석으로 덧붙였습니다. 실행 검증(0.4.5): `bash plugins/sdlc/tests/run.sh` — 훅 206건 · 스크립트 163건 · `monitor.py --selftest` 7건 전부 통과, `claude plugin validate --strict` 는 플러그인·마켓플레이스 양쪽 통과.
 사용 형태는 `/sdlc:init` 한 번 + 변경마다 `/sdlc:go` 한 줄이며, `go` 는 아래 표의 단계 스킬(intent·spec·plan·verify·review)을 같은 순서로 부르므로 각 행의 근거는 `go` 경로에도 그대로 적용됩니다.
 
 ## 판정 기준
@@ -60,8 +60,8 @@
 | R-H.ART.4 | 커밋 체인 = 감사 추적 | COVERED | README.md:323-327 "승인 = 커밋", artifact-conventions.md §6, docs/ENTERPRISE.md §7 |
 | R-H.ART.5 | 게이트마다 사람 승인자 | COVERED | README.md:144-162 스킬 표의 "승인자" 열 |
 | R-H.ART.6 | 트리거 맵(intent 수락→spec, spec 승인→plan, PR 머지→파이프라인, 밴드 위반→intent) | COVERED | README.md:313-321 상태 전이, templates/github/sdlc-spec-on-intent.yml, scripts/monitor.py `write_triage_intent` |
-| R-H.ART.7 | 수동 명령 + 자동화 템플릿 | COVERED | 스킬 18종(수동; `go` 는 한 세션에서 체인 전체를 이어 실행), CI 템플릿 6종(자동). spec→plan 전이는 플랜 모드가 대화형이라 수동만 제공 |
-| R-H.ART.8 | 플레이 문서 구조(What changes·Getting started·Steps·Governance·Measure) | COVERED | 스킬 18종 전부 `## What changes`(Traditional/AI-native)·`Prerequisites:`·`Infrastructure:` 보유(hooks 플레이는 `skills/release` What changes + `README.md` 훅 7종 절 첫 단락) |
+| R-H.ART.7 | 수동 명령 + 자동화 템플릿 | COVERED | 스킬 19종(수동; `go` 는 한 세션에서 체인 전체를 이어 실행, `run` 은 큐를 반복), CI 템플릿 7종(자동). spec→plan 전이는 플랜 모드가 대화형이라 수동만 제공 |
+| R-H.ART.8 | 플레이 문서 구조(What changes·Getting started·Steps·Governance·Measure) | COVERED | 스킬 19종 전부 `## What changes`(Traditional/AI-native)·`Prerequisites:`·`Infrastructure:` 보유(hooks 플레이는 `skills/release` What changes + `README.md` 훅 7종 절 첫 단락) |
 | R-H.ART.9 | 플레이마다 Prerequisites 줄 | COVERED | `Prerequisites:` 줄이 스킬 14종에 있음 — intent:17 spec:19 plan:18 verify:18 evals:14 review:19 release:19 monitor:21 scan:21 postmortem:18 triage:17 policy:12 init:15. 원문 각 플레이의 문장을 그대로 인용 |
 | R-H.ART.10 | 6단계로 조직 | COVERED | README.md:115-136 플레이 대응표, README.md:144-162 스킬 표의 단계 열 |
 
@@ -403,7 +403,7 @@
 
 | R-ID | 요구 | 판정 | 구성요소 / 근거 |
 |---|---|---|---|
-| R-5.3.1 | 비대화형·샌드박스·MCP 배포·롤백 리허설 | COVERED | README.md:132,353, release:60-61, 템플릿 6종 |
+| R-5.3.1 | 비대화형·샌드박스·MCP 배포·롤백 리허설 | COVERED | README.md:132,353, release:60-61, 템플릿 7종 |
 | R-5.3.2 | 전통 vs AI-native | COVERED | skills/release/SKILL.md:10-12 What changes — 전통 열 "파이프라인은 결정론적 스크립트를 돌리고 판단이 필요한 것은 사람을 기다린다 … 배포와 롤백은 사람이 압박 속에 따르는 런북" |
 | R-5.3.3 | 전제 | COVERED | release:11-12 |
 | R-5.3.4 | 인프라 4항목 | COVERED | README.md:341-353, mcp.deploy.example.json, release:61 |
