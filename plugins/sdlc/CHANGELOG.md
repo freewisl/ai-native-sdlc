@@ -3,6 +3,11 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.3] - 2026-09-09
+
+### Added
+- README diagrams (Mermaid, rendered by GitHub): the two-command overview, the `/sdlc:go` flow with the human decision points highlighted, the `/sdlc:run` loop, and where each hook fires in a session.
+
 ## [0.4.2] - 2026-09-09
 
 ### Changed

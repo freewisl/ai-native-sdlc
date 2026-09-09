@@ -8,6 +8,20 @@ Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blo
 
 쓰는 쪽에서 보이는 것은 두 명령입니다. 저장소마다 `/sdlc:init` 한 번, 변경마다 `/sdlc:go "요청 한 문장"` 한 줄. 훅 가드레일·AI 리뷰·evals·배포 게이트는 그 밑에서 플레이북대로 자동으로 걸립니다.
 
+```mermaid
+flowchart LR
+  subgraph once["저장소마다 한 번"]
+    I["/sdlc:init"] --> R["CLAUDE.md · intent/spec/plan 폴더 · 훅 권한<br/>CI 워크플로 · GitHub 시크릿·룰셋·auto-merge"]
+  end
+  subgraph each["변경마다 한 줄"]
+    G["/sdlc:go 요청 한 문장"] --> A["intent → spec → plan"] --> B["구현 → 검증 → 리뷰"] --> PR["PR → 체크 초록 → 머지"]
+  end
+  R --> G
+  H(["사람이 답하는 곳: 정책 충돌 · 검증 3회 실패<br/>머지 결정(--merge 없을 때) · 운영 배포 승인"]) -. 그 외는 묻지 않음 .-> B
+  classDef human fill:#fff3cd,stroke:#b8860b,color:#222;
+  class H human;
+```
+
 이 마켓플레이스에는 플러그인이 하나 있습니다.
 
 | 플러그인 | 설명 | 설명서 |
