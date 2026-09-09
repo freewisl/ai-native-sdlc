@@ -3,6 +3,11 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.6] - 2026-09-09
+
+### Added
+- Archify architecture diagram (`docs/img/archify/sdlc-architecture.json` → `docs/archify-architecture.html`, showcase validation 9/9, browser evidence pass): interactive on GitHub Pages, PNG in both READMEs alongside the hand-drawn picture; `docs/img/README.md` documents how to regenerate every picture.
+
 ## [0.4.5] - 2026-09-09
 
 ### Added

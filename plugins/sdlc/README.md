@@ -220,6 +220,8 @@ claude
 
 ## 플레이북 플레이 → 플러그인 구성요소 대응표
 
+<p align="center"><a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html"><img src="../../docs/img/06-archify-architecture.png" alt="Archify 구성도: 개발자 → 스킬 19 → 작업 브랜치(코드·아티팩트) → Pull Request → Actions 7; 훅 7과 관리형 설정이 강제 층, .sdlc/config.json 이 유일한 설정" width="1000"></a><br><sub>Archify 로 그린 구성도 — <a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html">클릭하면 확대·검색·경로 추적이 되는 인터랙티브 판</a> (뷰어 UI 는 영어)</sub></p>
+
 <p align="center"><img src="../../docs/img/05-architecture.png" alt="구성: 개발자 기기의 플러그인(스킬 19·에이전트 5·훅 7·스크립트) → 프로젝트 저장소(config.json 단일 설정·CLAUDE.md·아티팩트 체인·워크플로) → GitHub(PR·룰셋·Actions 7·시크릿), 아래 관리형 설정 층" width="1000"></p>
 
 유형: **S** 스킬 · **H** 훅 · **X** 스크립트 · **T** 템플릿 · **A** 에이전트 · **D** 문서. "호스팅 제품"은 Anthropic 이 운영하는 서비스라 플러그인이 구현하지 않고 절차만 안내합니다.

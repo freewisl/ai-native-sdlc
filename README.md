@@ -10,6 +10,8 @@ Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blo
 
 <p align="center"><img src="docs/img/01-two-commands.png" alt="두 명령이 전부: /sdlc:init 한 번, /sdlc:go 한 줄, 사람이 답하는 곳 넷" width="1000"></p>
 
+<p align="center"><a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html"><img src="docs/img/06-archify-architecture.png" alt="Archify 구성도: 개발자 → 스킬 19 → 작업 브랜치(코드·아티팩트) → Pull Request → Actions 7; 훅 7과 관리형 설정이 강제 층, .sdlc/config.json 이 유일한 설정" width="1000"></a><br><sub>Archify 로 그린 구성도 — <a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html">클릭하면 확대·검색·경로 추적이 되는 인터랙티브 판</a> (뷰어 UI 는 영어)</sub></p>
+
 <p align="center"><img src="docs/img/05-architecture.png" alt="구성: 개발자 기기의 플러그인(스킬 19·에이전트 5·훅 7·스크립트) → 프로젝트 저장소(config.json 단일 설정·CLAUDE.md·아티팩트 체인·워크플로) → GitHub(PR·룰셋·Actions 7·시크릿), 아래 관리형 설정 층" width="1000"></p>
 
 이 마켓플레이스에는 플러그인이 하나 있습니다.
@@ -60,7 +62,8 @@ claude plugin validate . --strict          # 마켓플레이스(.claude-plugin/m
 | [docs/PLAYBOOK-MAPPING.md](docs/PLAYBOOK-MAPPING.md) | 블로그 요구사항(R-ID) → 플러그인 구성요소 대응표(감사 산출물) |
 | [그림으로 보는 플레이북 6단계](https://freewisl.github.io/ai-native-sdlc/eli5.html) | 다섯 살 버전 설명 — GitHub Pages 로 렌더링(원본 `docs/eli5.html`) |
 | [그림으로 보는 이 플러그인](https://freewisl.github.io/ai-native-sdlc/eli5-plugin.html) | 상자를 열면 무엇이 생기고 두 마디로 어떻게 쓰는지(원본 `docs/eli5-plugin.html`) |
-| [docs/img/](docs/img/) | README 그림 5장(PNG)과 원본 HTML(`src/`) — 고치면 `bash docs/img/render.sh` 로 다시 뽑음 |
+| [인터랙티브 구성도 (Archify)](https://freewisl.github.io/ai-native-sdlc/archify-architecture.html) | 확대·검색·경로 추적이 되는 구성도. 원본 `docs/img/archify/sdlc-architecture.json`, 산출 `docs/archify-architecture.html` |
+| [docs/img/](docs/img/) | README 그림 6장(PNG)과 원본(`src/*.html`, `archify/*.json`) — 다시 뽑는 법은 `docs/img/README.md` |
 | [plugins/sdlc/CHANGELOG.md](plugins/sdlc/CHANGELOG.md) | 변경 이력 |
 
 ## 저장소 구성
@@ -68,7 +71,7 @@ claude plugin validate . --strict          # 마켓플레이스(.claude-plugin/m
 ```
 .claude-plugin/marketplace.json   마켓플레이스 매니페스트 (name: ai-native-sdlc)
 plugins/sdlc/                     플러그인 루트 — skills/ agents/ hooks/ scripts/ templates/ evals/ tests/
-docs/                             ENTERPRISE.md · PLAYBOOK-MAPPING.md · eli5.html · eli5-plugin.html (GitHub Pages) · img/ (README 그림 + render.sh)
+docs/                             ENTERPRISE.md · PLAYBOOK-MAPPING.md · eli5*.html · archify-architecture.html (GitHub Pages) · img/ (README 그림 원본)
 _workspace/                       요구사항 매트릭스·설계서·감사 보고·최종 검토와 반영 기록(작업 문서)
 ```
 

@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "sdlc 플러그인 구성 — 기기 · 저장소 · GitHub",
+    "output": "archify-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "two-commands",
+        "label": "두 명령의 경로",
+        "focus": [
+          "dev",
+          "skills",
+          "branch",
+          "artifacts",
+          "github"
+        ],
+        "note": "/sdlc:init 한 번, /sdlc:go 한 줄이 작업 브랜치의 아티팩트와 코드를 거쳐 PR 로 도착하는 길."
+      },
+      {
+        "id": "enforcement",
+        "label": "강제 층",
+        "focus": [
+          "managed",
+          "hooks",
+          "branch",
+          "config"
+        ],
+        "note": "훅은 편집·명령을 가로채고, 관리형 설정은 훅을 끌 수 없게 고정한다."
+      },
+      {
+        "id": "automation",
+        "label": "GitHub 자동화",
+        "focus": [
+          "branch",
+          "github",
+          "actions"
+        ],
+        "note": "PR 이벤트가 워크플로 7종을 깨우고 결과는 체크·리뷰 코멘트로 돌아온다."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "dev",
+      "type": "external",
+      "label": "개발자",
+      "sublabel": "/sdlc:init · go · run",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        176,
+        64
+      ]
+    },
+    {
+      "id": "managed",
+      "type": "security",
+      "label": "관리형 설정",
+      "sublabel": "기업 · 선택 · 우회 불가",
+      "pos": [
+        40,
+        440
+      ],
+      "size": [
+        176,
+        64
+      ],
+      "tag": "IT 관리자 배포"
+    },
+    {
+      "id": "agents",
+      "type": "backend",
+      "label": "에이전트 5",
+      "sublabel": "새 문맥의 검증·리뷰·진단",
+      "pos": [
+        360,
+        160
+      ],
+      "size": [
+        176,
+        64
+      ]
+    },
+    {
+      "id": "skills",
+      "type": "frontend",
+      "label": "스킬 19",
+      "sublabel": "권고 — 절차와 정지 지점",
+      "pos": [
+        360,
+        300
+      ],
+      "size": [
+        176,
+        64
+      ],
+      "tag": "init · go · run"
+    },
+    {
+      "id": "hooks",
+      "type": "security",
+      "label": "훅 7",
+      "sublabel": "결정론 — Edit · Bash · Stop",
+      "pos": [
+        360,
+        440
+      ],
+      "size": [
+        176,
+        64
+      ]
+    },
+    {
+      "id": "artifacts",
+      "type": "database",
+      "label": "intent · spec · plan",
+      "sublabel": "아티팩트 체인 = 감사 추적",
+      "pos": [
+        680,
+        160
+      ],
+      "size": [
+        176,
+        64
+      ]
+    },
+    {
+      "id": "branch",
+      "type": "backend",
+      "label": "작업 브랜치 sdlc/<slug>",
+      "sublabel": "코드 · CLAUDE.md · evals",
+      "pos": [
+        680,
+        300
+      ],
+      "size": [
+        176,
+        64
+      ]
+    },
+    {
+      "id": "config",
+      "type": "database",
+      "label": ".sdlc/config.json",
+      "sublabel": "유일한 프로젝트 설정",
+      "pos": [
+        680,
+        440
+      ],
+      "size": [
+        176,
+        64
+      ],
+      "tag": "init 이 생성·병합"
+    },
+    {
+      "id": "github",
+      "type": "cloud",
+      "label": "Pull Request",
+      "sublabel": "룰셋 · 체크 evals · squash 머지",
+      "pos": [
+        1000,
+        300
+      ],
+      "size": [
+        176,
+        64
+      ]
+    },
+    {
+      "id": "actions",
+      "type": "cloud",
+      "label": "Actions 7",
+      "sublabel": "review · evals · autopilot …",
+      "pos": [
+        1000,
+        440
+      ],
+      "size": [
+        176,
+        64
+      ],
+      "tag": "같은 플러그인 설치"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Claude Code · 개발자 기기 — 플러그인 sdlc@ai-native-sdlc",
+      "wraps": [
+        "agents",
+        "skills",
+        "hooks"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "프로젝트 저장소 (git)",
+      "wraps": [
+        "artifacts",
+        "branch",
+        "config"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "GitHub",
+      "wraps": [
+        "github",
+        "actions"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "dev-to-skills",
+      "from": "dev",
+      "to": "skills",
+      "label": "슬래시 명령",
+      "variant": "emphasis"
+    },
+    {
+      "id": "skills-to-agents",
+      "from": "skills",
+      "to": "agents",
+      "label": "새 문맥 위임"
+    },
+    {
+      "id": "skills-to-branch",
+      "from": "skills",
+      "to": "branch",
+      "label": "구현 · 검증 · 리뷰",
+      "variant": "emphasis"
+    },
+    {
+      "id": "branch-to-artifacts",
+      "from": "branch",
+      "to": "artifacts",
+      "label": "intent → spec → plan 커밋",
+      "variant": "emphasis"
+    },
+    {
+      "id": "hooks-to-branch",
+      "from": "hooks",
+      "to": "branch",
+      "label": "가로채 차단·기록",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "hooks-to-config",
+      "from": "hooks",
+      "to": "config",
+      "label": "규칙 읽음",
+      "variant": "dashed"
+    },
+    {
+      "id": "managed-to-hooks",
+      "from": "managed",
+      "to": "hooks",
+      "label": "끌 수 없게 고정",
+      "variant": "security"
+    },
+    {
+      "id": "branch-to-github",
+      "from": "branch",
+      "to": "github",
+      "label": "브랜치 push → PR",
+      "variant": "emphasis"
+    },
+    {
+      "id": "github-to-actions",
+      "from": "github",
+      "to": "actions",
+      "label": "PR 이벤트 → 체크·리뷰",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "두 명령",
+      "items": [
+        "/sdlc:init — 저장소마다 한 번, 설정·아티팩트 폴더·워크플로·GitHub 설정",
+        "/sdlc:go — 변경마다 한 줄, intent → PR 까지 한 세션",
+        "/sdlc:run — 선택, 승인된 intent 큐를 고칠 것 없을 때까지"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "세 층",
+      "items": [
+        "권고: 스킬·에이전트가 절차를 정함",
+        "강제: 훅과 GitHub 룰셋이 막음 — 이유와 여는 방법을 말함",
+        "우회 불가: 관리형 설정이 훅을 고정 (기업)"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "사람이 답하는 곳",
+      "items": [
+        "정책 충돌 · 검증 3회 실패 · 머지 결정 · 운영 배포 승인",
+        "PR 승인은 코드 오너만, 에이전트는 승인하지 않음",
+        "스킬·훅·스크립트는 모두 .sdlc/config.json 하나를 읽음"
+      ]
+    }
+  ]
+}
