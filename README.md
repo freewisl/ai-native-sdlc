@@ -25,11 +25,11 @@ Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blo
 ```bash
 claude plugin marketplace add freewisl/ai-native-sdlc   # 이 저장소(github.com). 로컬 체크아웃으로 시험할 때는 경로를 대신 넣습니다
 claude plugin install sdlc@ai-native-sdlc
-# 아무 저장소에서 claude 를 열고:  /sdlc:init   →   /sdlc:go "요청 한 줄" --autopilot --merge
+# 아무 저장소에서 claude 를 열고:  /sdlc:init   →   /sdlc:go "요청 한 줄"   (1인 저장소는 이것만으로 머지까지)
 ```
 
 `/sdlc:init` 이 GitHub 원격·협업자 수·보관된 구독 토큰을 감지해 워크플로·시크릿·룰셋·auto-merge 까지 설정하고 채택 커밋을 PR 로 올립니다. 사람이 하는 것은
-계정당 한 번의 GitHub 로그인 승인과 구독 토큰 발급뿐입니다. 그 뒤로 `/sdlc:go` 는 정책 충돌 · 검증 3회 실패 · 머지(`--merge` 없을 때) · production 배포에서만 사람에게 묻습니다.
+계정당 한 번의 GitHub 로그인 승인과 구독 토큰 발급뿐입니다. 그 뒤로 `/sdlc:go` 는 정책 충돌 · 검증 3회 실패 · production 배포에서만 사람에게 묻습니다. 1인 저장소는 기본이 자동(plan 정지 없음, 체크 초록 뒤 머지)이고, 멈춤은 `roles.autopilot`/`roles.auto_merge` 를 false 로 두거나 `--no-autopilot`/`--no-merge` 로 사용자가 추가합니다. 팀 저장소는 intent·plan 승인과 머지 결정이 남습니다.
 설치 후에는 어느 프로젝트에서든 `/sdlc:` 로 시작하는 스킬을 쓸 수 있고, 훅은 자동으로 등록됩니다.
 
 ## 설치 없이 로컬에서 시험

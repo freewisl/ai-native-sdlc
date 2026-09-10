@@ -13,7 +13,8 @@
 # Config (.sdlc/config.json → loop.*): enabled(false) max_items(5) max_minutes(120) item_max_minutes(45) max_turns(200)
 #   max_failures_per_slug(3) self_check(true) model("") allowed_tools("Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash")
 #   pause_file(".sdlc/state/pause")
-# Requires: roles.solo=true, loop.enabled=true, a git repository on its default branch with a clean tree, gh authenticated, claude.
+# Requires: roles.solo=true, loop.enabled not false (init turns it on for solo repositories), a git repository on its default branch
+#           with a clean tree, gh authenticated, claude.
 # Stops:  queue empty · max_items · max_minutes · pause file present · 3 consecutive failures. A slug that failed
 #         loop.max_failures_per_slug times is marked blocked in .sdlc/state/loop-failures.txt and skipped until a human clears it.
 # Never:  deploy commands of the gated tier, the approval variable, disabling hooks. What merges is exactly what /sdlc:go merges —
@@ -46,7 +47,8 @@ root=$(cd "$root" && pwd)
 # ---------- preconditions ----------
 sdlc_initialized "$root" || { echo "ERROR: no .sdlc/config.json in $root — run /sdlc:init first" >&2; exit 2; }
 [ "$(cfg "$root" .roles.solo false)" = "true" ] || { echo "ERROR: /sdlc:run is solo-only (roles.solo is not true). In a team repository the intent and plan approvals belong to other people — use /sdlc:go per change." >&2; exit 2; }
-[ "$(cfg_bool "$root" .loop.enabled false)" = "true" ] || { echo "ERROR: the autopilot loop is off. Enable it deliberately: set \"loop\": {\"enabled\": true} in .sdlc/config.json (see README → 무인 루프). It merges pull requests without a human at the gate." >&2; exit 2; }
+loop_en=$(cfg "$root" .loop.enabled ""); [ -z "$loop_en" ] && loop_en=true   # solo is already verified above; a missing key means on (init writes it)
+[ "$loop_en" = "true" ] || { echo "ERROR: the autopilot loop is switched off (loop.enabled=false in .sdlc/config.json). Set it to true to run unattended — it merges pull requests without a human at the gate." >&2; exit 2; }
 pause_file="$root/$(cfg "$root" .loop.pause_file .sdlc/state/pause)"
 [ -f "$pause_file" ] && { echo "PAUSED  $pause_file exists — remove it to resume the loop"; exit 0; }
 is_git_repo "$root" || { echo "ERROR: $root is not a git repository" >&2; exit 2; }

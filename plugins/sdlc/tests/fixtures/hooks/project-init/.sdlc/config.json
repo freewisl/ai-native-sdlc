@@ -124,7 +124,8 @@
     "product_owner": "",
     "tech_lead": "",
     "release_manager": "",
-    "autopilot": false
+    "autopilot": false,
+    "auto_merge": false
   },
   "ci": {
     "auth": "api"

@@ -137,7 +137,7 @@ if [ "$SOLO" = 0 ] && [ "$NO_SOLO" = 0 ] && [ "$IS_GIT" = 1 ] && [ -z "${SDLC_SK
   nwo=$(cd "$ROOT" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
   if [ -n "$nwo" ]; then
     n=$(gh api "repos/$nwo/collaborators?per_page=100" --jq 'length' 2>/dev/null | tr -cd '0-9')
-    if [ -n "$n" ] && [ "$n" -le 1 ]; then SOLO=1; note "one collaborator on $nwo — roles.solo=true (--no-solo to keep team gates)"
+    if [ -n "$n" ] && [ "$n" -le 1 ]; then SOLO=1; note "one collaborator on $nwo — roles.solo=true: autopilot, auto-merge and the /sdlc:run loop are ON by default (--no-solo keeps team gates; set roles.autopilot / roles.auto_merge / loop.enabled to false to add a pause)"
     elif [ -z "$n" ]; then note "collaborator count unavailable (permissions/network) — keeping team gates; pass --solo to override"; fi
   fi
 fi
@@ -174,8 +174,11 @@ except Exception: print("INVALID"); sys.exit(0)
 ch=[]
 roles=c.setdefault('roles',{})
 if solo=='1' and roles.get('solo') is not True and (explicit=='1' or 'solo' not in roles): roles['solo']=True; ch.append('roles.solo=true')
+is_solo = roles.get('solo') is True
+for k in ('autopilot','auto_merge'):   # solo default = fully automatic; an existing key is the user's choice and stays
+    if k not in roles: roles[k]=is_solo; ch.append('roles.%s=%s'%(k,str(is_solo).lower()))
 if 'auth' not in c.setdefault('ci',{}): c['ci']['auth']=auth; ch.append('ci.auth=%s'%auth)
-if 'loop' not in c: c['loop']=json.load(open(tpl,encoding='utf-8')).get('loop',{}); ch.append('loop=defaults (enabled:false)')
+if 'loop' not in c: c['loop']=json.load(open(tpl,encoding='utf-8')).get('loop',{}); c['loop']['enabled']=is_solo; ch.append('loop=defaults (enabled:%s)'%str(is_solo).lower())
 if not c.setdefault('protect',{}).get('default_branch'): c['protect']['default_branch']=defb; ch.append('protect.default_branch=%s'%defb)
 if ch and dry!='1':
     json.dump(c,open(p,'w',encoding='utf-8'),indent=2,ensure_ascii=False); open(p,'a').write('\n')
@@ -195,7 +198,9 @@ cfg = json.load(open(src, encoding='utf-8'))
 d = json.loads(detect)
 cfg['language'] = lang
 cfg.setdefault('paths', {})['evals'] = evals_dir
-if solo == '1': cfg.setdefault('roles', {})['solo'] = True
+if solo == '1':   # solo repository: fully automatic by default — pause points are opt-in (set these false to add them)
+    r = cfg.setdefault('roles', {}); r['solo'] = True; r['autopilot'] = True; r['auto_merge'] = True
+    cfg.setdefault('loop', {})['enabled'] = True
 cfg.setdefault('ci', {})['auth'] = auth                       # github-setup.sh reads this — one source for the CI secret name
 cfg.setdefault('protect', {})['default_branch'] = defb or 'main'   # the push guard's fallback when origin/HEAD is unknown
 for k, v in d.get('commands', {}).items():

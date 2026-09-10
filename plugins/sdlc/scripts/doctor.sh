@@ -209,7 +209,7 @@ if [ "$(cfg "$ROOT" .loop.enabled false)" = "true" ]; then
   if [ -f "$pf" ]; then row warn loop "autopilot loop (/sdlc:run)" "enabled but PAUSED — $(rel_path "$ROOT" "$pf") exists; remove it to resume"
   elif [ "$(cfg "$ROOT" .roles.solo false)" != "true" ]; then row warn loop "autopilot loop (/sdlc:run)" "loop.enabled=true but roles.solo is false — the loop refuses on team repositories"
   else row ok loop "autopilot loop (/sdlc:run)" "enabled — max_items $(cfg "$ROOT" .loop.max_items 5), self_check $(cfg "$ROOT" .loop.self_check true), blocked slugs: $(grep -c . "$ROOT/.sdlc/state/loop-failures.txt" 2>/dev/null || echo 0)"; fi
-else row ok loop "autopilot loop (/sdlc:run)" "off (loop.enabled=false) — /sdlc:go per change; enable only on a solo repository you are willing to let merge on green checks"; fi
+else row ok loop "autopilot loop (/sdlc:run)" "off (loop.enabled=false) — /sdlc:go per change; set true to allow /sdlc:run (init turns it on for solo repositories)"; fi
 
 # ---- GitHub ----
 have=0; miss=""
