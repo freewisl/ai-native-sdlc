@@ -214,7 +214,7 @@
 | R-3.1.8 | 세 가지 자문 | COVERED | plan:33-34 |
 | R-3.1.9 | 완료 기준 | COVERED | plan:35-36 |
 | R-3.1.10 | plan.md 커밋 | COVERED | plan:39-44 |
-| R-3.1.11 | 승인 후 구현 | COVERED | plan:46 (solo `--autopilot` 편차는 §읽는 법 첫 항목; 승인 주체는 `approved_by`·`approval_basis` 로 기록) |
+| R-3.1.11 | 승인 후 구현 | COVERED | plan:46 (solo 기본 autopilot 편차는 §읽는 법 첫 항목; 승인 주체는 `approved_by`·`approval_basis` 로 기록) |
 | R-3.1.12 | 벗어나면 같은 커밋에 갱신, 훅 | COVERED | plan:47-49, scripts/hooks/stop-verify.sh:51-61 (`plan.enforce_sync`), post-edit.sh:20-24 |
 | R-3.1.13 | `# Plan: <title> (from …)` | COVERED | templates/en/plan.md:13 (`from {{spec_path}}` — 원문은 intent 날짜) |
 | R-3.1.14 | `## Files that change` | COVERED | plan.md:15 |
@@ -535,7 +535,7 @@ MISSING 0건. 남은 PARTIAL 1건은 아래 "읽는 법" 의 마지막 항목에
 
 ## 읽는 법
 
-- **`/sdlc:go --autopilot` 은 명시적·선택적·1인 저장소 한정 편차입니다.** 원문 "Nothing is implemented without an accepted plan" 의 '수락' 을 solo 모드에서는 사용자의 요청 자체로 보고 plan.md 를 커밋한 뒤 구현합니다. plan 은 여전히 커밋되어 리뷰어가 diff 를 대조하고, 훅·리뷰·브랜치 보호·production 게이트는 그대로 적용됩니다. 팀 저장소(`roles.solo: false`)에서는 intent·plan 승인 지점이 유지됩니다.
+- **1인 저장소의 autopilot·auto-merge(`roles.autopilot`·`roles.auto_merge`, `init` 이 켬)는 기본값이고 팀 저장소에서는 꺼져 있는, 1인 저장소 한정 편차입니다. 사용자는 해당 키를 false 로 두거나 `--no-autopilot`/`--no-merge` 로 원문의 정지 지점을 되살릴 수 있습니다.** 원문 "Nothing is implemented without an accepted plan" 의 '수락' 을 solo 모드에서는 사용자의 요청 자체로 보고 plan.md 를 커밋한 뒤 구현합니다. plan 은 여전히 커밋되어 리뷰어가 diff 를 대조하고, 훅·리뷰·브랜치 보호·production 게이트는 그대로 적용됩니다. 팀 저장소(`roles.solo: false`)에서는 intent·plan 승인 지점이 유지됩니다.
 
 - **원문 코드 블록 14종은 전부 파일로 보존됩니다.** `templates/examples/` 에 원문이 인쇄된 그대로 들어 있고(`/sdlc:init` 이 `.sdlc/examples/` 로 복사), 같은 디렉터리의 `README.md` 가 각 블록과 이 플러그인의 일반화한 대응물을 1:1 로 짚습니다 — intent.md(A.1) · Stage 2 프롬프트(A.2) · plan.md(A.3) · CLAUDE.md "Payments service"(A.4) · secure-api-review 스킬(A.5) · verifier.md(A.6) · 검증 블록(A.7) · agent-evals.yml(A.8) · REVIEW.md(A.9) · settings.json 훅 등록(A.10) · production-gate.sh(A.11) · 관리형 설정 JSON(A.12) · triage 스텝(A.13) · bands.yaml(A.14).
 - **호스팅 제품**(Claude Code Review · Claude Security · Claude Tag · Claude Design · Cowork)은 플러그인이 구현하지 않으며, 절차 안내와 로컬 대체(`/sdlc:review` · `/sdlc:scan` · `/sdlc:postmortem`)를 제공합니다. EXTERNAL-DOCUMENTED 7건이 이에 해당합니다.

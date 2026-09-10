@@ -64,8 +64,9 @@ Infrastructure: A repo, Claude Code installed, and one engineer who knows the co
    the same commands as CLAUDE.md (edit with `python3 -c` json load/dump; do not hand-edit JSON).
 6. **Optional integrations.** Zero-flag defaults fire first and are printed as NOTE lines — repeat them to the user: a GitHub
    remote (github.com or a `github.*` Enterprise host) installs the workflows without `--github` (`--no-github` refuses); a single
-   collaborator reported by `gh` sets `roles.solo` (`--no-solo` refuses; an unknown count keeps team gates; an existing `roles.solo`
-   is never overridden by detection, only by `--solo`); a stored subscription token selects `oauth`. The chosen auth is written to
+   collaborator reported by `gh` sets `roles.solo` and with it `roles.autopilot`, `roles.auto_merge` and `loop.enabled` — a solo
+   repository is fully automatic by default; a pause is something the owner adds by setting one of them false (`--no-solo` refuses;
+   an unknown count keeps team gates; an existing `roles.solo` is never overridden by detection, only by `--solo`); a stored subscription token selects `oauth`. The chosen auth is written to
    `.sdlc/config.json` (`ci.auth`) so `github-setup.sh` registers the matching secret. `--github`: `init.sh` copies `sdlc-*.yml`
    workflows and CODEOWNERS that do not exist yet. Ask which CI auth the user wants only when nothing decided it: `--auth api`
    (secret `ANTHROPIC_API_KEY`, API billing) or `--auth oauth`

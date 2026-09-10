@@ -1,5 +1,5 @@
 # sdlc — Autopilot loop, unattended (/sdlc:run --once on a schedule). Solo repositories only: run-loop.sh refuses unless
-# .sdlc/config.json has roles.solo=true AND loop.enabled=true — turning the loop on is a deliberate, committed decision.
+# .sdlc/config.json has roles.solo=true and loop.enabled is not false (init turns it on for solo repositories; set false to stop).
 # Each run takes ONE approved intent through /sdlc:go (autopilot, merge on green) in a fresh session; the schedule is the cadence.
 # Caps, the pause file (.sdlc/state/pause) and per-slug blocking are the same as a local /sdlc:run.
 # Token: pull requests and pushes made with the default GITHUB_TOKEN do not trigger other workflows, so the loop's PRs would never

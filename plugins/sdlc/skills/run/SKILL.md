@@ -13,11 +13,11 @@ allowed-tools: Read, Bash(bash "${CLAUDE_PLUGIN_ROOT}/scripts/*"), Bash(git *), 
 - **`/sdlc:run`:** the backlog is the input. Every approved intent becomes a merged PR, the merged result is reviewed again, and Important findings become the next items — until the queue is empty. The human's job moves from typing and merging to reading what merged (the playbook's auto-mode stance: review artifacts after the session instead of watching edits).
 
 ## When to use
-A repository with `roles.solo: true` where the owner has decided that green checks + the reviewer agent + hooks are enough to merge without a person at the gate. Never on team repositories: there the intent and plan approvals belong to other people, and the script refuses. Typed by the user only (`disable-model-invocation`) — a loop that merges code must never start from a phrase the model inferred.
+A repository with `roles.solo: true`. There the loop is on by default (`init` sets `loop.enabled`, `roles.autopilot` and `roles.auto_merge`): green checks + the reviewer agent + hooks are the merge gate, and the owner adds a pause only by setting one of those false. Never on team repositories: there the intent and plan approvals belong to other people, and the script refuses. Typed by the user only (`disable-model-invocation`) — a loop that merges code must never start from a phrase the model inferred.
 
 ## Inputs
 - `$ARGUMENTS`: `--max-items N` (default `loop.max_items`, 5) · `--max-minutes M` (120) · `--once` (one item; what the CI workflow uses) · `--no-self-check` · `--dry-run` (queue and commands only).
-- `.sdlc/config.json` → `loop.*`: `enabled` (false — must be set to true on purpose), `max_items`, `max_minutes`, `item_max_minutes`, `max_turns`, `max_failures_per_slug`, `self_check`, `model`, `allowed_tools`, `pause_file`.
+- `.sdlc/config.json` → `loop.*`: `enabled` (on for solo repositories — `init` sets it; false switches the loop off), `max_items`, `max_minutes`, `item_max_minutes`, `max_turns`, `max_failures_per_slug`, `self_check`, `model`, `allowed_tools`, `pause_file`.
 
 ## Steps
 1. **Preflight.** `bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-loop.sh" --dry-run $ARGUMENTS`. Show the queue it prints (approved intents without an implemented plan, an open PR, or a block mark) and the caps. If it refuses — not solo, `loop.enabled` false, dirty tree, pause file, gh not logged in — print its message verbatim and stop; do not work around any of these.

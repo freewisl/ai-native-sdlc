@@ -1,6 +1,6 @@
 {
   "name": "sdlc",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "/sdlc:init 한 번으로 새 프로젝트든 기존 프로젝트든 비파괴로 채택하고(GitHub 원격·1인 저장소·CI 인증 자동 감지, 시크릿·룰셋·auto-merge 설정), 변경마다 /sdlc:go \"요청 한 문장\" 이 intent→spec→plan→구현→검증→리뷰→PR 을 한 세션에서 끝냅니다. 정지는 정책 충돌·검증 3회 실패·머지·production 배포만. 스킬 19종(/sdlc:run 무인 루프: 백로그를 끝까지, 머지된 결과 자기 점검)·에이전트 5종·훅 7종(보호 경로·테스트 잠금·비밀·기본 브랜치 직접 푸시·production 게이트·완료 전 검증)·CI 템플릿·기업 관리형 설정 템플릿.",
   "author": {
     "name": "freewisl"

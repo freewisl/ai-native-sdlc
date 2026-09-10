@@ -3,6 +3,11 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-09-10
+
+### Changed
+- Documentation pass for the automatic-by-default solo behaviour: run/init skills, autopilot workflow header, PLAYBOOK-MAPPING deviation note, ELI5 page, pictures 01/03 and the Archify card no longer describe the loop or auto-merge as something the owner must switch on.
+
 ## [0.5.0] - 2026-09-10
 
 Default flipped for solo repositories: automatic unless the owner adds a pause.

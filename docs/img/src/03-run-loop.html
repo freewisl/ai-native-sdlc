@@ -50,7 +50,7 @@ svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
     <div class="stopbox"><b>상한</b><br>한 번에 5건 · 120분 · 연속 실패 3회면 멈춤</div>
     <div class="stopbox"><b>같은 항목 3회 실패</b><br>차단 목록에 적고 건너뜀 — 네 번째 시도 대신 사람</div>
     <div class="stopbox"><b>정지 스위치</b><br><code>touch .sdlc/state/pause</code> — 현재 항목이 끝난 뒤 멈춤</div>
-    <div class="human"><b>켜는 것이 결정</b><br><code>loop.enabled: true</code> + <code>roles.solo</code>. 팀 저장소는 거부. 운영 배포는 여전히 사람.</div>
+    <div class="human"><b>기본 켜짐</b><br>1인 저장소는 <code>init</code> 이 <code>loop.enabled</code> 를 켜 둠(끄려면 false). 팀 저장소는 거부. 운영 배포는 여전히 사람.</div>
     <p class="soft" style="font-size:13px">세션 없이: <code>sdlc-autopilot.yml</code> 이 30분마다 1건 (PR 체크를 받으려면 <code>SDLC_GH_TOKEN</code>)</p>
   </div>
 </div>
