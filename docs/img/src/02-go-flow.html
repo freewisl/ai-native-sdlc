@@ -37,12 +37,12 @@ body{height:640px}
 <div class="bubbles">
   <div class="bubble"><b>질문 최대 2개</b>범위나 성공 기준이 정말 모호할 때만. 1인 저장소면 요청 자체가 승인</div>
   <div class="bubble"><b>정책 충돌</b>규칙끼리 부딛히거나 요구가 모순일 때만 결정을 물음</div>
-  <div class="bubble"><b>계획 승인</b>기본은 1회 확인. <code style="white-space:nowrap">--autopilot</code> (solo + 준비도 ✓)이면 생략</div>
+  <div class="bubble"><b>계획 승인</b>1인 저장소는 기본 생략(<code style="white-space:nowrap">roles.autopilot</code>). 팀 저장소나 <code style="white-space:nowrap">--no-autopilot</code> 이면 1회 확인</div>
   <div class="bubble none">묻지 않음</div>
   <div class="bubble"><b>3회 실패</b>세 번 고쳐도 실패하면 출력 그대로 들고 물음</div>
   <div class="bubble none">묻지 않음</div>
   <div class="bubble none">묻지 않음</div>
-  <div class="bubble"><b>머지 결정</b><code>--merge</code> 없으면 "초록불, 머지 기다림" 에서 멈춤</div>
+  <div class="bubble"><b>머지 결정</b>1인 저장소는 기본 자동 머지(<code style="white-space:nowrap">roles.auto_merge</code>). 팀 저장소나 <code style="white-space:nowrap">--no-merge</code> 면 "초록불, 머지 기다림" 에서 멈춤</div>
 </div>
 <div class="legend"><span><i style="background:#FFF2C8;border:2px dashed #C9A227"></i>사람이 답할 수 있는 자리</span><span><i style="background:var(--paper-2);border:2px solid var(--ink)"></i>에이전트가 하는 단계</span><span>· 운영 배포는 별도 명령(<code>/sdlc:release</code>)이고 항상 사람 승인</span></div>
 </body></html>

@@ -3,6 +3,16 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-09-10
+
+Default flipped for solo repositories: automatic unless the owner adds a pause.
+
+### Changed
+- `init` on a solo repository now sets `roles.autopilot`, `roles.auto_merge` (new key) and `loop.enabled` to true; team repositories keep all three false. Existing keys are never overridden — a false the owner wrote stays a pause.
+- `/sdlc:go`: `--merge` defaults from `roles.auto_merge`; new `--no-autopilot` / `--no-merge` add the pause for one run; doctor's auto-mode readiness is advisory (one-line warning) instead of a stop. On a solo repository nothing stops between the request and the merge except policy conflicts, three failed verification rounds and production.
+- `run-loop.sh`: a missing `loop.enabled` on a solo repository means on; the refusal message names the switch.
+- Docs and pictures: "기본은 자동, 제한은 사용자가 켬" — private Free-plan repositories run on hooks + go discipline alone; public / paid plans get the same rules enforced again by the ruleset.
+
 ## [0.4.6] - 2026-09-09
 
 ### Added

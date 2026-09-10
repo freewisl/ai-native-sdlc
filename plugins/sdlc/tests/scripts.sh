@@ -112,6 +112,12 @@ lacks "--auth oauth leaves no anthropic_api_key input" "$(cat "$WORK/gh4/.github
 has "--auth oauth prints the setup-token note" "$out" "claude setup-token"
 mkdir -p "$WORK/solo"; out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/solo" --solo 2>&1); has "--solo sets roles.solo" "$(cat "$WORK/solo/.sdlc/config.json")" '"solo": true'
 has "new config records ci.auth" "$(cat "$WORK/solo/.sdlc/config.json")" '"auth": "api"'; has "new config records default_branch" "$(cat "$WORK/solo/.sdlc/config.json")" '"default_branch": "main"'
+has "solo → roles.autopilot on by default" "$(cat "$WORK/solo/.sdlc/config.json")" '"autopilot": true'; has "solo → roles.auto_merge on by default" "$(cat "$WORK/solo/.sdlc/config.json")" '"auto_merge": true'
+has "team (empty dir) → auto_merge off" "$(cat "$E/.sdlc/config.json")" '"auto_merge": false'; has "team → loop off" "$(cat "$E/.sdlc/config.json")" '"enabled": false'
+python3 - "$WORK/solo/.sdlc/config.json" <<'PY'
+import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['roles']['autopilot']=False; json.dump(c,open(p,'w'),indent=2)
+PY
+out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/solo" --solo 2>&1); has "re-run init keeps an explicit roles.autopilot=false (a pause the owner added)" "$(cat "$WORK/solo/.sdlc/config.json")" '"autopilot": false'
 # --- zero-flag detection with a stub gh (no network) ---
 STUB="$WORK/stub-bin"; mkdir -p "$STUB"
 cat > "$STUB/gh" <<'GH'
@@ -263,19 +269,20 @@ lacks "monitor dry-run creates no triage intent" "$(ls "$E/intent/triage" 2>/dev
 echo "-- run-loop"
 L="$WORK/loop"; mkdir -p "$L"; git_init "$L"; printf 'x\n' > "$L/README.md"; git_commit "$L" init "2026-03-01T00:00:00Z"
 bash "$SCRIPTS/init.sh" --dir "$L" --solo --no-github >/dev/null 2>&1
-has "init writes loop defaults (off)" "$(cat "$L/.sdlc/config.json")" '"enabled": false'
+has "init enables the loop on a solo repository" "$(cat "$L/.sdlc/config.json")" '"enabled": true'
 mk_intent() { printf -- '---\ntype: intent\nslug: %s\ntitle: %s\nstatus: %s\ncreated: %s\n---\n# %s\n' "$1" "$2" "$3" "$4" "$2" > "$L/intent/$1.md"; }
 mk_intent a-first "First thing" approved 2026-03-01; mk_intent b-second "Second thing" approved 2026-03-02; mk_intent c-draft "Not yet" draft 2026-03-03; mk_intent d-done "Already done" approved 2026-03-04
 printf -- '---\ntype: plan\nslug: d-done\nstatus: implemented\n---\n' > "$L/plan/d-done.md"
 git_commit "$L" intents "2026-03-05T00:00:00Z"
-out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); rc=$?
-check "run-loop refuses while loop.enabled is false" "$([ $rc -eq 2 ] && echo true || echo false)" "$out"; has "refusal explains how to enable" "$out" '"enabled": true'
 setcfg() { python3 - "$L/.sdlc/config.json" "$2" "$3" <<'PY'
 import json,sys; p,path,val=sys.argv[1:4]; c=json.load(open(p)); d=c
 for k in path.split('.')[:-1]: d=d.setdefault(k,{})
 d[path.split('.')[-1]]=json.loads(val); json.dump(c,open(p,'w'),indent=2)
 PY
 }
+setcfg "$L" loop.enabled false; git_commit "$L" off "2026-03-05T00:30:00Z"
+out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); rc=$?
+check "run-loop refuses while loop.enabled is false" "$([ $rc -eq 2 ] && echo true || echo false)" "$out"; has "refusal names the switch" "$out" "loop.enabled=false"
 setcfg "$L" loop.enabled true; git_commit "$L" enable "2026-03-05T01:00:00Z"
 out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); rc=$?
 check "dry-run exits 0" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
