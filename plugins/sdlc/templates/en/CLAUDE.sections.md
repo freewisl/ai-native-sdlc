@@ -29,5 +29,5 @@
 
 Run all three before reporting any task complete, and paste the output.
 If a test fails, fix the code, not the test.
-Nothing is implemented without an approved plan: start in plan mode, commit plan.md, then build.
+Every change starts from a committed plan.md (`/sdlc:go` writes and commits it; `/sdlc:plan` for the step-by-step path).
 <!-- sdlc:end verifying -->

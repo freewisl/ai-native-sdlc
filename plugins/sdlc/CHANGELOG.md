@@ -3,6 +3,16 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-09-25
+
+Prompt audit (`/claude-api prompt-audit`, report in `_workspace/10_prompt_audit.md`).
+
+### Fixed
+- The session-start context and the CLAUDE.md "Verifying your work" template said "start with /sdlc:plan"; both now say every change starts from a committed plan.md that `/sdlc:go` writes (step-by-step path: `/sdlc:plan`). Repositories initialized earlier keep their CLAUDE.md line — update it by hand or with `/sdlc:lesson`.
+- Numeric output ceilings removed from `sdlc-researcher` ("≤ 25 lines") and `/sdlc:go`'s report ("≤ 12 lines"); the item lists stay.
+- `monitor.py`'s 2σ diagnosis prompt now asks for the same procedure and output as the `sdlc-diagnoser` agent (ranked hypotheses, runner-up, "unverified" wording) — the two had drifted.
+- Removed the provenance footnote from `sdlc-verifier` (recorded in the README) and the pinned "Mythos 5 rates" pricing claim from `/sdlc:scan`.
+
 ## [0.5.1] - 2026-09-10
 
 ### Changed

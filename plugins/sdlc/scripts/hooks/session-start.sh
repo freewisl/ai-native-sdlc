@@ -23,7 +23,7 @@ state_set_many "$root" started "$(now_iso)" source "${source:-startup}"
 
 # --- gather
 ver=$(sdlc_plugin_version)
-plan_line="none — start with /sdlc:plan"
+plan_line="none — /sdlc:go writes one for the next change"
 plan_rel=$(active_plan_file "$root")
 if [ -n "$plan_rel" ]; then
   if [ -f "$root/$plan_rel" ]; then
@@ -61,7 +61,7 @@ printf '%s\n' "Pending intents ($intent_dir/triage/): $triage_n"
 printf '%s\n' "Verify commands: $verify_line"
 printf '%s\n' "Guards: $guards"
 printf '%s\n' "Rules:"
-printf '%s\n' "- Nothing is implemented without an approved plan — start with /sdlc:plan"
+printf '%s\n' "- Every change starts from a committed plan.md — /sdlc:go writes it (or /sdlc:plan step by step)"
 printf '%s\n' "- Verify before reporting done (run the Commands in CLAUDE.md and paste output; never edit tests during a fix)"
 printf '%s\n' "- Same mistake twice → /sdlc:lesson adds it to CLAUDE.md"
 exit 0

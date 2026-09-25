@@ -224,23 +224,27 @@ Metric: {name} — {description}
 Newest value: {value}   Baseline mean: {mean:.6g}   Baseline sigma: {sigma:.6g}   Rule: {rule}   Tier: {tier}
 Recent points (oldest→newest): {recent}
 
-Investigate with the tools you have (read-only). Then write ONLY the body of an intent.md in the Stage 1 Plan format,
-using exactly these five markdown headings and nothing before the first heading:
+Investigate with the tools you have (read-only), the same way the sdlc-diagnoser agent does: establish the timeline
+(when the metric moved, what changed in that window — commits, deploys, config, dependency bumps, CI runs), form 2-4
+hypotheses with evidence for and against, rank them, and decide the smallest safe first step and what a human must verify.
+Say "unverified" for anything you could not confirm; never present a hypothesis as a fact.
+
+Then write ONLY the body of an intent.md, using exactly these five markdown headings and nothing before the first heading:
 
 ## Problem
-(the anomaly and its evidence: what changed, when, what you inspected, most likely cause with confidence)
+(anomaly and evidence: metric, when, what you inspected, top hypothesis with confidence and the runner-up)
 
 ## Proposed outcome
-(what "back to baseline" and "prevented next time" look like; if a rollback or revert is the obvious first step, say so)
+(back to baseline + prevented next time; name the rollback/revert if it is the obvious first step)
 
 ## Affected users and systems
 (services, pipelines, teams)
 
 ## Constraints
-(e.g. detection tier limits, change freeze, do not modify tests)
+(tier limits, freeze windows, "do not edit tests", data handling)
 
 ## Open questions
-(what a human must decide or verify; include what you could not check)
+(what a human must decide or verify; what you could not check and why)
 """
 
 
