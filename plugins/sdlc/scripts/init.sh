@@ -13,7 +13,11 @@ usage() {
 init.sh — scaffold the AI-native SDLC layout into a project (idempotent, never destructive)
 
   --lang en|ko      language of human-facing templates (default: en; ko falls back to en per file when missing)
-  --github          also install .github/workflows/sdlc-*.yml + CODEOWNERS (automatic when .github/ exists)
+  --ci local|github where Claude runs. local (default): every skill, the loop, evals, monitor and scan run on this machine —
+                    no sdlc workflows, no CI credentials. github: also install .github/workflows/sdlc-*.yml (review, evals,
+                    spec-on-intent, ci-triage, monitor, scan, autopilot) that call Claude in GitHub Actions with a repository secret
+  --github          same as --ci github (CODEOWNERS is installed for any GitHub remote either way)
+  --prune-ci        ci.mode local: remove plugin-generated .github/workflows/sdlc-*.yml left from an earlier github mode
   --sandbox         merge the sandbox block into .claude/settings.json
   --managed         write .sdlc/managed-settings.example.json (+ README) for the platform team
   --mcp             write .mcp.json (deployment tools example) when absent
@@ -23,11 +27,11 @@ init.sh — scaffold the AI-native SDLC layout into a project (idempotent, never
   --marketplace <s> marketplace source the CI workflows install the plugin from (default: $SDLC_MARKETPLACE_SOURCE or freewisl/ai-native-sdlc)
   --ci-workflow <n> name of the CI workflow that sdlc-ci-triage.yml listens to (default: first `name:` in .github/workflows/*.yml, else CI)
   --team <@org/team> code owner handle for CODEOWNERS (default: @<git org>/TODO-team)
-  --no-github       do not install workflows even when the remote is GitHub   --no-solo  never set roles.solo automatically
+  --no-github       ci.mode local and no CODEOWNERS even when the remote is GitHub   --no-solo  never set roles.solo automatically
   --solo            one-person repository: roles.solo=true — the user is product owner, tech lead and release manager, so skills
                     take approvals in-session instead of waiting for another person (branch ruleset gets an admin bypass for PRs)
-  --auth api|oauth  how CI authenticates Claude: api = secret ANTHROPIC_API_KEY (default); oauth = secret CLAUDE_CODE_OAUTH_TOKEN
-                    made with `claude setup-token` (subscription account). Also via $SDLC_AUTH
+  --auth api|oauth  ci.mode github only — how the workflows authenticate Claude: api = secret ANTHROPIC_API_KEY (default);
+                    oauth = secret CLAUDE_CODE_OAUTH_TOKEN made with `claude setup-token` (subscription account). Also via $SDLC_AUTH
   --help
 
 Output lines start with CREATED / MERGED / SKIPPED (exists) / WOULD CREATE / WOULD MERGE / NOTE, then a summary
@@ -36,12 +40,15 @@ EOF
 }
 
 LANG_OPT=en; DO_GITHUB=0; DO_SANDBOX=0; DO_MANAGED=0; DO_MCP=0; DRY=0; ROOT_ARG=""; CMD_OVERRIDE=""
-MARKETPLACE_SOURCE="${SDLC_MARKETPLACE_SOURCE:-}"; CI_WORKFLOW=""; TEAM_ARG=""; AUTH_MODE="${SDLC_AUTH:-}"; SOLO=0; SOLO_EXPLICIT=0; NO_GITHUB=0; NO_SOLO=0
+MARKETPLACE_SOURCE="${SDLC_MARKETPLACE_SOURCE:-}"; CI_WORKFLOW=""; TEAM_ARG=""; AUTH_MODE="${SDLC_AUTH:-}"; SOLO=0; SOLO_EXPLICIT=0; NO_GITHUB=0; NO_SOLO=0; CI_MODE=""; CI_EXPLICIT=0; PRUNE_CI=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --lang) LANG_OPT="$2"; shift 2;;
     --lang=*) LANG_OPT="${1#*=}"; shift;;
-    --github) DO_GITHUB=1; shift;;
+    --github) DO_GITHUB=1; CI_MODE=github; CI_EXPLICIT=1; shift;;
+    --ci) CI_MODE="$2"; CI_EXPLICIT=1; shift 2;;
+    --ci=*) CI_MODE="${1#*=}"; CI_EXPLICIT=1; shift;;
+    --prune-ci) PRUNE_CI=1; shift;;
     --sandbox) DO_SANDBOX=1; shift;;
     --managed) DO_MANAGED=1; shift;;
     --mcp) DO_MCP=1; shift;;
@@ -57,7 +64,7 @@ while [ $# -gt 0 ]; do
     --team) TEAM_ARG="$2"; shift 2;;
     --team=*) TEAM_ARG="${1#*=}"; shift;;
     --solo) SOLO=1; SOLO_EXPLICIT=1; shift;;
-    --no-github) NO_GITHUB=1; shift;;
+    --no-github) NO_GITHUB=1; CI_MODE=local; CI_EXPLICIT=1; shift;;
     --no-solo) NO_SOLO=1; shift;;
     --auth) AUTH_MODE="$2"; shift 2;;
     --auth=*) AUTH_MODE="${1#*=}"; shift;;
@@ -130,9 +137,10 @@ if [ "$IS_GIT" = 0 ]; then
 fi
 
 # ---------- zero-flag defaults: detect what the flags would say ----------
-#   GitHub remote → install workflows (unless --no-github); one collaborator → roles.solo (unless --no-solo);
+#   GitHub remote → CODEOWNERS + branch ruleset (unless --no-github); Claude itself runs locally unless ci.mode github;
+#   one collaborator → roles.solo (unless --no-solo);
 #   a stored CI token (keychain / ~/.config/sdlc/ci-token) → --auth oauth, else api.  Set SDLC_SKIP_GH_DETECT=1 to skip network calls.
-case "$GIT_HOST" in github.com|github.*) [ "$DO_GITHUB" = 0 ] && [ "$NO_GITHUB" = 0 ] && { DO_GITHUB=1; note "GitHub remote ($GIT_HOST) detected — installing the sdlc workflows (--no-github to skip)"; };; esac
+case "$GIT_HOST" in github.com|github.*) [ "$DO_GITHUB" = 0 ] && [ "$NO_GITHUB" = 0 ] && DO_GITHUB=1;; esac
 if [ "$SOLO" = 0 ] && [ "$NO_SOLO" = 0 ] && [ "$IS_GIT" = 1 ] && [ -z "${SDLC_SKIP_GH_DETECT:-}" ] && gh_ready "$ROOT"; then
   nwo=$(cd "$ROOT" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
   if [ -n "$nwo" ]; then
@@ -141,11 +149,17 @@ if [ "$SOLO" = 0 ] && [ "$NO_SOLO" = 0 ] && [ "$IS_GIT" = 1 ] && [ -z "${SDLC_SK
     elif [ -z "$n" ]; then note "collaborator count unavailable (permissions/network) — keeping team gates; pass --solo to override"; fi
   fi
 fi
+# ci.mode: flag > existing config > local. local = Claude runs only on this machine (no workflows, no CI secret).
+if [ -z "$CI_MODE" ] && [ -f "$ROOT/.sdlc/config.json" ]; then CI_MODE=$(cfg "$ROOT" .ci.mode ""); fi
+[ -z "$CI_MODE" ] && CI_MODE=local
+case "$CI_MODE" in local|github) :;; *) die "--ci must be local or github";; esac
+if [ "$CI_MODE" = local ]; then note "ci.mode local — skills, the loop, evals, monitor and scan run on this machine; no GitHub Actions workflows or CI secret (--ci github to run them in Actions)"
+else note "ci.mode github — installing the sdlc workflows that call Claude in GitHub Actions (needs a repository secret)"; fi
 if [ -z "$AUTH_MODE" ] && [ -f "$ROOT/.sdlc/config.json" ]; then AUTH_MODE=$(cfg "$ROOT" .ci.auth ""); fi
 if [ -z "$AUTH_MODE" ]; then
   AUTH_MODE=api
   tf="${SDLC_CI_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sdlc/ci-token}"
-  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -s "$tf" ] || { has_cmd security && security find-generic-password -a sdlc -s sdlc-ci-token >/dev/null 2>&1; }; then AUTH_MODE=oauth; note "stored subscription token found — CI auth = oauth (CLAUDE_CODE_OAUTH_TOKEN)"; fi
+  if [ "$CI_MODE" = github ] && { [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -s "$tf" ] || { has_cmd security && security find-generic-password -a sdlc -s sdlc-ci-token >/dev/null 2>&1; }; }; then AUTH_MODE=oauth; note "stored subscription token found — CI auth = oauth (CLAUDE_CODE_OAUTH_TOKEN)"; fi
 fi
 
 # paths: respect an existing config, otherwise defaults (+ evals dir decision)
@@ -166,9 +180,9 @@ fi
 if [ "$CONFIG_EXISTS" = 1 ]; then
   # merge only: an explicit --solo sets roles.solo; auto-detected solo never overrides an existing roles.solo key;
   # missing ci.auth / protect.default_branch are filled (never changed). Invalid JSON → nothing is written.
-  res=$(python3 - "$ROOT/.sdlc/config.json" "$SOLO" "$SOLO_EXPLICIT" "$AUTH_MODE" "$DEFAULT_BRANCH" "$DRY" "$SDLC_TEMPLATES/config/config.json" <<'PY'
+  res=$(python3 - "$ROOT/.sdlc/config.json" "$SOLO" "$SOLO_EXPLICIT" "$AUTH_MODE" "$DEFAULT_BRANCH" "$DRY" "$SDLC_TEMPLATES/config/config.json" "$CI_MODE" "$CI_EXPLICIT" <<'PY'
 import json,sys
-p,solo,explicit,auth,defb,dry,tpl=sys.argv[1:8]
+p,solo,explicit,auth,defb,dry,tpl,cimode,ciexp=sys.argv[1:10]
 try: c=json.load(open(p,encoding='utf-8'))
 except Exception: print("INVALID"); sys.exit(0)
 ch=[]
@@ -178,6 +192,7 @@ is_solo = roles.get('solo') is True
 for k in ('autopilot','auto_merge'):   # solo default = fully automatic; an existing key is the user's choice and stays
     if k not in roles: roles[k]=is_solo; ch.append('roles.%s=%s'%(k,str(is_solo).lower()))
 if 'auth' not in c.setdefault('ci',{}): c['ci']['auth']=auth; ch.append('ci.auth=%s'%auth)
+if c['ci'].get('mode')!=cimode and ('mode' not in c['ci'] or ciexp=='1'): c['ci']['mode']=cimode; ch.append('ci.mode=%s'%cimode)
 tl=json.load(open(tpl,encoding='utf-8')).get('loop',{})
 if 'loop' not in c: c['loop']=dict(tl); c['loop']['enabled']=is_solo; ch.append('loop=defaults (enabled:%s)'%str(is_solo).lower())
 else:
@@ -198,9 +213,9 @@ PY
     *) r_merged ".sdlc/config.json" "$res";;
   esac
 else
-  python3 - "$SDLC_TEMPLATES/config/config.json" "$TMP/config.json" "$LANG_OPT" "$EVALS_DIR" "$DETECT" "$SOLO" "$AUTH_MODE" "$DEFAULT_BRANCH" <<'PY'
+  python3 - "$SDLC_TEMPLATES/config/config.json" "$TMP/config.json" "$LANG_OPT" "$EVALS_DIR" "$DETECT" "$SOLO" "$AUTH_MODE" "$DEFAULT_BRANCH" "$CI_MODE" <<'PY'
 import json, sys
-src, dest, lang, evals_dir, detect, solo, auth, defb = sys.argv[1:9]
+src, dest, lang, evals_dir, detect, solo, auth, defb, cimode = sys.argv[1:10]
 cfg = json.load(open(src, encoding='utf-8'))
 d = json.loads(detect)
 cfg['language'] = lang
@@ -208,7 +223,8 @@ cfg.setdefault('paths', {})['evals'] = evals_dir
 if solo == '1':   # solo repository: fully automatic by default — pause points are opt-in (set these false to add them)
     r = cfg.setdefault('roles', {}); r['solo'] = True; r['autopilot'] = True; r['auto_merge'] = True
     cfg.setdefault('loop', {})['enabled'] = True
-cfg.setdefault('ci', {})['auth'] = auth                       # github-setup.sh reads this — one source for the CI secret name
+cfg.setdefault('ci', {})['mode'] = cimode                   # local: Claude runs on this machine only
+cfg['ci']['auth'] = auth                       # github-setup.sh reads this — one source for the CI secret name
 cfg.setdefault('protect', {})['default_branch'] = defb or 'main'   # the push guard's fallback when origin/HEAD is unknown
 for k, v in d.get('commands', {}).items():
     if v: cfg.setdefault('commands', {})[k] = v
@@ -417,28 +433,40 @@ if [ "$DO_GITHUB" = 1 ] || [ -d "$ROOT/.github" ]; then
   A_API='anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}'; C_API='ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}'
   if [ "$AUTH_MODE" = oauth ]; then
     ACTION_AUTH="$A_OAUTH"; CLI_AUTH="$C_OAUTH"; SECRET_NAME=CLAUDE_CODE_OAUTH_TOKEN; OTHER_SECRET=ANTHROPIC_API_KEY; OTHER_ACTION="$A_API"; OTHER_CLI="$C_API"
-    note "CI auth = oauth: create the token with \`claude setup-token\` and store it as repository secret CLAUDE_CODE_OAUTH_TOKEN"
+    [ "$CI_MODE" = github ] && note "CI auth = oauth: create the token with \`claude setup-token\` and store it as repository secret CLAUDE_CODE_OAUTH_TOKEN"
   else
     ACTION_AUTH="$A_API"; CLI_AUTH="$C_API"; SECRET_NAME=ANTHROPIC_API_KEY; OTHER_SECRET=CLAUDE_CODE_OAUTH_TOKEN; OTHER_ACTION="$A_OAUTH"; OTHER_CLI="$C_OAUTH"
   fi
-  for wf in "$SDLC_TEMPLATES"/github/*.yml; do
-    [ -f "$wf" ] || continue
-    name=$(basename "$wf")
-    py_render "$wf" "$TMP/$name" "default_branch=$DEFAULT_BRANCH" "team=$TEAM" "marketplace_source=$MARKETPLACE_SOURCE" "ci_workflow_name=$CI_WORKFLOW" \
-      "evals_dir=$EVALS_DIR" "intent_dir=$INTENT_DIR" "spec_dir=$SPEC_DIR" "plan_dir=$PLAN_DIR" "action_auth_line=$ACTION_AUTH" "cli_auth_env=$CLI_AUTH"
-    if grep -qE '\{\{[a-z_]+\}\}' "$TMP/$name"; then note "$name still contains {{placeholders}} after rendering: $(grep -oE '\{\{[a-z_]+\}\}' "$TMP/$name" | sort -u | tr '\n' ' ')"; fi
-    dest="$ROOT/.github/workflows/$name"
-    if [ -f "$dest" ] && { grep -qF "$OTHER_ACTION" "$dest" || grep -qF "$OTHER_CLI" "$dest"; }; then
-      # an sdlc workflow generated with the other auth: merge only the auth line (the rest of the file is left as the user has it)
-      if [ "$DRY" = 0 ]; then python3 - "$dest" "$OTHER_ACTION" "$ACTION_AUTH" "$OTHER_CLI" "$CLI_AUTH" <<'PY'
+  if [ "$CI_MODE" = github ]; then
+    for wf in "$SDLC_TEMPLATES"/github/*.yml; do
+      [ -f "$wf" ] || continue
+      name=$(basename "$wf")
+      py_render "$wf" "$TMP/$name" "default_branch=$DEFAULT_BRANCH" "team=$TEAM" "marketplace_source=$MARKETPLACE_SOURCE" "ci_workflow_name=$CI_WORKFLOW" \
+        "evals_dir=$EVALS_DIR" "intent_dir=$INTENT_DIR" "spec_dir=$SPEC_DIR" "plan_dir=$PLAN_DIR" "action_auth_line=$ACTION_AUTH" "cli_auth_env=$CLI_AUTH"
+      if grep -qE '\{\{[a-z_]+\}\}' "$TMP/$name"; then note "$name still contains {{placeholders}} after rendering: $(grep -oE '\{\{[a-z_]+\}\}' "$TMP/$name" | sort -u | tr '\n' ' ')"; fi
+      dest="$ROOT/.github/workflows/$name"
+      if [ -f "$dest" ] && { grep -qF "$OTHER_ACTION" "$dest" || grep -qF "$OTHER_CLI" "$dest"; }; then
+        # an sdlc workflow generated with the other auth: merge only the auth line (the rest of the file is left as the user has it)
+        if [ "$DRY" = 0 ]; then python3 - "$dest" "$OTHER_ACTION" "$ACTION_AUTH" "$OTHER_CLI" "$CLI_AUTH" <<'PY'
 import sys
 p,oa,na,oc,nc=sys.argv[1:6]; s=open(p,encoding='utf-8').read(); open(p,'w',encoding='utf-8').write(s.replace(oa,na).replace(oc,nc))
 PY
+        fi
+        r_merged ".github/workflows/$name" "CI auth line $OTHER_SECRET → $SECRET_NAME (ci.auth=$AUTH_MODE)"; continue
       fi
-      r_merged ".github/workflows/$name" "CI auth line $OTHER_SECRET → $SECRET_NAME (ci.auth=$AUTH_MODE)"; continue
-    fi
-    put_file ".github/workflows/$name" "$TMP/$name"
-  done
+      put_file ".github/workflows/$name" "$TMP/$name"
+    done
+  else
+    # ci.mode local: the workflows that call Claude in Actions are not installed. Plugin-generated ones left from github mode
+    # (first line "# sdlc —") are listed, and removed with --prune-ci; workflows the project wrote itself are never touched.
+    for f in "$ROOT"/.github/workflows/sdlc-*.yml; do
+      [ -f "$f" ] || continue; head -1 "$f" | grep -q '^# sdlc' || continue
+      rel=".github/workflows/$(basename "$f")"
+      if [ "$PRUNE_CI" = 1 ]; then
+        if [ "$DRY" = 1 ]; then report "WOULD REMOVE" "$rel" "ci.mode local"; else rm -f "$f"; report "REMOVED" "$rel" "ci.mode local — Claude runs locally"; fi
+      else report "LEFTOVER" "$rel" "calls Claude in Actions; ci.mode local — remove with init.sh --prune-ci"; fi
+    done
+  fi
   if [ -f "$SDLC_TEMPLATES/github/CODEOWNERS" ]; then
     py_render "$SDLC_TEMPLATES/github/CODEOWNERS" "$TMP/CODEOWNERS" "team=$TEAM" "tech_lead=$TEAM" "platform_team=$TEAM" "product_owner=$TEAM" \
       "intent_dir=$INTENT_DIR" "spec_dir=$SPEC_DIR" "plan_dir=$PLAN_DIR" "evals_dir=$EVALS_DIR"

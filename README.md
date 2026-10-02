@@ -12,13 +12,13 @@ Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blo
 
 <p align="center"><a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html"><img src="docs/img/06-archify-architecture.png" alt="Archify 구성도: 개발자 → 스킬 19 → 작업 브랜치(코드·아티팩트) → Pull Request → Actions 7; 훅 7과 관리형 설정이 강제 층, .sdlc/config.json 이 유일한 설정" width="1000"></a><br><sub>Archify 로 그린 구성도 — <a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html">클릭하면 확대·검색·경로 추적이 되는 인터랙티브 판</a> (뷰어 UI 는 영어)</sub></p>
 
-<p align="center"><img src="docs/img/05-architecture.png" alt="구성: 개발자 기기의 플러그인(스킬 19·에이전트 5·훅 7·스크립트) → 프로젝트 저장소(config.json 단일 설정·CLAUDE.md·아티팩트 체인·워크플로) → GitHub(PR·룰셋·Actions 7·시크릿), 아래 관리형 설정 층" width="1000"></p>
+<p align="center"><img src="docs/img/05-architecture.png" alt="구성: 개발자 기기의 플러그인(스킬 19·에이전트 5·훅 7·스크립트) → 프로젝트 저장소(config.json 단일 설정·CLAUDE.md·아티팩트 체인) → GitHub(PR·룰셋, 선택으로 Actions), 아래 관리형 설정 층" width="1000"></p>
 
 이 마켓플레이스에는 플러그인이 하나 있습니다.
 
 | 플러그인 | 설명 | 설명서 |
 |---|---|---|
-| `sdlc` | `/sdlc:init` 한 번으로 새 프로젝트든 기존 프로젝트든 비파괴로 채택하고(GitHub 원격·1인 저장소·CI 인증 자동 감지, 시크릿·룰셋·auto-merge 설정), 변경마다 `/sdlc:go "요청 한 문장"` 이 intent → spec → plan → 구현 → 검증 → 리뷰 → PR 을 한 세션에서 끝냅니다. 스킬 19종(`/sdlc:run` 무인 루프 포함)·에이전트 5종·훅 7종·CI 템플릿 7종·기업 관리형 설정 템플릿 | [plugins/sdlc/README.md](plugins/sdlc/README.md) |
+| `sdlc` | `/sdlc:init` 한 번으로 새 프로젝트든 기존 프로젝트든 비파괴로 채택하고(GitHub 원격·1인 저장소 자동 감지, 룰셋·auto-merge 설정; Claude 는 기본으로 로컬에서만 실행), 변경마다 `/sdlc:go "요청 한 문장"` 이 intent → spec → plan → 구현 → 검증 → 리뷰 → PR 을 한 세션에서 끝냅니다. 스킬 19종(`/sdlc:run` 무인 루프 포함)·에이전트 5종·훅 7종·CI 템플릿 7종·기업 관리형 설정 템플릿 | [plugins/sdlc/README.md](plugins/sdlc/README.md) |
 
 ## 설치 (3줄)
 
@@ -28,8 +28,8 @@ claude plugin install sdlc@ai-native-sdlc
 # 아무 저장소에서 claude 를 열고:  /sdlc:init   →   /sdlc:go "요청 한 줄"   (1인 저장소는 이것만으로 머지까지)
 ```
 
-`/sdlc:init` 이 GitHub 원격·협업자 수·보관된 구독 토큰을 감지해 워크플로·시크릿·룰셋·auto-merge 까지 설정하고 채택 커밋을 PR 로 올립니다. 사람이 하는 것은
-계정당 한 번의 GitHub 로그인 승인과 구독 토큰 발급뿐입니다. 그 뒤로 `/sdlc:go` 는 정책 충돌 · 검증 3회 실패 · production 배포에서만 사람에게 묻습니다. 1인 저장소는 기본이 자동(plan 정지 없음, 체크 초록 뒤 머지)이고, 멈춤은 `roles.autopilot`/`roles.auto_merge` 를 false 로 두거나 `--no-autopilot`/`--no-merge` 로 사용자가 추가합니다. 팀 저장소는 intent·plan 승인과 머지 결정이 남습니다.
+`/sdlc:init` 이 GitHub 원격·협업자 수를 감지해 CODEOWNERS·룰셋·auto-merge 까지 설정하고 채택 커밋을 PR 로 올립니다. Claude 는 기본으로 이 컴퓨터에서만 돌고
+(`ci.mode: local`) CI 시크릿도 만들지 않습니다 — Actions 에서도 돌리려면 `--ci github`. 사람이 하는 것은 계정당 한 번의 GitHub 로그인 승인뿐입니다.
 설치 후에는 어느 프로젝트에서든 `/sdlc:` 로 시작하는 스킬을 쓸 수 있고, 훅은 자동으로 등록됩니다.
 
 ## 설치 없이 로컬에서 시험

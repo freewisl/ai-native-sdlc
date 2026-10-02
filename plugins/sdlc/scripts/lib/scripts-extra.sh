@@ -298,13 +298,14 @@ sdlc_next_steps() {
   if [ "${cases:-0}" -eq 0 ]; then
     step "2" "Evals (Stage 4): add cases under $evals_dir/cases/ (/sdlc:evals add) — start from 20–50 real recent tasks; one case per incident, review finding or vulnerability class."
   elif ! grep -q '"event":"eval.run"' "$root/.sdlc/logs/events.jsonl" 2>/dev/null; then
-    step "2" "Evals (Stage 4): run the suite once locally — /sdlc:evals run — then gate CLAUDE.md/.claude/evals changes on it in CI (sdlc-evals.yml)."
+    if [ "$(cfg "$root" .ci.mode local)" = github ]; then step "2" "Evals (Stage 4): run the suite once locally — /sdlc:evals run — then gate CLAUDE.md/.claude/evals changes on it in CI (sdlc-evals.yml)."
+    else step "2" "Evals (Stage 4): run the suite once — /sdlc:evals run — and again before merging any CLAUDE.md/skills/hooks change; schedule it weekly with cron (README: 로컬 정기 실행)."; fi
   fi
   # layer 3 — requirements & design, PR review
   if [ "${intents:-0}" -gt 0 ] && [ "${specs:-0}" -eq 0 ]; then
     step "3" "Requirements & design (Stage 2): /sdlc:spec <slug> on an approved intent → $spec_dir/<slug>.md with Flagged concerns for the product owner (needs the intent and the policy skills)."
   fi
-  if [ ! -f "$root/.github/workflows/sdlc-review.yml" ] || [ ! -f "$root/.github/CODEOWNERS" ]; then
+  if [ ! -f "$root/.github/CODEOWNERS" ] || { [ "$(cfg "$root" .ci.mode local)" = github ] && [ ! -f "$root/.github/workflows/sdlc-review.yml" ]; }; then
     step "3" "PR review (Stage 5): install sdlc-review.yml and CODEOWNERS (init.sh --github); require code-owner approval in branch protection — agents never approve (needs CLAUDE.md, evals, skills, subagents)."
   fi
   if [ -n "$test_cmd" ] && [ "$(cfg "$root" .verify.required_before_stop false)" != "true" ]; then
@@ -313,6 +314,7 @@ sdlc_next_steps() {
   # layer 4 — CI/CD
   local wf_missing=""
   for s in $SDLC_WORKFLOWS; do [ -f "$root/.github/workflows/$s" ] || wf_missing="$wf_missing $s"; done
+  [ "$(cfg "$root" .ci.mode local)" = github ] || wf_missing=""   # local mode: no workflows by design
   case "$wf_missing" in *sdlc-evals.yml*|*sdlc-ci-triage.yml*|*sdlc-spec-on-intent.yml*)
     step "4" "CI/CD (Stage 5): add sdlc-evals.yml (merge check), sdlc-ci-triage.yml (read-only build triage) and sdlc-spec-on-intent.yml; set the production approval env (RELEASE_APPROVAL) and a rehearsed commands.rollback (needs the review loop and the gates)." ;;
   esac
@@ -320,7 +322,7 @@ sdlc_next_steps() {
   local runbook_todo=""
   if [ -f "$root/.sdlc/bands.json" ] && grep -qE 'TODO|\{\{' "$root/.sdlc/bands.json" 2>/dev/null; then runbook_todo=yes; fi
   case "$wf_missing$runbook_todo" in *sdlc-monitor.yml*|*sdlc-scan.yml*|*yes)
-    step "5" "Closing the loop (Stage 6): set runbooks in .sdlc/bands.json, schedule sdlc-monitor.yml and sdlc-scan.yml, triage the queue with /sdlc:triage, close incidents with /sdlc:postmortem (needs intent.md, the review loop, the gates, the rollback path)." ;;
+    step "5" "Closing the loop (Stage 6): set runbooks in .sdlc/bands.json, schedule monitor and scan (local cron, or sdlc-monitor.yml/sdlc-scan.yml with ci.mode github), triage the queue with /sdlc:triage, close incidents with /sdlc:postmortem (needs intent.md, the review loop, the gates, the rollback path)." ;;
   esac
   if [ "$n" -eq 0 ]; then
     printf '%s\n' "All plays are adopted. Run the loop with /sdlc:go \"<one-sentence request>\" (solo: --autopilot); /sdlc:metrics for the indicators, /sdlc:evals add after each incident."

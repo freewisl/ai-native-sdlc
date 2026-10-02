@@ -1,7 +1,7 @@
 ---
 name: init
 description: Installs the AI-native SDLC playbook into the current repository — scaffolds .sdlc/config.json, the intent/spec/plan chain, REVIEW.md, evals and CLAUDE.md sections non-destructively, then fills CLAUDE.md from a repository inspection and runs the doctor. Use when the user says "set up sdlc", "initialize the playbook", "install the sdlc harness in this repo", "add CLAUDE.md and hooks", "bootstrap the sdlc plugin", "onboard this project to the sdlc plugin", "sdlc 초기화", "플레이북 설치해줘", "sdlc 셋업", "이 프로젝트에 sdlc 적용". Works the same for an empty new project and an existing codebase.
-argument-hint: "[--lang en|ko] [--github|--no-github] [--solo|--no-solo] [--auth api|oauth] [--sandbox] [--managed] [--mcp] [--dry-run] [--commands build=..,test=..,lint=..]"
+argument-hint: "[--lang en|ko] [--ci local|github] [--prune-ci] [--solo|--no-solo] [--auth api|oauth] [--sandbox] [--managed] [--mcp] [--dry-run] [--commands build=..,test=..,lint=..]"
 disable-model-invocation: true
 allowed-tools: Bash(bash "${CLAUDE_PLUGIN_ROOT}/scripts/*"), Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/*"), Bash(gh auth status*), Bash(gh repo view*), Bash(gh secret list*), Bash(gh api repos/*/rulesets*)
 ---
@@ -62,34 +62,18 @@ Infrastructure: A repo, Claude Code installed, and one engineer who knows the co
    Keep the whole file under a page (about 120 lines): Claude reads all of it every session.
 5. **Write the commands into config.** Make sure `.sdlc/config.json` `commands.build/test/lint/run` hold
    the same commands as CLAUDE.md (edit with `python3 -c` json load/dump; do not hand-edit JSON).
-6. **Optional integrations.** Zero-flag defaults fire first and are printed as NOTE lines — repeat them to the user: a GitHub
-   remote (github.com or a `github.*` Enterprise host) installs the workflows without `--github` (`--no-github` refuses); a single
-   collaborator reported by `gh` sets `roles.solo` and with it `roles.autopilot`, `roles.auto_merge` and `loop.enabled` — a solo
-   repository is fully automatic by default; a pause is something the owner adds by setting one of them false (`--no-solo` refuses;
-   an unknown count keeps team gates; an existing `roles.solo` is never overridden by detection, only by `--solo`); a stored subscription token selects `oauth`. The chosen auth is written to
-   `.sdlc/config.json` (`ci.auth`) so `github-setup.sh` registers the matching secret. `--github`: `init.sh` copies `sdlc-*.yml`
-   workflows and CODEOWNERS that do not exist yet. Ask which CI auth the user wants only when nothing decided it: `--auth api`
-   (secret `ANTHROPIC_API_KEY`, API billing) or `--auth oauth`
-   (secret `CLAUDE_CODE_OAUTH_TOKEN` created locally with `claude setup-token`, billed to the subscription). Then — whenever
-   `.github/workflows/sdlc-*.yml` are in place, whether `init.sh` just created them, they already existed, or the GitHub remote was
-   auto-detected — **do the GitHub side for them** with `bash "${CLAUDE_PLUGIN_ROOT}/scripts/github-setup.sh"` (needs `gh` logged in with admin rights):
-   it sets the secret (`--token-stdin` — ask the user to run `claude setup-token` and paste the token; never echo it) and creates
-   the default-branch ruleset the playbook assumes (PR required, review-thread resolution, code-owner review where the plan
-   allows, required status check `evals`, no force-push/deletion; on a solo repository approvals 0 and no code-owner requirement
-   so the owner can merge their own PRs while `evals` stays required — `--bypass` would let the admin skip that too, so avoid it
-   unless asked; it also enables `allow_auto_merge` for `/sdlc:go --merge`). Run `--dry-run` first and show the payload. If `gh` is missing, print the two manual steps it reports.
-   **Minimize human steps**: (a) if `gh auth status --hostname <the repository's host>` fails (scoped: an expired login on another host, e.g. a company GitHub Enterprise, must not count), run `github-setup.sh --login` in the background — it prints
-   `SDLC_DEVICE_CODE=XXXX-XXXX` and the URL; when a browser tool (Claude in Chrome) is available, open
-   https://github.com/login/device yourself, enter the code and approve, otherwise show the code to the user (one click);
-   (b) the CI token is needed once per account, not per repository: if `github-setup.sh` reports no stored token, ask the user to
-   run `! claude setup-token` in their terminal and paste the result, then call `github-setup.sh --token-stdin --save-token` so it
-   is kept in the keychain (or `~/.config/sdlc/ci-token`) and every later repository is fully automatic; (c) with `--solo`
-   (or `roles.solo: true`) the user is product owner, tech lead and release manager — do not tell them to "wait for the product
-   owner"; the approvals happen in-session. `--sandbox`: the sandbox
-   settings template is written for review, not merged blindly — show it. `--managed`: writes
-   `managed-settings.json` as a template to hand to IT; explain the OS-specific install paths from
-   `docs/ENTERPRISE.md` and that engineers cannot self-install managed settings. `--mcp`: `.mcp.json`
-   example for deploy tooling (only when absent).
+6. **Where Claude runs, and the GitHub side.** Default `ci.mode: local`: every skill, the loop, evals, monitor and scan run on
+   this machine under the user's Claude Code login — no GitHub Actions workflows that call Claude, no CI secret, no token handling.
+   Say so in one line. If `init.sh` reports LEFTOVER plugin workflows (`sdlc-*.yml` from an earlier github mode), re-run it with
+   `--prune-ci` and list what was removed — only files whose first line is the plugin's `# sdlc —` header are touched.
+   With a GitHub remote run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/github-setup.sh"`: in local mode it sets `allow_auto_merge`
+   and the default-branch ruleset without a required status check and stores no secret. If `gh auth status --hostname <host>`
+   fails, run `github-setup.sh --login` in the background and show the device code (a browser tool can enter it).
+   Only when the user asks for CI (`--ci github`): the workflows are installed, `ci.auth` decides the secret, and
+   `github-setup.sh` registers it (`--token-stdin`, never echo a token). Before doing that on an organization repository,
+   warn that a personal subscription token in repository secrets is readable by anyone who can edit workflows — recommend the
+   organization's API key (`--auth api`) instead. `--sandbox`, `--managed`, `--mcp` add the sandbox block, the managed-settings
+   template (for the platform team; engineers cannot self-install it) and the deployment-MCP example.
 7. **Doctor and next steps.** Run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh"` and show its table
    and its "Next steps" list exactly as printed — that list is the single source of the playbook's adoption
    order (dependency figure: layer 1 start-anywhere plays intent · CLAUDE.md · feedback loop · hook gate list ·

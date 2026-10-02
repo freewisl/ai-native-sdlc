@@ -3,6 +3,17 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-03
+
+Local-first: Claude runs on the developer's machine by default.
+
+### Changed
+- New `ci.mode` (default `local`). In local mode `init` installs no GitHub Actions workflows that call Claude and stores no CI secret; skills, the loop, evals, monitor and scan run under the local Claude Code login, scheduled with cron if wanted (README "로컬 정기 실행"). `--ci github` (or `--github`) restores the CI workflows; the mode is recorded in `.sdlc/config.json` and kept across runs.
+- `init --prune-ci` removes plugin-generated `sdlc-*.yml` left from github mode (only files with the plugin header); without it they are reported as LEFTOVER. `/sdlc:init` runs it for the user.
+- `github-setup.sh` in local mode skips the secret entirely and applies the ruleset without a required status check (merges still wait for every PR check to be green in `go`/`run`).
+- doctor: "CI mode" row (warns on leftover workflows), CI auth/secret rows only in github mode; next steps point at local runs and cron in local mode.
+- Docs, pictures and the Archify diagram rewritten local-first; the README warns against putting a personal subscription token into an organization repository's secrets.
+
 ## [0.6.0] - 2026-10-03
 
 Token economy, from the pilot's 125 headless sessions ($1,776 API-equivalent; 40% in sessions that ended in an error).

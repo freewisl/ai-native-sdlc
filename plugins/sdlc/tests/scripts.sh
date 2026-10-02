@@ -133,7 +133,17 @@ GH
 chmod +x "$STUB/gh"
 G="$WORK/ghdetect"; mkdir -p "$G"; git_init "$G"; ( cd "$G" && git remote add origin https://github.com/acme/widgets.git ); printf 'x\n' > "$G/README.md"; git_commit "$G" init "2026-03-01T00:00:00Z"
 out=$(SDLC_SKIP_GH_DETECT= PATH="$STUB:$PATH" GH_STUB_COLLAB=1 bash "$SCRIPTS/init.sh" --dir "$G" 2>&1)
-[ -f "$G/.github/workflows/sdlc-review.yml" ] && ok "GitHub remote → workflows installed without --github" || bad "auto github install" "$out"
+[ ! -f "$G/.github/workflows/sdlc-review.yml" ] && ok "GitHub remote → no Claude workflows by default (ci.mode local)" || bad "local default" "$(ls "$G/.github/workflows" 2>/dev/null)"
+[ -f "$G/.github/CODEOWNERS" ] && ok "GitHub remote → CODEOWNERS still installed" || bad "codeowners" "$out"
+has "new config records ci.mode local" "$(cat "$G/.sdlc/config.json")" '"mode": "local"'; has "init says Claude runs locally" "$out" "ci.mode local"
+GC="$WORK/ghci"; mkdir -p "$GC"; git_init "$GC"; ( cd "$GC" && git remote add origin https://github.com/acme/widgets.git ); printf 'x\n' > "$GC/README.md"; git_commit "$GC" init "2026-03-01T00:00:00Z"
+out=$(bash "$SCRIPTS/init.sh" --dir "$GC" --ci github 2>&1)
+[ -f "$GC/.github/workflows/sdlc-review.yml" ] && ok "--ci github installs the Claude workflows" || bad "--ci github" "$out"; has "--ci github recorded" "$(cat "$GC/.sdlc/config.json")" '"mode": "github"'
+out=$(bash "$SCRIPTS/init.sh" --dir "$GC" --ci local 2>&1); has "switching to local lists plugin workflows as LEFTOVER" "$out" "LEFTOVER"
+printf 'name: mine\n' > "$GC/.github/workflows/sdlc-custom.yml"
+out=$(bash "$SCRIPTS/init.sh" --dir "$GC" --prune-ci 2>&1); has "--prune-ci removes plugin workflows" "$out" "REMOVED"
+[ ! -f "$GC/.github/workflows/sdlc-review.yml" ] && [ -f "$GC/.github/workflows/sdlc-custom.yml" ] && ok "--prune-ci keeps workflows the project wrote" || bad "prune scope" "$(ls "$GC/.github/workflows")"
+out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$GC" 2>&1); has "doctor reports local CI mode" "$out" "local — skills, loop, evals"
 has "one collaborator → roles.solo auto" "$(cat "$G/.sdlc/config.json")" '"solo": true'
 G2="$WORK/ghdetect2"; mkdir -p "$G2"; git_init "$G2"; ( cd "$G2" && git remote add origin https://github.com/acme/widgets.git ); printf 'x\n' > "$G2/README.md"; git_commit "$G2" init "2026-03-01T00:00:00Z"
 out=$(SDLC_SKIP_GH_DETECT= PATH="$STUB:$PATH" GH_STUB_COLLAB=err bash "$SCRIPTS/init.sh" --dir "$G2" --no-github 2>&1)
@@ -153,7 +163,7 @@ printf 'not json' > "$WORK/oauth-auto/.sdlc/config.json"; out=$(bash "$SCRIPTS/i
 WA="$WORK/authline"; mkdir -p "$WA/.github/workflows"
 printf 'name: sdlc evals\n# custom-marker\njobs:\n  e:\n    steps:\n      - run: x\n        env:\n          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n' > "$WA/.github/workflows/sdlc-evals.yml"
 printf 'name: CI\njobs:\n  b:\n    steps:\n      - run: y\n        env:\n          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n' > "$WA/.github/workflows/ci.yml"
-out=$(bash "$SCRIPTS/init.sh" --dir "$WA" --auth oauth 2>&1)
+out=$(bash "$SCRIPTS/init.sh" --dir "$WA" --auth oauth --ci github 2>&1)
 has "mismatched sdlc workflow auth line reported as MERGED" "$out" "MERGED"; has "auth line switched to oauth secret" "$(cat "$WA/.github/workflows/sdlc-evals.yml")" 'CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}'
 has "rest of the workflow kept (marker)" "$(cat "$WA/.github/workflows/sdlc-evals.yml")" "custom-marker"; has "foreign workflow untouched" "$(cat "$WA/.github/workflows/ci.yml")" 'secrets.ANTHROPIC_API_KEY'
 out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$WA" 2>&1); has "doctor: CI auth consistent" "$out" "ci.auth=oauth, workflows use CLAUDE_CODE_OAUTH_TOKEN"
@@ -162,6 +172,9 @@ import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['ci']['auth']='api'; jso
 PY
 out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$WA" 2>&1); has "doctor warns when workflows disagree with ci.auth" "$out" "use CLAUDE_CODE_OAUTH_TOKEN but ci.auth=api"
 out=$(bash "$SCRIPTS/init.sh" --dir "$WA" 2>&1); has "re-run init follows config ci.auth back to api" "$(cat "$WA/.github/workflows/sdlc-evals.yml")" 'secrets.ANTHROPIC_API_KEY'
+python3 - "$WORK/solo/.sdlc/config.json" <<'PY2'
+import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['ci']['mode']='github'; json.dump(c,open(p,'w'),indent=2)
+PY2
 # --- github-setup on a Free-plan private repo (stub: rulesets 403, repo PATCH ok): auto-merge is set before the ruleset fails ---
 cat > "$STUB/gh" <<'GH'
 #!/bin/bash
@@ -188,6 +201,9 @@ out=$(bash "$SCRIPTS/init.sh" --dir "$X" --solo 2>&1); has "--solo on an existin
 [ -f "$PLUGIN/skills/go/SKILL.md" ] && ok "go skill present" || bad "go skill present" ""
 if command -v gh >/dev/null 2>&1; then
   tf="$WORK/ci-token"; printf 'tok-abc123' > "$tf"
+  out=$(SDLC_CI_TOKEN_FILE="$tf" bash "$SCRIPTS/github-setup.sh" --repo octo/demo --dry-run --dir "$G" 2>&1)
+  has "local mode: github-setup stores no CI secret" "$out" "SECRET  skipped — ci.mode local"; lacks "local mode: no required evals check in the ruleset" "$out" '"required_status_checks"'
+  has "local mode: ruleset and auto-merge still applied" "$out" "allow_auto_merge=true"
   out=$(SDLC_CI_TOKEN_FILE="$tf" bash "$SCRIPTS/github-setup.sh" --repo octo/demo --dry-run --dir "$WORK/solo" 2>&1)
   has "github-setup takes auth from config ci.auth" "$out" "auth=api"
   has "stored subscription token is not registered as an API key" "$out" "not used as ANTHROPIC_API_KEY"; lacks "api mode does not pick the stored token" "$out" "using stored token ("

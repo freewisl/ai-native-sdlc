@@ -213,12 +213,19 @@ else row ok loop "autopilot loop (/sdlc:run)" "off (loop.enabled=false) — /sdl
 
 # ---- GitHub ----
 have=0; miss=""
-for w in $SDLC_WORKFLOWS; do if [ -f "$ROOT/.github/workflows/$w" ]; then have=$((have+1)); else miss="$miss $w"; fi; done
-unrendered=""; for w in $SDLC_WORKFLOWS; do [ -f "$ROOT/.github/workflows/$w" ] && grep -qE '\{\{[a-z_]+\}\}' "$ROOT/.github/workflows/$w" && unrendered="$unrendered $w"; done
-if [ -n "$unrendered" ]; then row warn workflows ".github/workflows/sdlc-*.yml" "$have/6 — unrendered {{placeholders}} in:$unrendered (re-run init.sh --github with --marketplace/--ci-workflow)"
-elif [ "$have" = 6 ]; then row ok workflows ".github/workflows/sdlc-*.yml" "6/6"
-elif [ "$have" -gt 0 ]; then row warn workflows ".github/workflows/sdlc-*.yml" "$have/6 — missing:$miss"
-else row missing workflows ".github/workflows/sdlc-*.yml" "none — init.sh --github"; fi
+ci_mode=$(cfg "$ROOT" .ci.mode local)
+if [ "$ci_mode" = local ]; then
+  left=""; for f in "$ROOT"/.github/workflows/sdlc-*.yml; do [ -f "$f" ] && head -1 "$f" | grep -q '^# sdlc' && left="$left $(basename "$f")"; done
+  if [ -n "$left" ]; then row warn workflows "CI mode" "local, but plugin workflows that call Claude in Actions remain:$left — /sdlc:init removes them (init.sh --prune-ci)"
+  else row ok workflows "CI mode" "local — skills, loop, evals, monitor and scan run on this machine; no CI secret needed"; fi
+else
+  for w in $SDLC_WORKFLOWS; do if [ -f "$ROOT/.github/workflows/$w" ]; then have=$((have+1)); else miss="$miss $w"; fi; done
+  unrendered=""; for w in $SDLC_WORKFLOWS; do [ -f "$ROOT/.github/workflows/$w" ] && grep -qE '\{\{[a-z_]+\}\}' "$ROOT/.github/workflows/$w" && unrendered="$unrendered $w"; done
+  if [ -n "$unrendered" ]; then row warn workflows ".github/workflows/sdlc-*.yml" "$have/6 — unrendered {{placeholders}} in:$unrendered (re-run init.sh --github with --marketplace/--ci-workflow)"
+  elif [ "$have" = 6 ]; then row ok workflows ".github/workflows/sdlc-*.yml" "6/6"
+  elif [ "$have" -gt 0 ]; then row warn workflows ".github/workflows/sdlc-*.yml" "$have/6 — missing:$miss"
+  else row missing workflows ".github/workflows/sdlc-*.yml" "none — init.sh --github"; fi
+fi
 if [ -f "$ROOT/.github/CODEOWNERS" ]; then
   if grep -qE 'TODO|\{\{[a-z_]+\}\}' "$ROOT/.github/CODEOWNERS"; then row warn codeowners ".github/CODEOWNERS" "placeholders (TODO / {{…}}) remain — set real owners"; else row ok codeowners ".github/CODEOWNERS" ""; fi
 else row missing codeowners ".github/CODEOWNERS" "missing — human approval gate"; fi
@@ -228,7 +235,7 @@ ci_auth=$(cfg "$ROOT" .ci.auth "")
 L_OAUTH_A='claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}'; L_OAUTH_C='CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}'
 L_API_A='anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}'; L_API_C='ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}'
 case "$ci_auth" in oauth) exp_secret=CLAUDE_CODE_OAUTH_TOKEN; other_secret=ANTHROPIC_API_KEY; o1="$L_API_A"; o2="$L_API_C";; api) exp_secret=ANTHROPIC_API_KEY; other_secret=CLAUDE_CODE_OAUTH_TOKEN; o1="$L_OAUTH_A"; o2="$L_OAUTH_C";; *) exp_secret=""; other_secret=""; o1=""; o2="";; esac
-if ls "$ROOT"/.github/workflows/sdlc-*.yml >/dev/null 2>&1; then
+if [ "$ci_mode" = github ] && ls "$ROOT"/.github/workflows/sdlc-*.yml >/dev/null 2>&1; then
   mism=""; if [ -n "$o1" ]; then for f in "$ROOT"/.github/workflows/sdlc-*.yml; do { grep -qF "$o1" "$f" || grep -qF "$o2" "$f"; } && mism="$mism$(basename "$f") "; done; fi
   if [ -z "$exp_secret" ]; then row warn ci_auth "CI auth" "ci.auth missing in .sdlc/config.json — re-run /sdlc:init (it records the auth the workflows use)"
   elif [ -n "$mism" ]; then row warn ci_auth "CI auth" "${mism}use $other_secret but ci.auth=$ci_auth — re-run /sdlc:init to merge the auth line"
@@ -244,7 +251,8 @@ if [ -z "${SDLC_SKIP_GH_DETECT:-}" ] && is_git_repo "$ROOT" && gh_ready "$ROOT";
     am=$(gh api "repos/$repo" --jq '.allow_auto_merge' 2>/dev/null || echo "")
     if [ "${rs:-0}" -gt 0 ] 2>/dev/null; then row ok ruleset "branch protection ($repo)" "$rs active branch ruleset(s)"
     else row warn ruleset "branch protection ($repo)" "no active branch ruleset (private repos need GitHub Pro; the push guard still blocks direct pushes) — bash scripts/github-setup.sh"; fi
-    if [ -n "$exp_secret" ]; then
+    if [ "$ci_mode" != github ]; then :
+    elif [ -n "$exp_secret" ]; then
       case " $names " in *" $exp_secret "*) row ok ci_secret "CI auth secret" "$exp_secret present";; *) row warn ci_secret "CI auth secret" "$exp_secret not set (ci.auth=$ci_auth; present: ${names:-none}) — github-setup.sh --token-stdin";; esac
     else case "$names" in *CLAUDE_CODE_OAUTH_TOKEN*|*ANTHROPIC_API_KEY*) row ok ci_secret "CI auth secret" "present";; *) row warn ci_secret "CI auth secret" "CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY not set — github-setup.sh --token-stdin";; esac; fi
     case "$am" in true) row ok auto_merge "auto-merge ($repo)" "allow_auto_merge=true";; false) row warn auto_merge "auto-merge ($repo)" "allow_auto_merge=false — /sdlc:go --merge falls back to a direct merge after green checks; github-setup.sh enables it";; esac

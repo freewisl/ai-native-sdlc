@@ -161,7 +161,7 @@
       "id": "github",
       "type": "cloud",
       "label": "Pull Request",
-      "sublabel": "룰셋 · 체크 evals · squash 머지",
+      "sublabel": "룰셋 · 체크 초록 · squash 머지",
       "pos": [
         1000,
         300
@@ -174,8 +174,8 @@
     {
       "id": "actions",
       "type": "cloud",
-      "label": "Actions 7",
-      "sublabel": "review · evals · autopilot …",
+      "label": "Actions 7 — 선택",
+      "sublabel": "ci.mode github 일 때만",
       "pos": [
         1000,
         440
@@ -184,7 +184,7 @@
         176,
         64
       ],
-      "tag": "같은 플러그인 설치"
+      "tag": "기본은 로컬 cron"
     }
   ],
   "boundaries": [

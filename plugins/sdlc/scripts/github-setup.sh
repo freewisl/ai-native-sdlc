@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
     --bypass) want_bypass=1; shift;;
     --login) do_login=1; shift;;
     --approvals) approvals="$2"; shift 2;;
-    --checks) checks="$2"; shift 2;;
+    --checks) checks="$2"; checks_set=1; shift 2;;
     --no-bypass) bypass=0; shift;;
     --ruleset-name) rs_name="$2"; shift 2;;
     --dry-run) dry=1; shift;;
@@ -42,6 +42,8 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$root" ] && root=$(project_root "")
 [ -z "$auth" ] && auth=$(cfg "$root" .ci.auth api)   # same source init.sh rendered into the workflows
+ci_mode=$(cfg "$root" .ci.mode local)   # local: no workflows call Claude → no secret, and no `evals` required check
+[ "$ci_mode" = local ] && [ -z "${checks_set:-}" ] && checks=""
 case "$auth" in oauth) secret_name=CLAUDE_CODE_OAUTH_TOKEN;; api) secret_name=ANTHROPIC_API_KEY;; *) echo "--auth must be oauth or api" >&2; exit 2;; esac
 
 if ! has_cmd gh; then
@@ -85,6 +87,7 @@ printf '== github-setup  repo=%s  default=%s  private=%s  collaborators=%s  solo
 
 # ---------- 1. secret ----------
 token=""
+if [ "$ci_mode" != github ]; then echo "SECRET  skipped — ci.mode local (Claude runs on this machine; no CI credentials are stored)"; else
 if [ -z "$token_src" ]; then   # auto: env → keychain → file
   token="${!secret_name:-}"; [ -n "$token" ] && token_src="env:$secret_name"
   if [ "$auth" = oauth ]; then   # the stored token comes from `claude setup-token` — a subscription token, meaningless as an API key
@@ -114,6 +117,8 @@ else
   else echo "SECRET  $secret_name not set — create the token with \`claude setup-token\` and run: $0 --token-stdin  (paste the token, Ctrl-D)"; fi
 fi
 
+fi   # ci.mode github
+
 # ---------- 2. repository settings (before the ruleset: rulesets can be unavailable on the plan, these never are) ----------
 # /sdlc:go --merge uses `gh pr merge --auto`; GitHub accepts that only with allow_auto_merge AND a protected base branch. Without
 # protection (Free-plan private repos) go waits for green checks and merges directly instead — the setting still costs nothing.
@@ -126,6 +131,8 @@ existing=$(gh api "repos/$repo/rulesets" --jq ".[] | select(.name==\"$rs_name\")
 checks_json=$(printf '%s' "$checks" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' | while IFS= read -r c; do printf '{"context":%s},' "$(json_escape "$c")"; done); checks_json="[${checks_json%,}]"
 bypass_json='[]'   # default: no bypass, so the required status check stays enforced even for the owner (approvals 0 already lets a solo owner merge)
 [ "$want_bypass" = 1 ] && [ "$bypass" = 1 ] && bypass_json='[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"pull_request"}]'   # --bypass: admin skips ALL rules on PRs, incl. evals
+rsc_rule=""; [ "$checks_json" != "[]" ] && rsc_rule=",
+    { \"type\": \"required_status_checks\", \"parameters\": { \"strict_required_status_checks_policy\": false, \"required_status_checks\": $checks_json } }"
 payload() { # payload <code_owner:true|false>
   cat <<EOF
 {
@@ -138,8 +145,7 @@ payload() { # payload <code_owner:true|false>
     { "type": "deletion" },
     { "type": "non_fast_forward" },
     { "type": "pull_request", "parameters": { "required_approving_review_count": $approvals, "dismiss_stale_reviews_on_push": true,
-        "require_code_owner_review": $1, "require_last_push_approval": false, "required_review_thread_resolution": true } },
-    { "type": "required_status_checks", "parameters": { "strict_required_status_checks_policy": false, "required_status_checks": $checks_json } }
+        "require_code_owner_review": $1, "require_last_push_approval": false, "required_review_thread_resolution": true } }$rsc_rule
   ]
 }
 EOF
@@ -154,7 +160,7 @@ out=$(apply $first); rc=$?
 if [ $rc -ne 0 ] && [ "$first" = true ]; then
   # Code-owner review is unavailable on personal Free-plan private repos; retry without it before giving up.
   out2=$(apply false); rc2=$?
-  if [ $rc2 -eq 0 ]; then echo "RULESET '$rs_name' applied WITHOUT code-owner review (not available for this repository plan/owner type); PR + review-thread resolution + status check '$checks' + no force-push/deletion${bypass_json:+$([ "$bypass_json" != '[]' ] && printf ' + admin bypass for PRs (solo repo)')}"
+  if [ $rc2 -eq 0 ]; then echo "RULESET '$rs_name' applied WITHOUT code-owner review (not available for this repository plan/owner type); PR + review-thread resolution $([ -n "$checks" ] && printf "+ status check '%s' " "$checks")+ no force-push/deletion${bypass_json:+$([ "$bypass_json" != '[]' ] && printf ' + admin bypass for PRs (solo repo)')}"
   else
     echo "RULESET failed:" >&2; printf '%s\n' "$out2" | head -5 >&2
     echo "        Rulesets on private repositories need GitHub Pro/Team/Enterprise (public repositories: free). Create the rule by hand or make the repo public." >&2; exit 1
@@ -163,7 +169,7 @@ elif [ $rc -ne 0 ]; then
   echo "RULESET failed:" >&2; printf '%s\n' "$out" | head -5 >&2
   echo "        Rulesets on private repositories need GitHub Pro/Team/Enterprise (public repositories: free). The plugin's push guard (protect.block_direct_push) still keeps the agent off the default branch." >&2; exit 1
 else
-  echo "RULESET '$rs_name' applied: PR required (approvals $approvals)$([ "$first" = true ] && printf ' + code-owner review') + review-thread resolution + status check '$checks' + no force-push/deletion$([ "$bypass_json" != '[]' ] && printf ' + admin bypass for PRs (--bypass: evals becomes advisory for admins)')"
+  echo "RULESET '$rs_name' applied: PR required (approvals $approvals)$([ "$first" = true ] && printf ' + code-owner review') + review-thread resolution $([ -n "$checks" ] && printf "+ status check '%s' " "$checks")+ no force-push/deletion$([ "$bypass_json" != '[]' ] && printf ' + admin bypass for PRs (--bypass: evals becomes advisory for admins)')"
 fi
 
 echo "NOTE    the status check '$checks' appears on PRs once .github/workflows/sdlc-evals.yml has run at least once."
