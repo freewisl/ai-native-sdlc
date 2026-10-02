@@ -32,7 +32,9 @@
     "required_before_stop": false,
     "commands": [
       "test"
-    ]
+    ],
+    "agent": "auto",
+    "agent_min_files": 4
   },
   "plan": {
     "require_for_edits": false,
@@ -141,8 +143,10 @@
     "self_check": true,
     "fix_rounds": 2,
     "checks_max_minutes": 30,
+    "split_phases": true,
     "model": "opus",
     "allowed_tools": "Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash",
-    "pause_file": ".sdlc/state/pause"
+    "pause_file": ".sdlc/state/pause",
+    "item_note": ""
   }
 }

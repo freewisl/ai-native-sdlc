@@ -3,6 +3,24 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-10-03
+
+Four more token savings, and the loop takes over what hand-written parallel runners used to do.
+
+### Changed
+- `/sdlc:run` runs each item as two fresh sessions (`loop.split_phases`, default true): design — `/sdlc:go --stop-after plan` commits intent, spec and the approved plan on `sdlc/<slug>` and prints `SDLC_GO_PLANNED <slug>` — then build — `/sdlc:go --hand-off` starts from the committed plan, so the build session does not re-read the design conversation every turn.
+- `/sdlc:go --slug` continues an existing `sdlc/<slug>` branch: stages whose artifacts are committed approved are skipped (approved plan → implement).
+- The `sdlc-verifier` subagent is skipped for small changes: `verify.agent` `auto` (default) skips it below `verify.agent_min_files` (4) non-test files when every command passed in the first round, and says so in the report and PR body; `always` / `never`. The reviewer still reads the whole diff.
+- Every loop session gets its id up front (`--session-id`), so a session killed by the time cap is resumed like a usage-limit or max-turns stop instead of being redone.
+- The loop's time cap kills claude itself (`exec`), not only the subshell around it.
+- `/sdlc:go` rule for headless runs: never end a turn while a background command runs; long commands go to the background with a log and a foreground wait.
+
+### Added
+- `/sdlc:lesson --trim`: proposes moving reference detail out of an over-long CLAUDE.md into `docs/claude/<topic>.md` behind one pointer line, applies only after agreement; doctor's CLAUDE.md row points at it.
+- `run-loop.sh --items a,b,c` (these slugs, in this order), `--item-max-minutes`, `--note "<text>"` / `loop.item_note`; intent frontmatter `depends_on: [slug, ...]`.
+- Parallel loops: one per worktree (`--dir <worktree>`); claims in the git common directory keep two loops off the same slug; a linked worktree detaches at the default branch's tip. A session that leaves the tree dirty stops the run and leaves the tree untouched.
+- `init` fills the new `verify.agent*` and `loop.*` keys in existing configs.
+
 ## [0.7.0] - 2026-10-03
 
 Local-first: Claude runs on the developer's machine by default.

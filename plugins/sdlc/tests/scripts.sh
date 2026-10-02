@@ -332,7 +332,8 @@ chmod +x "$STUB/gh"; : > "$WORK/cl.log"
 out=$(PATH="$STUB:$PATH" CL_STUB_LOG="$WORK/cl.log" GH_STUB_MODE=merge bash "$SCRIPTS/run-loop.sh" --dir "$L" --claude-bin "$STUB/claude" 2>&1); rc=$?
 check "loop run exits 0 when everything merged" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
 has "both items merged" "$out" "merged=2"; has "self-check ran and was clean" "$out" "self_check=clean"; has "stopped because the queue emptied" "$out" "stop=queue empty"
-has "go invoked with --autopilot --hand-off and the intent title" "$(cat "$WORK/cl.log")" "/sdlc:go --slug a-first --autopilot --hand-off First thing"
+has "design phase runs first (--stop-after plan) with the intent title" "$(cat "$WORK/cl.log")" "/sdlc:go --slug a-first --autopilot --stop-after plan First thing"
+has "every new session gets its id up front" "$(cat "$WORK/cl.log")" "--session-id "
 has "loop sessions use the standard-context model" "$(cat "$WORK/cl.log")" "--model opus"; lacks "loop sessions are persisted for resume" "$(cat "$WORK/cl.log")" "--no-session-persistence"
 check "each item ran in its own -p session (2 go calls)" "$([ "$(grep -c -- '-p /sdlc:go' "$WORK/cl.log")" -eq 2 ] && echo true || echo false)" "$(cat "$WORK/cl.log")"
 has "loop.run event logged" "$(cat "$L/.sdlc/logs/events.jsonl")" '"event":"loop.run"'; has "loop.item events logged" "$(cat "$L/.sdlc/logs/events.jsonl")" '"event":"loop.item"'
@@ -386,7 +387,7 @@ has "cost recorded on the item event" "$(grep '"event":"loop.item"' "$L2/.sdlc/l
 echo 1 > "$GS/checks_fail"
 out=$(env $envs bash "$SCRIPTS/run-loop.sh" --dir "$L2" --claude-bin "$STUB/claude" 2>&1); rc=$?
 has "next run resumes the stopped session" "$(cat "$WORK/cl2.log")" "--resume sid-limit"
-has "resume prompt continues instead of restarting" "$(cat "$WORK/cl2.log")" "Continue the /sdlc:go --hand-off run for c-one"
+has "resume prompt continues the stopped phase instead of restarting" "$(cat "$WORK/cl2.log")" "Continue the design phase of the /sdlc:go run for c-one"
 has "checks are waited for in the shell" "$out" "CHECKS  PR #7"
 has "a failing check starts a short fix session" "$(cat "$WORK/cl2.log")" "has failing checks"
 has "both items merged by the shell after green checks" "$out" "merged=2"
@@ -399,8 +400,79 @@ python3 - "$L2/.sdlc/config.json" <<'PY'
 import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['loop']['max_turns']=200; c['loop']['model']=''; c['loop'].pop('fix_rounds',None); c['loop']['max_items']=3; json.dump(c,open(p,'w'),indent=2)
 PY
 bash "$SCRIPTS/init.sh" --dir "$L2" --no-github >/dev/null 2>&1
+# --- two-phase items, --items order, depends_on, claims, worktree, dirty-tree stop ---
+L3="$WORK/loop3"; mkdir -p "$L3"; git_init "$L3"; printf 'x\n' > "$L3/README.md"; git_commit "$L3" init "2026-03-01T00:00:00Z"
+bash "$SCRIPTS/init.sh" --dir "$L3" --solo --no-github >/dev/null 2>&1
+for x in e-first f-second g-dep; do printf -- '---\ntype: intent\nslug: %s\ntitle: %s\nstatus: approved\ncreated: 2026-03-0%s\n---\n' "$x" "$x" "${#x}" > "$L3/intent/$x.md"; done
+printf -- '---\ntype: intent\nslug: g-dep\ntitle: g-dep\nstatus: approved\ncreated: 2026-03-01\ndepends_on: [f-second]\n---\n' > "$L3/intent/g-dep.md"
+git_commit "$L3" intents "2026-03-02T00:00:00Z"
+cat > "$STUB/claude" <<'CL'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CL_STUB_LOG"
+slug=$(printf '%s' "$*" | sed -nE 's/.*--slug ([^ ]+).*/\1/p')
+case "$*" in
+  *"--stop-after plan"*)
+    git checkout -q -b "sdlc/$slug" 2>/dev/null || git checkout -q "sdlc/$slug"; mkdir -p plan
+    printf -- '---\ntype: plan\nslug: %s\nstatus: approved\n---\n' "$slug" > "plan/$slug.md"; git add -A >/dev/null; git commit -qm "plan($slug)" >/dev/null 2>&1
+    [ "$CL_STUB_DIRTY" = "$slug" ] && echo dirty > stray.txt
+    echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-d","total_cost_usd":0.5,"num_turns":8,"usage":{},"result":"SDLC_GO_PLANNED"}';;
+  *"--hand-off"*) echo "$slug" >> "$GH_STUB_STATE/built"; echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-b","total_cost_usd":1.0,"num_turns":20,"usage":{},"result":"SDLC_GO_PR 9"}';;
+esac
+exit 0
+CL
+chmod +x "$STUB/claude"
+cat > "$STUB/gh" <<'GH'
+#!/bin/bash
+S="$GH_STUB_STATE"
+case "$*" in
+  "auth status --hostname github.com"*) exit 0;;
+  "auth status"*) exit 1;;
+  "pr list --head sdlc/"*"--state merged"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null && echo 9;;
+  "pr list --head sdlc/"*"--state open"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null || { grep -qx "$h" "$S/built" 2>/dev/null && { echo "$h" > "$S/current"; echo 9; }; };;
+  "pr checks"*) exit 0;;
+  "pr merge"*) cat "$S/current" >> "$S/merged"; exit 0;;
+  *) exit 1;;
+esac
+GH
+chmod +x "$STUB/gh"
+G3S="$WORK/gh3state"; mkdir -p "$G3S"; : > "$G3S/merged"; : > "$G3S/built"; : > "$WORK/cl3.log"
+e3="PATH=$STUB:$PATH CL_STUB_LOG=$WORK/cl3.log GH_STUB_STATE=$G3S"
+out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items g-dep,f-second,e-first --no-self-check --claude-bin "$STUB/claude" 2>&1)
+has "split items: build session follows the design session" "$(cat "$WORK/cl3.log")" "/sdlc:go --slug f-second --autopilot --hand-off f-second"
+first=$(grep -o -- '--slug [a-z-]*' "$WORK/cl3.log" | head -1)
+check "--items order is followed (g-dep waits for f-second, so f-second goes first)" "$([ "$first" = "--slug f-second" ] && echo true || echo false)" "$first"
+has "depends_on item runs once its dependency merged" "$(cat "$WORK/cl3.log")" "--slug g-dep --autopilot --stop-after plan"
+has "all three merged" "$out" "merged=3"
+# claims: a slug claimed by a live process is skipped
+mk3() { printf -- '---\ntype: intent\nslug: %s\ntitle: %s\nstatus: approved\ncreated: 2026-03-09\n---\n' "$1" "$1" > "$L3/intent/$1.md"; }
+mk3 h-claimed; mk3 i-free; git_commit "$L3" more "2026-03-03T00:00:00Z"
+CD=$(cd "$L3" && cd "$(git rev-parse --git-common-dir)" && pwd)/sdlc-claims; mkdir -p "$CD"; sleep 300 & spid=$!; printf '%s other\n' "$spid" > "$CD/h-claimed"
+out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --no-self-check --dry-run --claude-bin "$STUB/claude" 2>&1)
+lacks "a slug claimed by another live loop is skipped" "$out" "--slug h-claimed"; has "the unclaimed slug is queued" "$out" "--slug i-free"
+kill $spid 2>/dev/null; wait $spid 2>/dev/null
+# linked worktree: main is checked out in the main tree, the loop detaches at its tip instead of failing
+git -C "$L3" worktree add -q --detach "$WORK/loop3-wt" >/dev/null 2>&1
+out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$WORK/loop3-wt" --items i-free --no-self-check --claude-bin "$STUB/claude" 2>&1)
+has "the loop runs in a linked worktree" "$out" "RESULT  i-free → merged"
+# a session that leaves the tree dirty stops the run and leaves the tree as it is
+mk3 j-dirty; mk3 k-after; git_commit "$L3" more2 "2026-03-04T00:00:00Z"
+out=$(env $e3 CL_STUB_DIRTY=j-dirty bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items j-dirty,k-after --no-self-check --claude-bin "$STUB/claude" 2>&1)
+has "a dirty tree after a session stops the run" "$out" "stop=dirty tree"; lacks "the next item is not started on a dirty tree" "$(cat "$WORK/cl3.log")" "--slug k-after"
+check "the stray file is left in place" "$([ -f "$L3/stray.txt" ] && echo true || echo false)" ""
+rm -f "$L3/stray.txt"
 has "init migrates the old max_turns default" "$(cat "$L2/.sdlc/config.json")" '"max_turns": 120'; has "init migrates the empty model default" "$(cat "$L2/.sdlc/config.json")" '"model": "opus"'
 has "init fills missing loop keys" "$(cat "$L2/.sdlc/config.json")" '"fix_rounds": 2'; has "init keeps a user-set loop value" "$(cat "$L2/.sdlc/config.json")" '"max_items": 3'
+has "init fills the verifier skip keys" "$(cat "$L2/.sdlc/config.json")" '"agent": "auto"'; has "init fills loop.split_phases" "$(cat "$L2/.sdlc/config.json")" '"split_phases": true'
+# a max-turns stop leaves a resume file so the next run continues that session
+cat > "$STUB/claude" <<'CL'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CL_STUB_LOG"
+echo '{"type":"result","is_error":true,"subtype":"error_max_turns","session_id":"sid-mt","total_cost_usd":0.2,"num_turns":120,"usage":{},"result":""}'
+exit 1
+CL
+chmod +x "$STUB/claude"; mk3 m-turns; git_commit "$L3" more3 "2026-03-05T00:00:00Z"
+out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items m-turns --max-items 1 --no-self-check --claude-bin "$STUB/claude" 2>&1)
+check "a max-turns stop records the session for resume" "$([ "$(cat "$L3/.sdlc/state/loop-resume/m-turns" 2>/dev/null)" = sid-mt ] && echo true || echo false)" "$out"
 
 
 echo "== $PASS passed, $FAIL failed"

@@ -54,7 +54,7 @@ if [ -f "$ROOT/CLAUDE.md" ]; then
   lines=$(wc -l < "$ROOT/CLAUDE.md" | tr -d ' ')
   st=ok; [ "$present" -lt 5 ] && st=warn
   maxl=$(cfg "$ROOT" .claude_md.max_lines 120); case "$maxl" in ''|*[!0-9]*) maxl=120;; esac
-  row $st claude_md "CLAUDE.md" "$present/5 sections, $lines lines$([ "$lines" -gt "$maxl" ] && printf ' — over one page (%s lines), consider trimming' "$maxl")"
+  row $st claude_md "CLAUDE.md" "$present/5 sections, $lines lines$([ "$lines" -gt "$maxl" ] && printf ' — over one page (%s lines); /sdlc:lesson --trim moves reference detail out' "$maxl")"
   for s in $SDLC_CLAUDE_SECTIONS; do
     t=$(claude_md_section_title "$s")
     if claude_md_section_present "$ROOT/CLAUDE.md" "$s"; then

@@ -201,6 +201,10 @@ else:
         if k not in L: L[k]=v; ch.append('loop.%s=%s'%(k,json.dumps(v)))
     if L.get('max_turns')==200: L['max_turns']=tl.get('max_turns',120); ch.append('loop.max_turns 200→%s (old default)'%L['max_turns'])
     if L.get('model')=='': L['model']=tl.get('model','opus'); ch.append('loop.model ""→%s (old default)'%L['model'])
+tv=json.load(open(tpl,encoding='utf-8')).get('verify',{})
+V=c.setdefault('verify',{})
+for k in ('agent','agent_min_files'):
+    if k in tv and k not in V: V[k]=tv[k]; ch.append('verify.%s=%s'%(k,json.dumps(tv[k])))
 if not c.setdefault('protect',{}).get('default_branch'): c['protect']['default_branch']=defb; ch.append('protect.default_branch=%s'%defb)
 if ch and dry!='1':
     json.dump(c,open(p,'w',encoding='utf-8'),indent=2,ensure_ascii=False); open(p,'a').write('\n')

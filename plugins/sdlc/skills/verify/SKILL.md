@@ -50,7 +50,10 @@ Infrastructure: A test suite and a build that run locally with one command each.
    spacing, copy, states. Adjust, re-screenshot, compare again — two or three rounds is normal; stop when
    the differences are intentional or below the mock's precision. Save screenshots under
    `.sdlc/state/ui/<slug>-round<n>.png` and list what changed each round.
-5. **Independent check.** Unless `--no-agent`: launch the `sdlc-verifier` agent (Agent tool; the plugin's
+5. **Independent check.** Unless `--no-agent`, or `verify.agent` says to skip (`never`; or `auto`, the
+   default, when the change touches fewer than `verify.agent_min_files` (4) non-test files and every
+   command passed in the first round — say "verifier skipped (small change)"; `always` never skips):
+   launch the `sdlc-verifier` agent (Agent tool; the plugin's
    `sdlc-verifier`) with: the commands, the plan path, the changed files (`git diff --name-only HEAD~1`
    or the branch base) and the target from step 1. Include its report verbatim. Its verdict does not
    override step 2's evidence, but a mismatch it finds must be resolved or explicitly accepted by the user.

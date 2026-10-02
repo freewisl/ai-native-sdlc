@@ -1,7 +1,7 @@
 ---
 name: lesson
-description: Records a correction in CLAUDE.md's "Things Claude gets wrong" section the second time the same mistake appears — one deduplicated line, keeps CLAUDE.md under a page, optionally adds a matching eval, and commits. Use when the user says "add this to CLAUDE.md", "Claude keeps doing X, remember not to", "record a lesson", "that's the second time — put it in the mistakes list", "CLAUDE.md에 추가해", "이거 또 틀렸어, 기억시켜", "교훈 기록", "같은 실수 반복 방지".
-argument-hint: "\"<one-line correction>\" [--eval] [--section <heading>]"
+description: Records a correction in CLAUDE.md's "Things Claude gets wrong" section the second time the same mistake appears — one deduplicated line, keeps CLAUDE.md under a page, optionally adds a matching eval, and commits. `--trim` shrinks an over-long CLAUDE.md by moving reference detail into on-demand docs. Use when the user says "add this to CLAUDE.md", "CLAUDE.md is too long, trim it", "CLAUDE.md 줄여줘", "Claude keeps doing X, remember not to", "record a lesson", "that's the second time — put it in the mistakes list", "CLAUDE.md에 추가해", "이거 또 틀렸어, 기억시켜", "교훈 기록", "같은 실수 반복 방지".
+argument-hint: "\"<one-line correction>\" [--eval] [--section <heading>] | --trim"
 ---
 
 # /sdlc:lesson — when Claude makes a mistake twice, the correction goes into CLAUDE.md
@@ -36,6 +36,22 @@ Prerequisite: CLAUDE.md exists (`/sdlc:init` creates it).
 6. **Commit** `docs(claude-md): lesson — <line, truncated to 60 chars>` (when `auto_commit`; else print the
    commands). Since review reads CLAUDE.md, the mistake is caught from the next PR onwards.
 
+## Trim mode (`--trim`)
+CLAUDE.md is read into every session and every turn re-reads it, so each line above a page is paid for
+again and again. Trim keeps what Claude needs on every task and moves the rest to where it is read only
+when relevant.
+1. Count `wc -l CLAUDE.md`; the target is `claude_md.max_lines` (default 120).
+2. Sort every block into three kinds: **keep** (commands, conventions, frozen paths, the mistakes list, the
+   five sdlc sections — anything that applies to most tasks); **move** (reference detail needed only for
+   some tasks: change-history tables, long architecture or module notes, per-subproject runbooks) — to
+   `docs/claude/<topic>.md` (or an existing doc that already covers it), copied verbatim, leaving one
+   pointer line `- <topic>: read docs/claude/<topic>.md before touching <paths>`; **drop** (duplicates, rules
+   a hook or linter now enforces, paths that no longer exist — verify each).
+3. Show a table — block, lines, action, destination — and the line count after; apply nothing until the
+   user agrees. In a headless or autopilot run, report the proposal only.
+4. Apply, check every pointer target exists, and commit `docs(claude-md): trim <before>→<after> lines` with
+   the moved files in the same commit. Nothing moved is lost: it is in git and behind a pointer.
+
 ## Output
 The line added (or the existing line sharpened), the section as it now reads, the line count with the
 page warning if any, the eval case name when created, and the commit hash.
@@ -53,6 +69,7 @@ page warning if any, the eval case name when created, and the commit hash.
 mkdir -p .sdlc/logs && printf '{"ts":"%s","event":"lesson.add","session_id":"","decision":"allow","reason":"lesson recorded","detail":{"line":%s,"source":"%s","eval":%s}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "<line>" | jq -Rs .)" "<user|review|postmortem>" "<true|false>" >> .sdlc/logs/events.jsonl
 ```
+For `--trim`, the event is `lesson.trim` with `detail: {before, after, moved: [...], dropped: n}`.
 Feeds Stage 3's CLAUDE.md indicators in `/sdlc:metrics`: lessons added over time (git history of
 CLAUDE.md) and how often Claude repeats a mistake CLAUDE.md should have caught (`review.run` events with
 `repeat_finding: true` after the lesson date).

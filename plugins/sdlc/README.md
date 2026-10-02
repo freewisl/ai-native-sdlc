@@ -187,10 +187,15 @@ claude
 
 ### 무인 루프 — `/sdlc:run` (선택, 1인 저장소)
 
-`go` 는 한 문장에 한 변경입니다. 백로그를 통째로 맡기려면 `/sdlc:run` 을 칩니다 — 1인 저장소는 `init` 이 `loop.enabled` 를 켜 두고, 끄려면 false 로 둡니다. 승인된 intent 를 만든 순서로 한 건씩,
-매번 **새 세션**의 `go --autopilot --hand-off` 로 처리하고, 머지된 결과를 리뷰어와 보안 체크리스트로 다시 점검해 Important 만 새 intent(PR 경유)로 큐에 넣습니다. 큐가 비면 끝납니다.
+`go` 는 한 문장에 한 변경입니다. 백로그를 통째로 맡기려면 `/sdlc:run` 을 칩니다 — 1인 저장소는 `init` 이 `loop.enabled` 를 켜 두고, 끄려면 false 로 둡니다. 승인된 intent 를 만든 순서로(`--items a,b,c` 면 그 순서로) 한 건씩,
+매번 **새 세션 둘** — 설계(`go --stop-after plan`: intent·spec·승인된 plan 을 `sdlc/<slug>` 에 커밋)와 구현(`go --hand-off`: 커밋된 plan 에서 시작) — 으로 처리하고, 머지된 결과를 리뷰어와 보안 체크리스트로 다시 점검해 Important 만 새 intent(PR 경유)로 큐에 넣습니다. 큐가 비면 끝납니다.
 사람에게 남는 것은 사후 검토입니다 — 머지된 PR 목록과 `loop.item` 로그. 상한(`max_items` 5 · `max_minutes` 120 · 연속 실패 3회), slug 별 차단, 정지 파일(`touch .sdlc/state/pause`)이
 폭주를 막고, 팀 저장소에서는 스크립트가 거부합니다. 세션 없이 돌리려면 로컬 cron 으로 `run-loop.sh --once` 를 걸면 됩니다([로컬 정기 실행](#로컬-정기-실행)). `/sdlc:run --dry-run` 이 큐와 명령을 먼저 보여 줍니다.
+
+- **순서와 의존**: intent 프론트매터에 `depends_on: [ios-login]` 을 적으면 그 PR 이 머지될 때까지 기다립니다.
+- **병렬**: 작업트리마다 루프 하나 — `git worktree add ../app-2` 뒤 `run-loop.sh --dir ../app-2`. 루프가 집은 slug 는 git 공통 디렉터리에 표시되어 다른 루프가 건너뛰고, 링크된 작업트리는 기본 브랜치 끝에 detach 합니다. 구독 한도를 나눠 쓰므로 둘까지를 권합니다.
+- **끊김과 이어 하기**: 사용량 한도·턴 상한·시간 상한으로 멈춘 세션은 다음 실행이 같은 세션을 `--resume` 으로 이어 갑니다(세션 id 를 시작할 때 정해 둠). 설계가 끝나 plan 이 브랜치에 있으면 구현 세션부터 다시 엽니다. 세션 뒤 작업트리가 더러우면 그대로 두고 멈춥니다.
+- **공통 당부**: `--note "<문장>"` 이나 `loop.item_note` 가 모든 항목의 요청 끝에 붙습니다.
 
 <p align="center"><img src="../../docs/img/03-run-loop.png" alt="/sdlc:run 루프: 큐 → 새 세션의 go → 머지 → 자기 점검 → 새 intent, 상한과 정지 스위치" width="1000"></p>
 
@@ -270,7 +275,7 @@ R-ID 단위의 전수 대응표는 [docs/PLAYBOOK-MAPPING.md](../../docs/PLAYBOO
 | `/sdlc:verify [--bugfix] [--ui <mock-path>] [--no-agent]` | 4 | `commands` 로 build/test/lint 실행·정량 목표 확인·출력 붙이기. `--bugfix`: 실패 테스트 먼저 작성·커밋 → 테스트 잠금 상태로 수정. `--ui`: 스크린샷 비교 루프. 끝에 `sdlc-verifier` 로 신선한 컨텍스트 검증 | 검증 출력, events | PR 의 코드 오너 |
 | `/sdlc:evals add [<name>] [--from task\|review\|incident\|scan] \| run [--case <glob>] [--model <m>] [--threshold <t>] [--max-turns <n>] [--dry-run] \| list \| report` | 4 | `add`: 최근 작업·인시던트·PR·취약점 클래스 → `cases/<name>/`. `run`: `run-evals.sh`(임계치 미달 exit 1). `list`/`report` | evals/cases, evals/results | 설정 변경을 소유한 팀 |
 | `/sdlc:review [--base <ref>] [--pr <n>] [--slug <slug>] [--post]` | 5 | REVIEW.md 로드 → `sdlc-reviewer` 3 패스(Bugs/Security/Compliance vs spec·plan) → Important/Nit, nit ≤ 5 → 같은 실수 2회면 `lesson` → CLAUDE.md 낡음 경고. `--pr`: gh 로 미해결 코멘트·실패 체크 스윕→수정→푸시 반복 | 리뷰 보고, CLAUDE.md 갱신 | **사람**(코드 오너, 브랜치 보호). 에이전트 승인 금지 |
-| `/sdlc:lesson \"<one-line correction>\" [--eval] [--section <heading>]` | 3/5 | "Things Claude gets wrong" 에 한 줄 추가(중복 검사), 필요 시 `evals add` 연계, 한 페이지 초과 경고 | CLAUDE.md | 코드 오너(PR 리뷰) |
+| `/sdlc:lesson \"<one-line correction>\" [--eval] [--section <heading>]` · `--trim` | 3/5 | "Things Claude gets wrong" 에 한 줄 추가(중복 검사), 필요 시 `evals add` 연계, 한 페이지 초과 경고. `--trim`: 한 페이지(120줄)를 넘는 CLAUDE.md 에서 일부 작업에만 필요한 참고 내용(변경 이력 표·긴 구조 설명 등)을 `docs/claude/<주제>.md` 로 그대로 옮기고 포인터 한 줄만 남김 — 표로 제안하고 동의 후 적용 | CLAUDE.md | 코드 오너(PR 리뷰) |
 | `/sdlc:release <dev\|staging\|production> [command] \| rollback` | 5 | 티어 확인 → production 은 `approval_env` 와 롤백 명령 존재 확인 후 진행(훅이 2중 강제) → 결정 로그 → 배포 후 `monitor` 1회 제안 | gate.log, events | 릴리스 매니저(`RELEASE_APPROVAL`) |
 | `/sdlc:monitor [--dry-run] [--metric <name>] \| add <name>` | 6 | `monitor.py`: 관측 → 기준선 → Western Electric 규칙 → 티어 → log / diagnose / propose | `.sdlc/history/`, `intent/triage/` | — (탐지는 결정론, 3σ propose 도 PR 게이트 통과) |
 | `/sdlc:triage [<file-or-slug>] [fix\|schedule <date>\|dismiss \"<reason>\"]` | 6 | `intent/triage/*.md` 큐 순회 → fix now(→ `plan`) / schedule / dismiss(사유 → 밴드 튠 메모) 기록 | intent status, events | 서비스 오너·온콜 |
@@ -382,12 +387,15 @@ R-ID 단위의 전수 대응표는 [docs/PLAYBOOK-MAPPING.md](../../docs/PLAYBOO
 | `roles.auto_merge` | boolean | solo `true` · 팀 `false` (`init` 이 정함) | `/sdlc:go` 가 체크 초록·리뷰어 Important 0 뒤 PR 을 squash 머지. 사람이 머지하려면 false(또는 그 한 번만 `--no-merge`) |
 | `loop.enabled` | boolean | solo `true` · 팀 `false` (`init` 이 정함) | `/sdlc:run` 무인 루프 허용. 끄려면 false. `roles.solo` 가 아니면 켜도 스크립트가 거부 |
 | `loop.max_items` / `max_minutes` | number | `5` / `120` | 한 번 실행의 상한(건수·분). `--once` 는 1건 |
-| `loop.item_max_minutes` / `max_turns` | number | `45` / `120` | 항목 하나(새 `claude -p` 세션)의 시간·턴 상한. 턴 상한에 걸린 세션은 다음 실행에서 이어 받음(처음부터 다시 하지 않음) |
+| `loop.item_max_minutes` / `max_turns` | number | `45` / `120` | 세션 하나(새 `claude -p`)의 시간·턴 상한. 상한에 걸린 세션은 다음 실행에서 이어 받음(처음부터 다시 하지 않음) |
+| `loop.split_phases` | boolean | `true` | 항목마다 설계 세션(`go --stop-after plan`)과 구현 세션(`go --hand-off`)을 따로 엶 — 구현이 설계 대화를 끌고 다니지 않음. false 면 한 세션 |
+| `loop.item_note` | string | `""` | 모든 항목 요청 끝에 붙는 한 줄(`--note` 가 우선) |
 | `loop.max_failures_per_slug` | number | `3` | 같은 slug 가 이만큼 실패하면 `.sdlc/state/loop-failures.txt` 에 차단 기록, 사람이 지우기 전까지 건너뜀 |
 | `loop.self_check` | boolean | `true` | 실행 중 1건 이상 머지됐으면 머지된 diff 를 리뷰어+스캔으로 재점검, Important 만 승인된 intent 로(PR 경유) |
 | `loop.model` / `allowed_tools` | string | `"opus"` / `"Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash"` | 항목 세션의 모델과 허용 도구. 기본 `opus` 는 표준 문맥이라 긴 세션이 1M 까지 커지지 않고 자동 압축됨(`opus[1m]` 은 매 턴 다시 읽는 양이 커져 비쌈) |
 | `loop.fix_rounds` / `checks_max_minutes` | number | `2` / `30` | PR 체크는 셸이 기다리고(토큰 0) 초록이면 머지. 실패하면 짧은 수정 세션을 최대 이 횟수만큼. 대기 상한(분) |
 | `loop.pause_file` | string | `".sdlc/state/pause"` | 이 파일이 있으면 루프가 시작하지 않거나 다음 항목 전에 멈춤(정지 스위치) |
+| `verify.agent` / `agent_min_files` | string / number | `"auto"` / `4` | `sdlc-verifier` 서브에이전트 실행 규칙. `auto` 는 테스트 외 변경 파일이 이 수보다 적고 첫 회차에 모든 명령이 통과하면 건너뜀("verifier skipped (small change)" 를 보고·PR 본문에 남김). `always` / `never`. 리뷰어는 어느 쪽이든 diff 전체를 읽음 |
 | `roles.product_owner` / `tech_lead` / `release_manager` | string | `""` | 팀 저장소에서 승인자 이름(문서·PR 본문에 사용) |
 | `policies` | string[] | `[]` | `/sdlc:spec` 이 제약으로 호출할 정책 스킬 이름(`/sdlc:policy` 가 등록) |
 | `evals.model` | string | `"sonnet"` | eval 실행 모델(비용 통제) |
@@ -641,7 +649,7 @@ OS 별 파일 경로, 드롭인 디렉터리, `requiredMinimumVersion` 의 fail-
 
 **사람이 머지하지 않고 계속 돌릴 수 있나요?** 1인 저장소면 됩니다. `/sdlc:run` 을 치면(1인 저장소는 `init` 이 `loop.enabled` 를 켜 둡니다), 승인된 intent 를 한 건씩 새 세션의 `go --autopilot --hand-off` 로 처리하고, 머지된 결과를 리뷰어와 스캔 체크리스트로 다시 점검해 Important 만 새 intent 로 만들어 큐에 넣습니다. 고칠 것이 없으면 멈춥니다. 상한(건수·시간·연속 실패 3회), slug 별 차단, 정지 파일 `.sdlc/state/pause` 가 폭주를 막고, 머지 조건(PR 의 모든 체크 초록·리뷰어 Important 0·훅)은 `go` 와 같습니다. 세션 없이 돌리려면 로컬 cron 에 `run-loop.sh --once` 를 겁니다(`ci.mode github` 이면 `sdlc-autopilot.yml` 도 가능, 이때는 `SDLC_GH_TOKEN` 필요). production 배포는 여전히 사람 몫입니다.
 
-**토큰이 너무 빨리 닳습니다.** 실측(파일럿 125세션)에서 비용의 대부분은 CI 가 아니라 로컬 `go`/`run` 세션이었고, 원인은 넷이었습니다 — ① 한 세션이 CI 대기까지 붙들고 있어 문맥이 수십만 토큰으로 커지고 매 턴 그것을 다시 읽음 ② 한도에 걸려 끊긴 세션을 처음부터 다시 돌림(오류 종료 세션이 비용의 40%) ③ 여러 체크아웃에서 동시에 돌려 5시간 세션 한도를 빨리 소진 ④ 조사·검증 서브에이전트도 메인과 같은 고급 모델. 0.6.0 부터 `run` 은 `go --hand-off` 로 PR 까지만 세션을 쓰고 체크는 셸이 기다리며, 한도에 걸리면 루프를 멈추고 다음 실행에서 그 세션을 이어 받습니다(`claude --resume`). 루프 모델은 표준 문맥 `opus`, 턴 상한 120, researcher·verifier·simplifier 는 `sonnet` 입니다. 기본 로컬 모드에서는 CI 의 Claude 실행이 아예 없어 그 몫의 한도도 쓰지 않습니다(`ci.mode github` 에서도 `sdlc/*` 브랜치 PR 은 CI 리뷰를 건너뜀). 병렬 실행은 둘까지를 권합니다 — 구독 한도는 세션끼리 나눠 씁니다. 실제 사용량은 `/sdlc:metrics` 의 "Headless session cost" 행(항목별 `total_cost_usd` 합)으로 확인합니다. 이미 채택한 저장소는 `/sdlc:init` 을 다시 돌리면 `loop` 의 옛 기본값(턴 200, 모델 빈 값)이 새 기본값으로 바뀌고, 예전에 깔린 `sdlc-*.yml` 은 같은 `init` 이 지웁니다. 매 요청에 실리는 CLAUDE.md 를 한 페이지(120줄) 안으로 유지하는 것도 큰 절약입니다.
+**토큰이 너무 빨리 닳습니다.** 실측(파일럿 125세션)에서 비용의 대부분은 CI 가 아니라 로컬 `go`/`run` 세션이었고, 원인은 넷이었습니다 — ① 한 세션이 CI 대기까지 붙들고 있어 문맥이 수십만 토큰으로 커지고 매 턴 그것을 다시 읽음 ② 한도에 걸려 끊긴 세션을 처음부터 다시 돌림(오류 종료 세션이 비용의 40%) ③ 여러 체크아웃에서 동시에 돌려 5시간 세션 한도를 빨리 소진 ④ 조사·검증 서브에이전트도 메인과 같은 고급 모델. 0.6.0 부터 `run` 은 `go --hand-off` 로 PR 까지만 세션을 쓰고 체크는 셸이 기다리며, 한도에 걸리면 루프를 멈추고 다음 실행에서 그 세션을 이어 받습니다(`claude --resume`). 루프 모델은 표준 문맥 `opus`, 턴 상한 120, researcher·verifier·simplifier 는 `sonnet` 입니다. 기본 로컬 모드에서는 CI 의 Claude 실행이 아예 없어 그 몫의 한도도 쓰지 않습니다(`ci.mode github` 에서도 `sdlc/*` 브랜치 PR 은 CI 리뷰를 건너뜀). 병렬 실행은 둘까지를 권합니다 — 구독 한도는 세션끼리 나눠 씁니다. 실제 사용량은 `/sdlc:metrics` 의 "Headless session cost" 행(항목별 `total_cost_usd` 합)으로 확인합니다. 이미 채택한 저장소는 `/sdlc:init` 을 다시 돌리면 `loop` 의 옛 기본값(턴 200, 모델 빈 값)이 새 기본값으로 바뀌고, 예전에 깔린 `sdlc-*.yml` 은 같은 `init` 이 지웁니다. 0.8.0 에서 네 가지를 더 줄였습니다 — ① 항목마다 설계·구현을 새 세션 둘로 나눠 구현 세션이 설계 대화를 다시 읽지 않음(`loop.split_phases`) ② 작은 변경(테스트 외 파일 4개 미만, 첫 회차 통과)은 verifier 서브에이전트를 건너뜀(`verify.agent`, 리뷰어는 그대로) ③ 시간 상한으로 죽은 세션도 처음부터가 아니라 이어서(`--session-id` 로 id 를 미리 정함) ④ CLAUDE.md 는 모든 세션의 모든 턴이 다시 읽으므로 한 페이지(120줄)를 넘으면 `/sdlc:lesson --trim` 으로 참고 내용을 필요할 때만 읽는 문서로 옮깁니다(`/sdlc:doctor` 가 넘으면 알려 줌).
 
 **비용은요?** evals 는 기본 `sonnet` 모델, 케이스당 `max_turns` 30 으로 실행되고, 로컬 cron 에 걸면 주 1회, 그 밖에는 직접 `/sdlc:evals run` 을 칠 때만 돕니다. `run-evals.sh --case <glob>` 으로 일부만, `--dry-run` 으로 호출 없이 점검할 수 있습니다. 모니터의 탐지는 모델을 쓰지 않으며 2σ 이상에서만 `claude -p` 가 호출됩니다.
 
