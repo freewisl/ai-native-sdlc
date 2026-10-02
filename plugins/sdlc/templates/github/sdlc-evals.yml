@@ -13,7 +13,7 @@ name: Agent evals
 on:
   pull_request:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * 1'   # weekly; configuration-changing PRs are still gated on every change
   workflow_dispatch:
 jobs:
   evals:

@@ -178,7 +178,14 @@ is_solo = roles.get('solo') is True
 for k in ('autopilot','auto_merge'):   # solo default = fully automatic; an existing key is the user's choice and stays
     if k not in roles: roles[k]=is_solo; ch.append('roles.%s=%s'%(k,str(is_solo).lower()))
 if 'auth' not in c.setdefault('ci',{}): c['ci']['auth']=auth; ch.append('ci.auth=%s'%auth)
-if 'loop' not in c: c['loop']=json.load(open(tpl,encoding='utf-8')).get('loop',{}); c['loop']['enabled']=is_solo; ch.append('loop=defaults (enabled:%s)'%str(is_solo).lower())
+tl=json.load(open(tpl,encoding='utf-8')).get('loop',{})
+if 'loop' not in c: c['loop']=dict(tl); c['loop']['enabled']=is_solo; ch.append('loop=defaults (enabled:%s)'%str(is_solo).lower())
+else:
+    L=c['loop']
+    for k,v in tl.items():
+        if k not in L: L[k]=v; ch.append('loop.%s=%s'%(k,json.dumps(v)))
+    if L.get('max_turns')==200: L['max_turns']=tl.get('max_turns',120); ch.append('loop.max_turns 200→%s (old default)'%L['max_turns'])
+    if L.get('model')=='': L['model']=tl.get('model','opus'); ch.append('loop.model ""→%s (old default)'%L['model'])
 if not c.setdefault('protect',{}).get('default_branch'): c['protect']['default_branch']=defb; ch.append('protect.default_branch=%s'%defb)
 if ch and dry!='1':
     json.dump(c,open(p,'w',encoding='utf-8'),indent=2,ensure_ascii=False); open(p,'a').write('\n')

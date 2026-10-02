@@ -286,7 +286,7 @@ check "run-loop refuses while loop.enabled is false" "$([ $rc -eq 2 ] && echo tr
 setcfg "$L" loop.enabled true; git_commit "$L" enable "2026-03-05T01:00:00Z"
 out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); rc=$?
 check "dry-run exits 0" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
-has "queue: first approved intent in created order" "$out" 'WOULD RUN  claude -p "/sdlc:go --slug a-first --autopilot --merge First thing"'
+has "queue: first approved intent in created order (go hands off at the PR)" "$out" 'WOULD RUN  claude -p "/sdlc:go --slug a-first --autopilot --hand-off First thing"'
 has "queue: second approved intent" "$out" '--slug b-second'
 lacks "draft intent not queued" "$out" "c-draft"; lacks "implemented plan not queued" "$out" "d-done"
 has "dry-run announces the self-check" "$out" "WOULD SELF-CHECK"
@@ -316,7 +316,8 @@ chmod +x "$STUB/gh"; : > "$WORK/cl.log"
 out=$(PATH="$STUB:$PATH" CL_STUB_LOG="$WORK/cl.log" GH_STUB_MODE=merge bash "$SCRIPTS/run-loop.sh" --dir "$L" --claude-bin "$STUB/claude" 2>&1); rc=$?
 check "loop run exits 0 when everything merged" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
 has "both items merged" "$out" "merged=2"; has "self-check ran and was clean" "$out" "self_check=clean"; has "stopped because the queue emptied" "$out" "stop=queue empty"
-has "go invoked with --autopilot --merge and the intent title" "$(cat "$WORK/cl.log")" "/sdlc:go --slug a-first --autopilot --merge First thing"
+has "go invoked with --autopilot --hand-off and the intent title" "$(cat "$WORK/cl.log")" "/sdlc:go --slug a-first --autopilot --hand-off First thing"
+has "loop sessions use the standard-context model" "$(cat "$WORK/cl.log")" "--model opus"; lacks "loop sessions are persisted for resume" "$(cat "$WORK/cl.log")" "--no-session-persistence"
 check "each item ran in its own -p session (2 go calls)" "$([ "$(grep -c -- '-p /sdlc:go' "$WORK/cl.log")" -eq 2 ] && echo true || echo false)" "$(cat "$WORK/cl.log")"
 has "loop.run event logged" "$(cat "$L/.sdlc/logs/events.jsonl")" '"event":"loop.run"'; has "loop.item events logged" "$(cat "$L/.sdlc/logs/events.jsonl")" '"event":"loop.item"'
 # failure path: nothing merges → failures counted, slug blocked after max_failures_per_slug, skipped next run
@@ -327,6 +328,64 @@ has "failed items counted" "$out" "failed=2"; has "slug blocked after max_failur
 has "block recorded in state file" "$(cat "$L/.sdlc/state/loop-failures.txt")" "a-first 1"
 out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); has "blocked slugs are skipped next run" "$out" "blocked=[a-first b-second]"
 out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$L" 2>&1); has "doctor reports the loop row" "$out" "autopilot loop (/sdlc:run)"
+# --- token economy: usage-limit stop + resume, shell-side checks wait + merge, fix round, cost recording ---
+L2="$WORK/loop2"; mkdir -p "$L2"; git_init "$L2"; printf 'x\n' > "$L2/README.md"; git_commit "$L2" init "2026-03-01T00:00:00Z"
+bash "$SCRIPTS/init.sh" --dir "$L2" --solo --no-github >/dev/null 2>&1
+printf -- '---\ntype: intent\nslug: c-one\ntitle: One\nstatus: approved\ncreated: 2026-03-01\n---\n' > "$L2/intent/c-one.md"
+printf -- '---\ntype: intent\nslug: d-two\ntitle: Two\nstatus: approved\ncreated: 2026-03-02\n---\n' > "$L2/intent/d-two.md"
+git_commit "$L2" intents "2026-03-02T00:00:00Z"
+cat > "$STUB/claude" <<'CL'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CL_STUB_LOG"
+mode=$(cat "$CL_STUB_MODE_FILE" 2>/dev/null)
+case "$mode" in
+  limit) echo '{"type":"result","is_error":true,"subtype":"success","session_id":"sid-limit","total_cost_usd":2.5,"num_turns":30,"usage":{"cache_read_input_tokens":900000,"output_tokens":4000},"result":"You'"'"'ve hit your session limit · resets 7pm (Asia/Seoul)"}'; echo ok > "$CL_STUB_MODE_FILE";;
+  *) echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-ok","total_cost_usd":1.25,"num_turns":12,"usage":{"cache_read_input_tokens":300000,"output_tokens":2000},"result":"SDLC_GO_PR 7"}';;
+esac
+exit 0
+CL
+chmod +x "$STUB/claude"
+cat > "$STUB/gh" <<'GH'
+#!/bin/bash
+S="$GH_STUB_STATE"
+case "$*" in
+  "auth status --hostname github.com"*) exit 0;;
+  "auth status"*) exit 1;;
+  "pr list --head sdlc/"*"--state merged"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null && echo 7;;
+  "pr list --head sdlc/"*"--state open"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null || { grep -q -- "--slug $h \|run for $h " "$CL_STUB_LOG" 2>/dev/null && { echo "$h" > "$S/current"; echo 7; }; };;
+  "pr checks"*) n=$(cat "$S/checks_fail" 2>/dev/null || echo 0); if [ "$n" -gt 0 ]; then echo $((n-1)) > "$S/checks_fail"; echo "X build  fail"; exit 1; fi; echo "✓ build pass"; exit 0;;
+  "pr merge"*) cat "$S/current" >> "$S/merged"; exit 0;;
+  *) exit 1;;
+esac
+GH
+chmod +x "$STUB/gh"
+GS="$WORK/ghstate"; mkdir -p "$GS"; : > "$GS/merged"; : > "$WORK/cl2.log"; echo limit > "$WORK/clmode"
+envs="PATH=$STUB:$PATH CL_STUB_LOG=$WORK/cl2.log CL_STUB_MODE_FILE=$WORK/clmode GH_STUB_STATE=$GS"
+out=$(env $envs bash "$SCRIPTS/run-loop.sh" --dir "$L2" --claude-bin "$STUB/claude" 2>&1); rc=$?
+has "usage limit stops the whole run" "$out" "stop=usage limit"; has "limit message names the reset time" "$out" "resets 7pm"
+check "only one session was spent before stopping (no cascade into the next item)" "$([ "$(grep -c -- '-p ' "$WORK/cl2.log")" -eq 1 ] && echo true || echo false)" "$(cat "$WORK/cl2.log")"
+lacks "a limit stop is not counted as a failure" "$(cat "$L2/.sdlc/state/loop-failures.txt" 2>/dev/null)" "c-one"
+has "session id kept for resume" "$(cat "$L2/.sdlc/state/loop-resume/c-one" 2>/dev/null)" "sid-limit"
+has "cost recorded on the item event" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | tail -1)" '"cost_usd":2.5'
+echo 1 > "$GS/checks_fail"
+out=$(env $envs bash "$SCRIPTS/run-loop.sh" --dir "$L2" --claude-bin "$STUB/claude" 2>&1); rc=$?
+has "next run resumes the stopped session" "$(cat "$WORK/cl2.log")" "--resume sid-limit"
+has "resume prompt continues instead of restarting" "$(cat "$WORK/cl2.log")" "Continue the /sdlc:go --hand-off run for c-one"
+has "checks are waited for in the shell" "$out" "CHECKS  PR #7"
+has "a failing check starts a short fix session" "$(cat "$WORK/cl2.log")" "has failing checks"
+has "both items merged by the shell after green checks" "$out" "merged=2"
+check "resume file removed after the resumed session" "$([ ! -s "$L2/.sdlc/state/loop-resume/c-one" ] && echo true || echo false)" ""
+has "item event records sessions incl. the fix round" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | grep c-one | tail -1)" '"sessions":2'
+has "run event records total cost" "$(grep '"event":"loop.run"' "$L2/.sdlc/logs/events.jsonl" | tail -1)" '"cost_usd":'
+has "metrics shows headless session cost" "$(python3 "$SCRIPTS/metrics.py" --dir "$L2" 2>&1 | grep 'Headless session cost')" "Headless session cost"
+# init migrates the old loop defaults (max_turns 200, model "") but keeps other values
+python3 - "$L2/.sdlc/config.json" <<'PY'
+import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['loop']['max_turns']=200; c['loop']['model']=''; c['loop'].pop('fix_rounds',None); c['loop']['max_items']=3; json.dump(c,open(p,'w'),indent=2)
+PY
+bash "$SCRIPTS/init.sh" --dir "$L2" --no-github >/dev/null 2>&1
+has "init migrates the old max_turns default" "$(cat "$L2/.sdlc/config.json")" '"max_turns": 120'; has "init migrates the empty model default" "$(cat "$L2/.sdlc/config.json")" '"model": "opus"'
+has "init fills missing loop keys" "$(cat "$L2/.sdlc/config.json")" '"fix_rounds": 2'; has "init keeps a user-set loop value" "$(cat "$L2/.sdlc/config.json")" '"max_items": 3'
+
 
 echo "== $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

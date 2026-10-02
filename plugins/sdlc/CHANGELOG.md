@@ -3,6 +3,21 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-10-03
+
+Token economy, from the pilot's 125 headless sessions ($1,776 API-equivalent; 40% in sessions that ended in an error).
+
+### Changed
+- `/sdlc:run` calls `/sdlc:go --hand-off`: the session ends once the PR is pushed; `run-loop.sh` waits for the checks in the shell (no tokens), merges on green when `roles.auto_merge`, and starts a short fix session only for failing checks (`loop.fix_rounds`, default 2; `loop.checks_max_minutes`, 30).
+- A usage-limit stop ("hit your session/weekly limit") ends the whole run instead of failing every remaining item, is not counted as a failure, and the next run resumes that session with `claude --resume` (loop sessions are persisted now). A max-turns stop resumes too. A stopped item with an open PR is still queued for resume.
+- Loop defaults: `max_turns` 200 → 120, `model` "" → `opus` (standard context, auto-compacts instead of growing toward 1M). `init` migrates the old defaults and fills missing `loop` keys without touching values the user set.
+- `sdlc-researcher`, `sdlc-verifier`, `sdlc-simplifier` run on `sonnet`; `sdlc-reviewer` and `sdlc-diagnoser` keep the session model.
+- `sdlc-review.yml` skips `sdlc/*` branches (go already ran the same REVIEW.md passes locally); repository variable `SDLC_REVIEW_ALL_PRS=true` restores it. `sdlc-evals.yml` nightly cron → weekly (configuration PRs are still gated on every change).
+- Interactive `/sdlc:go` waits for checks with one blocking call instead of a loop of short polls.
+
+### Added
+- Every loop session's `total_cost_usd`, turns, cache reads and output tokens are recorded on `loop.item` (and the run total on `loop.run`); `/sdlc:metrics` row "Headless session cost via /sdlc:run".
+
 ## [0.5.2] - 2026-09-25
 
 Prompt audit (`/claude-api prompt-audit`, report in `_workspace/10_prompt_audit.md`).

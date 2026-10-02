@@ -135,10 +135,12 @@
     "max_items": 5,
     "max_minutes": 120,
     "item_max_minutes": 45,
-    "max_turns": 200,
+    "max_turns": 120,
     "max_failures_per_slug": 3,
     "self_check": true,
-    "model": "",
+    "fix_rounds": 2,
+    "checks_max_minutes": 30,
+    "model": "opus",
     "allowed_tools": "Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash",
     "pause_file": ".sdlc/state/pause"
   }

@@ -10,8 +10,13 @@
 #                    [--claude-bin <path>] [--plugin-dir <dir>]
 #   --dry-run       print the queue and the commands; run nothing (needs neither gh nor claude)
 #   --once          one item then stop (what sdlc-autopilot.yml uses: the schedule provides the cadence)
-# Config (.sdlc/config.json → loop.*): enabled(false) max_items(5) max_minutes(120) item_max_minutes(45) max_turns(200)
-#   max_failures_per_slug(3) self_check(true) model("") allowed_tools("Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash")
+# Config (.sdlc/config.json → loop.*): enabled max_items(5) max_minutes(120) item_max_minutes(45) max_turns(120)
+#   max_failures_per_slug(3) self_check(true) model("opus" — standard context, so long sessions auto-compact instead of growing
+#   toward 1M) fix_rounds(2) checks_max_minutes(30) allowed_tools("Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash")
+# Token economy: go runs with --hand-off (stops once the PR is pushed); this script waits for the PR checks in the shell (no
+#   tokens), merges on green, and starts a short fix session only when a check fails. A usage-limit stop ends the run and
+#   the next run RESUMES that session (claude --resume) instead of redoing the work; a max-turns stop resumes too.
+#   Every session's total_cost_usd / turns / tokens is recorded in the loop.item event.
 #   pause_file(".sdlc/state/pause")
 # Requires: roles.solo=true, loop.enabled not false (init turns it on for solo repositories), a git repository on its default branch
 #           with a clean tree, gh authenticated, claude.
@@ -56,8 +61,11 @@ is_git_repo "$root" || { echo "ERROR: $root is not a git repository" >&2; exit 2
 [ -z "$max_minutes" ] && max_minutes=$(cfg "$root" .loop.max_minutes 120)
 [ -z "$self_check" ] && self_check=$(cfg_bool "$root" .loop.self_check true)
 [ "$once" = 1 ] && max_items=1
-item_max=$(cfg "$root" .loop.item_max_minutes 45); max_turns=$(cfg "$root" .loop.max_turns 200)
-per_slug_max=$(cfg "$root" .loop.max_failures_per_slug 3); model=$(cfg "$root" .loop.model "")
+item_max=$(cfg "$root" .loop.item_max_minutes 45); max_turns=$(cfg "$root" .loop.max_turns 120)
+per_slug_max=$(cfg "$root" .loop.max_failures_per_slug 3); model=$(cfg "$root" .loop.model opus)
+fix_rounds=$(cfg "$root" .loop.fix_rounds 2); checks_max=$(cfg "$root" .loop.checks_max_minutes 30)
+auto_merge=$(cfg_bool "$root" .roles.auto_merge true)
+resume_dir="$root/.sdlc/state/loop-resume"; mkdir -p "$resume_dir" 2>/dev/null || true
 tools=$(cfg "$root" .loop.allowed_tools "Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash")
 def=$(cfg "$root" .protect.default_branch main); intent_dir="$root/$(cfg "$root" .paths.intent intent)"; plan_dir="$root/$(cfg "$root" .paths.plan plan)"
 has_remote=0; git -C "$root" remote get-url origin >/dev/null 2>&1 && has_remote=1
@@ -93,7 +101,10 @@ scan_queue() { # prints one line per candidate: Q<TAB>created<TAB>slug | B<TAB>s
     st=$(frontmatter_get "$intent_dir/$s.md" status); [ "$st" = "approved" ] || continue
     ps=$(frontmatter_get "$plan_dir/$s.md" status); [ "$ps" = "implemented" ] && continue
     fc=$(fail_count "$s"); if [ -n "$fc" ] && [ "$fc" -ge "$per_slug_max" ]; then printf 'B\t%s\n' "$s"; continue; fi
-    case "$(pr_state "$s")" in merged) continue;; open) printf 'W\t%s\n' "$s"; continue;; esac
+    case "$(pr_state "$s")" in
+      merged) continue;;
+      open) [ -s "$resume_dir/$s" ] || { printf 'W\t%s\n' "$s"; continue; };;   # a stopped session resumes even if its PR is already open
+    esac
     c=$(frontmatter_get "$intent_dir/$s.md" created); printf 'Q\t%s\t%s\n' "${c:-9999}" "$s"
   done
 }
@@ -109,24 +120,104 @@ wait_capped() { # wait_capped <pid> <seconds> → 0 finished, 124 killed
   while kill -0 "$pid" 2>/dev/null; do [ "$i" -ge "$secs" ] && { kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; return 124; }; sleep 1; i=$((i+1)); done
   wait "$pid" 2>/dev/null; return $?
 }
-run_claude() { # run_claude <prompt> <log-file> <max-minutes> → exit code; output in log
-  local prompt="$1" log="$2" mins="$3"
-  local cmd=( "$claude_bin" -p "$prompt" --output-format json --max-turns "$max_turns" --permission-mode acceptEdits --allowedTools "$tools" --no-session-persistence )
+run_claude() { # run_claude <prompt> <log-file> <max-minutes> [resume-session-id] → exit code; output in log; parses the result
+  local prompt="$1" log="$2" mins="$3" resume="${4:-}" rc
+  local cmd=( "$claude_bin" -p "$prompt" --output-format json --max-turns "$max_turns" --permission-mode acceptEdits --allowedTools "$tools" )
+  [ -n "$resume" ] && cmd+=( --resume "$resume" )   # sessions persist (no --no-session-persistence) so a stopped run can be resumed
   [ -n "$model" ] && cmd+=( --model "$model" ); [ -n "$plugin_dir" ] && cmd+=( --plugin-dir "$plugin_dir" )
-  ( cd "$root" && env -u CLAUDECODE "${cmd[@]}" < /dev/null > "$log" 2>&1 ) & wait_capped $! $(( mins * 60 ))
+  ( cd "$root" && env -u CLAUDECODE "${cmd[@]}" < /dev/null > "$log" 2>&1 ) & wait_capped $! $(( mins * 60 )); rc=$?
+  parse_result "$log"; return $rc
 }
-run_item() { # run_item <slug> → sets outcome (merged|open|failed|timeout|dry)
-  local s="$1" title log rc
+parse_result() { # parse_result <log> → r_err r_sub r_sid r_cost r_turns r_cr r_out r_limit (reset text when a usage limit stopped it)
+  local line
+  line=$(python3 - "$1" <<'PY'
+import json,sys,re
+d={}
+for l in reversed(open(sys.argv[1],encoding='utf-8',errors='replace').read().splitlines()):
+    l=l.strip()
+    if l.startswith('{'):
+        try:
+            x=json.loads(l)
+            if x.get('type')=='result': d=x; break
+        except Exception: pass
+u=d.get('usage') or {}; t=d.get('result') or ''
+m=re.search(r"hit your (session|weekly|usage|daily) limit[^\n]*", t, re.I)
+f=lambda v: str(v).replace('\t',' ').replace('\n',' ')
+print('\t'.join(f(v) for v in [str(bool(d.get('is_error'))).lower(), d.get('subtype',''), d.get('session_id',''), round(d.get('total_cost_usd') or 0,4),
+      d.get('num_turns') or 0, u.get('cache_read_input_tokens',0), u.get('output_tokens',0), m.group(0) if m else '']))
+PY
+)
+  IFS=$'\t' read -r r_err r_sub r_sid r_cost r_turns r_cr r_out r_limit <<EOF
+$line
+EOF
+  item_cost=$(python3 -c "print(round(${item_cost:-0}+${r_cost:-0},4))"); item_sessions=$(( ${item_sessions:-0} + 1 ))
+  run_cost=$(python3 -c "print(round(${run_cost:-0}+${r_cost:-0},4))")
+}
+open_pr() { # open_pr <slug> → number of the open PR from sdlc/<slug>, or empty
+  ( cd "$root" && gh pr list --head "sdlc/$1" --state open --json number --jq '.[0].number' 2>/dev/null )
+}
+wait_checks() { # wait_checks <pr> → green | failed | timeout   (shell-side wait: costs no tokens)
+  local pr="$1" out rc
+  out="$root/.sdlc/state/checks-$pr.txt"
+  ( cd "$root" && gh pr checks "$pr" --watch --interval 30 > "$out" 2>&1 ) & wait_capped $! $(( checks_max * 60 )); rc=$?
+  if [ $rc -eq 124 ]; then printf timeout; return; fi
+  if [ $rc -eq 0 ] || grep -qi 'no checks reported' "$out"; then printf green; else printf failed; fi
+}
+merge_pr() { # merge_pr <pr> → 0 merged
+  ( cd "$root" && { gh pr merge "$1" --squash --delete-branch >/dev/null 2>&1 || gh pr merge "$1" --auto --squash --delete-branch >/dev/null 2>&1; } )
+}
+run_item() { # run_item <slug> → sets outcome (merged|open|failed|timeout|limited|dry)
+  local s="$1" title log rc pr state round=0 resume=""
   title=$(frontmatter_get "$intent_dir/$s.md" title); [ -z "$title" ] && title="$s"
   log="$root/.sdlc/logs/loop-$s-$(date -u +%Y%m%dT%H%M%SZ).log"; mkdir -p "$root/.sdlc/logs"
-  if [ "$dry" = 1 ]; then printf 'WOULD RUN  claude -p "/sdlc:go --slug %s --autopilot --merge %s" (fresh session, ≤ %s min, ≤ %s turns)\n' "$s" "$title" "$item_max" "$max_turns"; outcome=dry; return; fi
-  printf 'ITEM    %s — %s\n' "$s" "$title"
-  run_claude "/sdlc:go --slug $s --autopilot --merge $title" "$log" "$item_max"; rc=$?
+  [ -s "$resume_dir/$s" ] && resume=$(cat "$resume_dir/$s")
+  if [ "$dry" = 1 ]; then
+    if [ -n "$resume" ]; then printf 'WOULD RESUME  session %s for %s (claude -p --resume, ≤ %s min, ≤ %s turns)\n' "$resume" "$s" "$item_max" "$max_turns"
+    else printf 'WOULD RUN  claude -p "/sdlc:go --slug %s --autopilot --hand-off %s" (fresh session, ≤ %s min, ≤ %s turns), then wait for PR checks in the shell and merge on green\n' "$s" "$title" "$item_max" "$max_turns"; fi
+    outcome=dry; return
+  fi
+  item_cost=0; item_sessions=0
+  if [ -n "$resume" ]; then
+    printf 'ITEM    %s — %s  (resuming session %s)\n' "$s" "$title" "$resume"
+    run_claude "Continue the /sdlc:go --hand-off run for $s from where it stopped. Steps already committed on branch sdlc/$s are done; pick up at the first unfinished step." "$log" "$item_max" "$resume"; rc=$?
+  else
+    printf 'ITEM    %s — %s\n' "$s" "$title"
+    run_claude "/sdlc:go --slug $s --autopilot --hand-off $title" "$log" "$item_max"; rc=$?
+  fi
+  rm -f "$resume_dir/$s"
+  if [ -n "$r_limit" ]; then
+    [ -n "$r_sid" ] && printf '%s' "$r_sid" > "$resume_dir/$s"
+    outcome=limited; limit_text="$r_limit"
+  elif [ "$r_sub" = "error_max_turns" ]; then
+    [ -n "$r_sid" ] && printf '%s' "$r_sid" > "$resume_dir/$s"   # next run continues instead of starting cold
+    outcome=failed
+  elif [ $rc -eq 124 ]; then outcome=timeout
+  else
+    state=$(pr_state "$s")
+    if [ "$state" = merged ]; then outcome=merged
+    elif pr=$(open_pr "$s") && [ -n "$pr" ]; then
+      outcome=open
+      while :; do
+        printf 'CHECKS  PR #%s — waiting in the shell (≤ %s min)\n' "$pr" "$checks_max"
+        case "$(wait_checks "$pr")" in
+          green)
+            if [ "$auto_merge" = true ] && merge_pr "$pr"; then outcome=merged; fi
+            break;;
+          failed)
+            [ "$round" -ge "$fix_rounds" ] && { echo "CHECKS  still failing after $round fix round(s) — PR #$pr left open for a human"; break; }
+            round=$((round+1))
+            printf 'FIX     PR #%s round %s — short session for the failing checks\n' "$pr" "$round"
+            run_claude "PR #$pr (branch sdlc/$s) has failing checks. Check out that branch, read the failures (gh pr checks $pr; gh run view <run-id> --log-failed), fix the code — never weaken a test — run the verify commands from CLAUDE.md, commit and push, then stop. Do not wait for the checks and do not merge; print SDLC_FIX pushed when done." "$log.fix$round" "$item_max"
+            [ -n "$r_limit" ] && { outcome=limited; limit_text="$r_limit"; break; }
+            git -C "$root" checkout -q "$def" 2>/dev/null || true;;
+          *) echo "CHECKS  did not finish in $checks_max min — PR #$pr left open"; break;;
+        esac
+      done
+    else outcome=failed; fi
+  fi
   git -C "$root" checkout -q "$def" 2>/dev/null || true; [ "$has_remote" = 1 ] && git -C "$root" pull -q --ff-only 2>/dev/null || true
-  if [ $rc -eq 124 ]; then outcome=timeout
-  else case "$(pr_state "$s")" in merged) outcome=merged;; open) outcome=open;; *) outcome=failed;; esac; fi
-  log_event "$root" loop.item "$outcome" "/sdlc:run" "{\"slug\":$(json_escape "$s"),\"exit\":$rc,\"log\":$(json_escape "$(rel_path "$root" "$log")")}"
-  printf 'RESULT  %s → %s  (log: %s)\n' "$s" "$outcome" "$(rel_path "$root" "$log")"
+  log_event "$root" loop.item "$outcome" "/sdlc:run" "{\"slug\":$(json_escape "$s"),\"exit\":$rc,\"log\":$(json_escape "$(rel_path "$root" "$log")"),\"cost_usd\":$item_cost,\"sessions\":$item_sessions,\"turns\":${r_turns:-0},\"cache_read\":${r_cr:-0},\"output\":${r_out:-0},\"resumed\":$([ -n "$resume" ] && printf true || printf false),\"fix_rounds\":$round}"
+  printf 'RESULT  %s → %s  ($%s, %s session(s); log: %s)\n' "$s" "$outcome" "$item_cost" "$item_sessions" "$(rel_path "$root" "$log")"
 }
 
 # ---------- self-check: review what merged, file Important findings as approved intents via a PR ----------
@@ -143,6 +234,7 @@ self_check_pass() { # self_check_pass <from-sha> → prints clean | pr=<n> | pr=
   if [ "$dry" = 1 ]; then echo "WOULD SELF-CHECK  reviewer + scan checklist over the merged diff → Important findings become approved intents via a PR" >&2; printf clean; return; fi
   echo "SELF-CHECK  reviewing what merged since ${from:0:8}" >&2
   run_claude "$prompt" "$log" "$item_max" || true
+  [ -n "$r_limit" ] && { echo "SELF-CHECK  stopped by a usage limit ($r_limit)" >&2; printf clean; return; }
   out=$(grep -o 'SDLC_SELFCHECK [^"\\]*' "$log" | tail -1)
   pr=$(printf '%s' "$out" | grep -o 'pr=[0-9]*' | cut -d= -f2)
   if [ -n "$pr" ]; then
@@ -155,7 +247,7 @@ self_check_pass() { # self_check_pass <from-sha> → prints clean | pr=<n> | pr=
 # ---------- main loop ----------
 sync_default || exit 2
 start_epoch=$(epoch_now); from_sha=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo "")
-items=0; merged=0; opened=0; failed=0; consec_fail=0; stop=""; done_slugs=" "; blocked=""; waiting=""; selfcheck="skipped"
+items=0; merged=0; opened=0; failed=0; consec_fail=0; stop=""; done_slugs=" "; blocked=""; waiting=""; selfcheck="skipped"; run_cost=0; limit_text=""
 printf '== sdlc run  root=%s  default=%s  max_items=%s  max_minutes=%s  self_check=%s%s\n' "$root" "$def" "$max_items" "$max_minutes" "$self_check" "$([ "$dry" = 1 ] && printf '  (dry run)')"
 while :; do
   [ -f "$pause_file" ] && { stop="paused"; break; }
@@ -177,14 +269,15 @@ while :; do
   case "$outcome" in
     merged) merged=$((merged+1)); consec_fail=0;;
     open) opened=$((opened+1)); consec_fail=0;;
+    limited) echo "LIMIT   $limit_text — stopping the run; the next /sdlc:run resumes $next where it stopped"; stop="usage limit"; break;;
     dry) ;;
     *) failed=$((failed+1)); consec_fail=$((consec_fail+1)); n=$(fail_bump "$next"); [ "$n" -ge "$per_slug_max" ] && echo "BLOCKED $next failed $n times — remove its line from .sdlc/state/loop-failures.txt to retry";;
   esac
   [ "$once" = 1 ] && [ "$items" -ge 1 ] && { stop="once"; break; }
 done
 mins=$(( ($(epoch_now) - start_epoch) / 60 ))
-printf '== done  items=%s merged=%s open=%s failed=%s blocked=[%s] waiting=[%s] self_check=%s stop=%s (%s min)\n' "$items" "$merged" "$opened" "$failed" "$(trim "$blocked")" "$(trim "$waiting")" "$selfcheck" "$stop" "$mins"
-[ "$dry" = 0 ] && log_event "$root" loop.run "allow" "/sdlc:run" "{\"items\":$items,\"merged\":$merged,\"open\":$opened,\"failed\":$failed,\"self_check\":$(json_escape "$selfcheck"),\"stop\":$(json_escape "$stop"),\"minutes\":$mins}"
+printf '== done  items=%s merged=%s open=%s failed=%s blocked=[%s] waiting=[%s] self_check=%s stop=%s (%s min, $%s)\n' "$items" "$merged" "$opened" "$failed" "$(trim "$blocked")" "$(trim "$waiting")" "$selfcheck" "$stop" "$mins" "$run_cost"
+[ "$dry" = 0 ] && log_event "$root" loop.run "allow" "/sdlc:run" "{\"items\":$items,\"merged\":$merged,\"open\":$opened,\"failed\":$failed,\"self_check\":$(json_escape "$selfcheck"),\"stop\":$(json_escape "$stop"),\"minutes\":$mins,\"cost_usd\":$run_cost}"
 [ "$json_out" = 1 ] && printf '{"items":%s,"merged":%s,"open":%s,"failed":%s,"blocked":%s,"waiting":%s,"self_check":%s,"stop":%s,"minutes":%s,"dry_run":%s}\n' "$items" "$merged" "$opened" "$failed" "$(json_escape "$(trim "$blocked")")" "$(json_escape "$(trim "$waiting")")" "$(json_escape "$selfcheck")" "$(json_escape "$stop")" "$mins" "$([ "$dry" = 1 ] && printf true || printf false)"
 [ "$failed" -gt 0 ] && exit 1
 exit 0

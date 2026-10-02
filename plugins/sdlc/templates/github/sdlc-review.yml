@@ -5,6 +5,8 @@
 # Auth: init.sh --auth api → anthropic_api_key from secret ANTHROPIC_API_KEY (API billing); --auth oauth → claude_code_oauth_token from secret
 # CLAUDE_CODE_OAUTH_TOKEN (a long-lived token from `claude setup-token`, billed to the subscription). Cloud: use_bedrock / use_vertex inputs.
 # Managed alternative: Claude Code Review (admin enables it per repository); then keep only the @claude job.
+# sdlc/* branches are skipped: /sdlc:go already ran the same REVIEW.md passes locally (sdlc-reviewer) before opening the PR.
+# To review those PRs in CI as well, set the repository variable SDLC_REVIEW_ALL_PRS=true.
 name: sdlc review
 on:
   pull_request:
@@ -20,7 +22,7 @@ permissions:
   id-token: write
 jobs:
   review:
-    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && (!startsWith(github.head_ref, 'sdlc/') || vars.SDLC_REVIEW_ALL_PRS == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

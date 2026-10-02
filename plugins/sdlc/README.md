@@ -187,7 +187,7 @@ claude
 ### 무인 루프 — `/sdlc:run` (선택, 1인 저장소)
 
 `go` 는 한 문장에 한 변경입니다. 백로그를 통째로 맡기려면 `/sdlc:run` 을 칩니다 — 1인 저장소는 `init` 이 `loop.enabled` 를 켜 두고, 끄려면 false 로 둡니다. 승인된 intent 를 만든 순서로 한 건씩,
-매번 **새 세션**의 `go --autopilot --merge` 로 처리하고, 머지된 결과를 리뷰어와 보안 체크리스트로 다시 점검해 Important 만 새 intent(PR 경유)로 큐에 넣습니다. 큐가 비면 끝납니다.
+매번 **새 세션**의 `go --autopilot --hand-off` 로 처리하고, 머지된 결과를 리뷰어와 보안 체크리스트로 다시 점검해 Important 만 새 intent(PR 경유)로 큐에 넣습니다. 큐가 비면 끝납니다.
 사람에게 남는 것은 사후 검토입니다 — 머지된 PR 목록과 `loop.item` 로그. 상한(`max_items` 5 · `max_minutes` 120 · 연속 실패 3회), slug 별 차단, 정지 파일(`touch .sdlc/state/pause`)이
 폭주를 막고, 팀 저장소에서는 스크립트가 거부합니다. 세션 없이 돌리려면 `sdlc-autopilot.yml`(30분마다 1건, `SDLC_GH_TOKEN` 필요)을 켭니다. `/sdlc:run --dry-run` 이 큐와 명령을 먼저 보여 줍니다.
 
@@ -261,7 +261,7 @@ R-ID 단위의 전수 대응표는 [docs/PLAYBOOK-MAPPING.md](../../docs/PLAYBOO
 |---|---|---|---|---|
 | `/sdlc:init [--lang en\|ko] [--github\|--no-github] [--solo\|--no-solo] [--auth api\|oauth] [--sandbox] [--managed] [--mcp] [--dry-run] [--commands build=..,test=..,lint=..]` | 전환 | 감지(git·빌드 도구·CLAUDE.md·CI·언어 + GitHub 원격·협업자 수·보관된 토큰) → `init.sh` 비파괴 스캐폴드 → CLAUDE.md 4섹션 + Verifying 블록을 저장소 조사로 채움 → settings 병합 → `github-setup.sh`(시크릿·auto-merge·ruleset) → `doctor` → 채택 커밋을 브랜치+PR 로 | §2 프로젝트 파일 일체, GitHub 설정 | 플랫폼 엔지니어(1인 저장소는 본인) |
 | `/sdlc:go <one-sentence request> [--autopilot\|--no-autopilot] [--merge\|--no-merge] [--no-pr] [--slug <slug>]` | 전체 | 한 문장 요청 → 브랜치 `sdlc/<slug>` → intent·spec·plan·구현·검증·리뷰·PR 을 한 세션에서. 1인 저장소 기본은 autopilot + auto-merge(`roles.autopilot`·`roles.auto_merge`, `init` 이 켬): 정지는 정책 충돌·검증 3회 실패·production 만. `--no-autopilot`/`--no-merge` 로 그 한 번만 멈춤 추가. 머지는 체크 초록 뒤 squash(auto-merge 가 거부되면 직접). 팀 저장소는 intent·plan 승인과 머지 대기 | 체인 전체 + PR(`approved_by`·`approval_basis` 기록) | solo 는 요청 자체가 승인, 팀은 intent/plan 승인 유지 |
-| `/sdlc:run [--max-items N] [--max-minutes M] [--once] [--no-self-check] [--dry-run]` | 전체(무인) | 승인된 intent 큐를 한 건씩 **새 세션의** `go --autopilot --merge` 로 처리 → 머지된 결과를 리뷰어+스캔 체크리스트로 자기 점검 → Important 만 새 intent(PR 경유) → 큐가 빌 때까지. 상한(건수·시간·연속 실패 3회)·정지 파일·slug 별 차단. `roles.solo` 필수(`loop.enabled` 는 solo 면 `init` 이 켬), 사용자 직접 입력 전용 | 머지된 PR 들, `loop.run`/`loop.item` 이벤트 | 저장소 주인이 `loop.enabled` 를 켠 것이 승인. 머지 조건은 `go` 와 동일 |
+| `/sdlc:run [--max-items N] [--max-minutes M] [--once] [--no-self-check] [--dry-run]` | 전체(무인) | 승인된 intent 큐를 한 건씩 **새 세션의** `go --autopilot --hand-off` 로 처리 → 머지된 결과를 리뷰어+스캔 체크리스트로 자기 점검 → Important 만 새 intent(PR 경유) → 큐가 빌 때까지. 상한(건수·시간·연속 실패 3회)·정지 파일·slug 별 차단. `roles.solo` 필수(`loop.enabled` 는 solo 면 `init` 이 켬), 사용자 직접 입력 전용 | 머지된 PR 들, `loop.run`/`loop.item` 이벤트 | 저장소 주인이 `loop.enabled` 를 켠 것이 승인. 머지 조건은 `go` 와 동일 |
 | `/sdlc:doctor [--json]` | 전환 | 채택 상태표(항목별 ✓/△/✗), config 스키마 검사, 훅 자가시험(샘플 stdin), 의존성 순 "다음 할 일" | 상태 보고 | — |
 | `/sdlc:intent [<title or idea>] [--from-ticket <id>] [--from-incident <ref>] [--from-scan <finding-id>] \| approve <slug> \| reject <slug> \"<reason>\"` | 1 | 분석가 질문(범위·사용자·제약·성공 기준)으로 브레인스토밍 → 템플릿으로 `intent/<slug>.md` → 발안자 교정 → 커밋 | intent.md | 프로덕트 오너(`status: approved` 커밋) |
 | `/sdlc:spec <slug> [--force] \| approve <slug> \| reject <slug> \"<reason>\"` | 2 | 승인된 intent 읽기 → `config.policies` 정책 스킬 적용 → 요구사항·설계·Flagged concerns → PO 검토 포인트 → 커밋 | spec.md | 프로덕트 오너(고위험은 기술 리드 자문) |
@@ -380,10 +380,11 @@ R-ID 단위의 전수 대응표는 [docs/PLAYBOOK-MAPPING.md](../../docs/PLAYBOO
 | `roles.auto_merge` | boolean | solo `true` · 팀 `false` (`init` 이 정함) | `/sdlc:go` 가 체크 초록·리뷰어 Important 0 뒤 PR 을 squash 머지. 사람이 머지하려면 false(또는 그 한 번만 `--no-merge`) |
 | `loop.enabled` | boolean | solo `true` · 팀 `false` (`init` 이 정함) | `/sdlc:run` 무인 루프 허용. 끄려면 false. `roles.solo` 가 아니면 켜도 스크립트가 거부 |
 | `loop.max_items` / `max_minutes` | number | `5` / `120` | 한 번 실행의 상한(건수·분). `--once` 는 1건 |
-| `loop.item_max_minutes` / `max_turns` | number | `45` / `200` | 항목 하나(새 `claude -p` 세션)의 시간·턴 상한 |
+| `loop.item_max_minutes` / `max_turns` | number | `45` / `120` | 항목 하나(새 `claude -p` 세션)의 시간·턴 상한. 턴 상한에 걸린 세션은 다음 실행에서 이어 받음(처음부터 다시 하지 않음) |
 | `loop.max_failures_per_slug` | number | `3` | 같은 slug 가 이만큼 실패하면 `.sdlc/state/loop-failures.txt` 에 차단 기록, 사람이 지우기 전까지 건너뜀 |
 | `loop.self_check` | boolean | `true` | 실행 중 1건 이상 머지됐으면 머지된 diff 를 리뷰어+스캔으로 재점검, Important 만 승인된 intent 로(PR 경유) |
-| `loop.model` / `allowed_tools` | string | `""` / `"Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash"` | 항목 세션의 모델(빈 값 = 기본)과 허용 도구 |
+| `loop.model` / `allowed_tools` | string | `"opus"` / `"Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash"` | 항목 세션의 모델과 허용 도구. 기본 `opus` 는 표준 문맥이라 긴 세션이 1M 까지 커지지 않고 자동 압축됨(`opus[1m]` 은 매 턴 다시 읽는 양이 커져 비쌈) |
+| `loop.fix_rounds` / `checks_max_minutes` | number | `2` / `30` | PR 체크는 셸이 기다리고(토큰 0) 초록이면 머지. 실패하면 짧은 수정 세션을 최대 이 횟수만큼. 대기 상한(분) |
 | `loop.pause_file` | string | `".sdlc/state/pause"` | 이 파일이 있으면 루프가 시작하지 않거나 다음 항목 전에 멈춤(정지 스위치) |
 | `roles.product_owner` / `tech_lead` / `release_manager` | string | `""` | 팀 저장소에서 승인자 이름(문서·PR 본문에 사용) |
 | `policies` | string[] | `[]` | `/sdlc:spec` 이 제약으로 호출할 정책 스킬 이름(`/sdlc:policy` 가 등록) |
@@ -522,13 +523,13 @@ Jira·ServiceNow·요구사항 관리 도구가 이미 감사인이 인정하는
 
 | 파일 | 트리거 | 하는 일 | 필요한 시크릿·권한 |
 |---|---|---|---|
-| `sdlc-evals.yml` | 모든 PR + 매일 02:00 cron(블로그 `agent-evals.yml` 원형). 설정 파일(`CLAUDE.md`, `.claude/**`, `.sdlc/**`, `evals/**`, `REVIEW.md`)이 바뀌지 않은 PR 은 즉시 성공 — 필수 체크 `evals` 가 코드 PR 에서도 항상 보고되도록 | claude-code 설치 → `run-evals.sh --threshold` → 미달 시 실패(머지 체크 `evals`) | `ci.auth` 가 정한 시크릿(`CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY`, 아래 모두 같음); 저장소 읽기 |
+| `sdlc-evals.yml` | 모든 PR + 주 1회(월 02:00) cron(블로그 `agent-evals.yml` 원형은 매일). 설정 파일(`CLAUDE.md`, `.claude/**`, `.sdlc/**`, `evals/**`, `REVIEW.md`)이 바뀌지 않은 PR 은 즉시 성공 — 필수 체크 `evals` 가 코드 PR 에서도 항상 보고되도록 | claude-code 설치 → `run-evals.sh --threshold` → 미달 시 실패(머지 체크 `evals`) | `ci.auth` 가 정한 시크릿(`CLAUDE_CODE_OAUTH_TOKEN` 또는 `ANTHROPIC_API_KEY`, 아래 모두 같음); 저장소 읽기 |
 | `sdlc-review.yml` | PR opened/synchronize, `@claude` issue_comment | `anthropics/claude-code-action@v1` 이 REVIEW.md 로 3 패스 리뷰, `@claude` 요청에 수정 푸시. **승인은 하지 않음** | CI 시크릿; `contents: write`, `pull-requests: write`, `issues: write`, `id-token: write` |
 | `sdlc-spec-on-intent.yml` | `intent/**.md` 가 `status: approved` 로 main 에 머지 | 비대화형으로 `/sdlc:spec` 실행 → `spec/<slug>.md` PR(Stage 2 자동 트리거) | CI 시크릿; `contents: write`, `pull-requests: write` |
 | `sdlc-ci-triage.yml` | 다른 워크플로 실패(`workflow_run` failure) | `claude -p` 로 3줄 triage(원인·flaky 여부·요약) → PR 코멘트(블로그 pipeline step 원문) | CI 시크릿; PR 코멘트 쓰기 |
 | `sdlc-monitor.yml` | cron | `monitor.py` → 밴드 위반 시 triage intent 를 커밋하는 PR | `GITHUB_TOKEN`(gh 명령), 2σ 이상에서 CI 시크릿 |
 | `sdlc-scan.yml` | 주간 cron | `/sdlc:scan` 헤드리스 → 이슈 또는 수정 PR | CI 시크릿; 이슈·PR 쓰기 |
-| `sdlc-autopilot.yml` | 30분 cron + 수동 | `run-loop.sh --once`: 승인된 intent 1건을 새 세션의 `go --autopilot --merge` 로 처리(1인 저장소면 기본 동작, `loop.enabled: false` 로 끔; 팀 저장소는 거부). 상한·정지 파일 동일 | CI 시크릿 + **`SDLC_GH_TOKEN`**(fine-grained PAT: Contents·Pull requests 쓰기). 기본 `GITHUB_TOKEN` 으로 만든 PR 은 다른 워크플로(review·evals)를 깨우지 못해 체크가 영영 안 뜨므로, 없으면 PR 을 열어 두고 사람에게 남김 |
+| `sdlc-autopilot.yml` | 30분 cron + 수동 | `run-loop.sh --once`: 승인된 intent 1건을 새 세션의 `go --autopilot --hand-off` 로 처리(1인 저장소면 기본 동작, `loop.enabled: false` 로 끔; 팀 저장소는 거부). 상한·정지 파일 동일 | CI 시크릿 + **`SDLC_GH_TOKEN`**(fine-grained PAT: Contents·Pull requests 쓰기). 기본 `GITHUB_TOKEN` 으로 만든 PR 은 다른 워크플로(review·evals)를 깨우지 못해 체크가 영영 안 뜨므로, 없으면 PR 을 열어 두고 사람에게 남김 |
 | `CODEOWNERS` | — | `CLAUDE.md` `.claude/` `REVIEW.md` `.sdlc/` `intent/ spec/ plan/` `evals/` 의 오너 자리(플레이스홀더) | 브랜치 보호에서 코드 오너 승인 필수로 설정 |
 
 **GitHub 쪽 설정도 자동으로.** `/sdlc:init` 은 sdlc 워크플로가 자리 잡으면(방금 설치했든, 이미 있었든) 이어서 `bash "${CLAUDE_PLUGIN_ROOT}/scripts/github-setup.sh"` 를 실행합니다. `gh` 로 세 가지를 합니다 — ① CI 인증 시크릿 등록(`ci.auth` 가 `oauth` 면 키체인/파일에 보관된 구독 토큰을 재사용, 없으면 `--token-stdin` 으로 붙여 넣기; 토큰은 출력하지 않음) ② 저장소 설정 `allow_auto_merge`·`delete_branch_on_merge`(`/sdlc:go --merge` 용, 룰셋보다 먼저 처리해 요금제와 무관하게 적용) ③ 기본 브랜치 ruleset(PR 필수 · 리뷰 스레드 해소 · 팀 저장소는 코드 오너 리뷰 · 필수 상태 체크 `evals` · force-push/삭제 차단). 1인 저장소는 승인 0 + 코드 오너 요구 없음이고 관리자 bypass 는 넣지 않아 `evals` 체크가 살아 있습니다 — `--bypass` 를 주면 관리자가 체크까지 건너뛰므로 evals 는 권고가 됩니다. `--dry-run` 이 페이로드를 보여 주고, `gh` 가 없으면 수동 절차를 안내합니다. 비공개 개인 저장소(Free 요금제)는 ruleset 이 GitHub Pro 이상이라 403 으로 끝나며, 그때는 훅과 `go` 의 규율(체크 초록·리뷰어 Important 0·푸시 가드)만으로 자동 머지가 이어집니다. 공개 저장소나 Pro 이상은 룰셋이 서버에서 같은 규칙을 한 번 더 강제합니다 — 어느 쪽이든 기본은 자동이고 제한은 사용자가 켭니다. `/sdlc:doctor` 가 CI 인증 일관성(설정↔워크플로) · 시크릿 · ruleset · auto-merge 를 행으로 보고합니다.
@@ -620,9 +621,11 @@ OS 별 파일 경로, 드롭인 디렉터리, `requiredMinimumVersion` 의 fail-
 
 **단계별 스킬은 언제 쓰나요?** `go` 가 내부에서 같은 스킬을 부르므로 보통은 쓸 일이 없습니다. 승인 지점을 다른 사람이 소유하는 팀 저장소, 한 PR 에 담기지 않는 큰 변경, 인시던트 뒤 `postmortem`·`triage` 처럼 루프 바깥에서 시작하는 일에 씁니다.
 
-**사람이 머지하지 않고 계속 돌릴 수 있나요?** 1인 저장소면 됩니다. `/sdlc:run` 을 치면(1인 저장소는 `init` 이 `loop.enabled` 를 켜 둡니다), 승인된 intent 를 한 건씩 새 세션의 `go --autopilot --merge` 로 처리하고, 머지된 결과를 리뷰어와 스캔 체크리스트로 다시 점검해 Important 만 새 intent 로 만들어 큐에 넣습니다. 고칠 것이 없으면 멈춥니다. 상한(건수·시간·연속 실패 3회), slug 별 차단, 정지 파일 `.sdlc/state/pause` 가 폭주를 막고, 머지 조건(테스트·`evals` 체크 초록·리뷰어 Important 0·훅)은 `go` 와 같습니다. 무인으로는 `sdlc-autopilot.yml` 이 30분마다 1건을 처리하며, 그 PR 이 체크를 받으려면 `SDLC_GH_TOKEN` 시크릿이 필요합니다. production 배포는 여전히 사람 몫입니다.
+**사람이 머지하지 않고 계속 돌릴 수 있나요?** 1인 저장소면 됩니다. `/sdlc:run` 을 치면(1인 저장소는 `init` 이 `loop.enabled` 를 켜 둡니다), 승인된 intent 를 한 건씩 새 세션의 `go --autopilot --hand-off` 로 처리하고, 머지된 결과를 리뷰어와 스캔 체크리스트로 다시 점검해 Important 만 새 intent 로 만들어 큐에 넣습니다. 고칠 것이 없으면 멈춥니다. 상한(건수·시간·연속 실패 3회), slug 별 차단, 정지 파일 `.sdlc/state/pause` 가 폭주를 막고, 머지 조건(테스트·`evals` 체크 초록·리뷰어 Important 0·훅)은 `go` 와 같습니다. 무인으로는 `sdlc-autopilot.yml` 이 30분마다 1건을 처리하며, 그 PR 이 체크를 받으려면 `SDLC_GH_TOKEN` 시크릿이 필요합니다. production 배포는 여전히 사람 몫입니다.
 
-**비용은요?** evals 는 기본 `sonnet` 모델, 케이스당 `max_turns` 30 으로 실행되고, CI 에서는 설정 파일을 건드린 PR 과 야간 1회에만 돕니다. `run-evals.sh --case <glob>` 으로 일부만, `--dry-run` 으로 호출 없이 점검할 수 있습니다. 모니터의 탐지는 모델을 쓰지 않으며 2σ 이상에서만 `claude -p` 가 호출됩니다.
+**토큰이 너무 빨리 닳습니다.** 실측(파일럿 125세션)에서 비용의 대부분은 CI 가 아니라 로컬 `go`/`run` 세션이었고, 원인은 넷이었습니다 — ① 한 세션이 CI 대기까지 붙들고 있어 문맥이 수십만 토큰으로 커지고 매 턴 그것을 다시 읽음 ② 한도에 걸려 끊긴 세션을 처음부터 다시 돌림(오류 종료 세션이 비용의 40%) ③ 여러 체크아웃에서 동시에 돌려 5시간 세션 한도를 빨리 소진 ④ 조사·검증 서브에이전트도 메인과 같은 고급 모델. 0.6.0 부터 `run` 은 `go --hand-off` 로 PR 까지만 세션을 쓰고 체크는 셸이 기다리며, 한도에 걸리면 루프를 멈추고 다음 실행에서 그 세션을 이어 받습니다(`claude --resume`). 루프 모델은 표준 문맥 `opus`, 턴 상한 120, researcher·verifier·simplifier 는 `sonnet` 입니다. `sdlc/*` 브랜치 PR 은 CI 리뷰를 건너뜁니다(go 가 이미 로컬에서 같은 REVIEW.md 로 리뷰; 다시 켜려면 저장소 변수 `SDLC_REVIEW_ALL_PRS=true`). 병렬 실행은 둘까지를 권합니다 — 구독 한도는 세션끼리 나눠 씁니다. 실제 사용량은 `/sdlc:metrics` 의 "Headless session cost" 행(항목별 `total_cost_usd` 합)으로 확인합니다. 이미 채택한 저장소는 `/sdlc:init` 을 다시 돌리면 `loop` 의 옛 기본값(턴 200, 모델 빈 값)이 새 기본값으로 바뀌고, 워크플로 변경을 받으려면 `sdlc-review.yml`·`sdlc-evals.yml` 을 지운 뒤 `init` 을 다시 돌립니다.
+
+**비용은요?** evals 는 기본 `sonnet` 모델, 케이스당 `max_turns` 30 으로 실행되고, CI 에서는 설정 파일을 건드린 PR 과 주 1회에만 돕니다. `run-evals.sh --case <glob>` 으로 일부만, `--dry-run` 으로 호출 없이 점검할 수 있습니다. 모니터의 탐지는 모델을 쓰지 않으며 2σ 이상에서만 `claude -p` 가 호출됩니다.
 
 **훅이 아무 일도 안 하는 것 같습니다.** `.sdlc/config.json` 이 없으면 최소 동작만 합니다. `/sdlc:init` 후 `/sdlc:doctor` 의 훅 자가시험을 보십시오.
 
@@ -639,7 +642,7 @@ OS 별 파일 경로, 드롭인 디렉터리, `requiredMinimumVersion` 의 fail-
 | 계정당 한 번 | GitHub 로그인 승인(브라우저), 구독 토큰 발급 `claude setup-token`(브라우저) | `github-setup.sh --login` 이 device code 를 띄우고 기다림 — 브라우저 도구가 있는 세션이면 에이전트가 코드 입력까지 수행. 토큰은 `--save-token` 으로 키체인(`security add-generic-password -w` 인자로 잠시 프로세스 목록에 노출 — 공유 머신은 `--save-token-file`)/`~/.config/sdlc/ci-token`(600) 에 보관 |
 | 저장소당 | **없음** | `/sdlc:init`(플래그 없이 감지) → 워크플로·CODEOWNERS 설치, 시크릿 등록(보관된 토큰), auto-merge 설정, 브랜치 ruleset(요금제가 허용할 때), doctor, 채택 커밋을 브랜치+PR 로 |
 | 변경당 | **없음** — 1인 저장소 기본은 autopilot + auto-merge. 팀 저장소: 계획 승인 1회 + 머지 결정 1회 | 요청 자체가 승인(`approved_by`·`approval_basis` 기록); 검증·리뷰·PR 코멘트 처리·머지는 자동. 멈춤은 `roles.autopilot`/`roles.auto_merge` false 또는 `--no-autopilot`/`--no-merge` 로 사용자가 추가 |
-| 백로그 전체 | **없음** — `/sdlc:run` 한 번(또는 `sdlc-autopilot.yml` 스케줄) | 승인된 intent 를 한 건씩 새 세션의 `go --autopilot --merge` 로 처리하고, 머지된 결과를 자기 점검해 Important 만 새 intent 로 올림. 사람은 머지된 PR 목록과 `loop.item` 로그를 사후에 읽음. `loop.enabled` 를 켠 것 자체가 결정 |
+| 백로그 전체 | **없음** — `/sdlc:run` 한 번(또는 `sdlc-autopilot.yml` 스케줄) | 승인된 intent 를 한 건씩 새 세션의 `go --autopilot --hand-off` 로 처리하고, 머지된 결과를 자기 점검해 Important 만 새 intent 로 올림. 사람은 머지된 PR 목록과 `loop.item` 로그를 사후에 읽음. `loop.enabled` 를 켠 것 자체가 결정 |
 | 배포당(production) | `RELEASE_APPROVAL` 부여 1회 | staging 까지는 자동. production 게이트는 플레이북이 사람에게 남겨 둔 유일한 문 |
 
 원문이 사람 몫으로 고정한 것은 "판단이 필요한 게이트" 이며, 나머지는 전부 스크립트나 에이전트가 합니다. 자격증명 발급 두 건은 브라우저 인증이라 플러그인이 대신 만들 수 없고, 다른 사람의 승인을 대신할 수도 없습니다(1인 저장소는 `--solo`).
