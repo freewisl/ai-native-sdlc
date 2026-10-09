@@ -3,6 +3,14 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] - 2026-10-09
+
+Caps that stop a runaway session, not a large item.
+
+### Changed
+- Loop caps raised: `max_turns` 120 → 500 and `item_max_minutes` 45 → 120 per session, `max_minutes` 120 → 480 per run. At 120 turns, sessions on large items stopped after about 30–40 minutes, well before the time cap. Each stop splits the work: the next run resumes the session, after the prompt cache has expired.
+- `init` moves the old defaults (`max_turns` 120 or 200, `item_max_minutes` 45, `max_minutes` 120) to the new ones and keeps any value the user set.
+
 ## [0.8.1] - 2026-10-09
 
 Model and effort, set where they matter and nowhere else.

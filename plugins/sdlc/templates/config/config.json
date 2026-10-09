@@ -136,9 +136,9 @@
   "loop": {
     "enabled": false,
     "max_items": 5,
-    "max_minutes": 120,
-    "item_max_minutes": 45,
-    "max_turns": 120,
+    "max_minutes": 480,
+    "item_max_minutes": 120,
+    "max_turns": 500,
     "max_failures_per_slug": 3,
     "self_check": true,
     "fix_rounds": 2,

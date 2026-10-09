@@ -398,9 +398,9 @@ check "resume file removed after the resumed session" "$([ ! -s "$L2/.sdlc/state
 has "item event records sessions incl. the fix round" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | grep c-one | tail -1)" '"sessions":2'
 has "run event records total cost" "$(grep '"event":"loop.run"' "$L2/.sdlc/logs/events.jsonl" | tail -1)" '"cost_usd":'
 has "metrics shows headless session cost" "$(python3 "$SCRIPTS/metrics.py" --dir "$L2" 2>&1 | grep 'Headless session cost')" "Headless session cost"
-# init migrates the old loop defaults (max_turns 200, model "") but keeps other values
+# init migrates the old loop defaults (max_turns 200, item_max_minutes 45, model "") but keeps other values
 python3 - "$L2/.sdlc/config.json" <<'PY'
-import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['loop']['max_turns']=200; c['loop']['model']=''; c['loop'].pop('fix_rounds',None); c['loop']['max_items']=3; json.dump(c,open(p,'w'),indent=2)
+import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['loop']['max_turns']=200; c['loop']['item_max_minutes']=45; c['loop']['max_minutes']=600; c['loop']['model']=''; c['loop'].pop('fix_rounds',None); c['loop']['max_items']=3; json.dump(c,open(p,'w'),indent=2)
 PY
 bash "$SCRIPTS/init.sh" --dir "$L2" --no-github >/dev/null 2>&1
 # models are aliases only: a full model id would pin the plugin to one generation
@@ -467,7 +467,7 @@ out=$(env $e3 CL_STUB_DIRTY=j-dirty bash "$SCRIPTS/run-loop.sh" --dir "$L3" --it
 has "a dirty tree after a session stops the run" "$out" "stop=dirty tree"; lacks "the next item is not started on a dirty tree" "$(cat "$WORK/cl3.log")" "--slug k-after"
 check "the stray file is left in place" "$([ -f "$L3/stray.txt" ] && echo true || echo false)" ""
 rm -f "$L3/stray.txt"
-has "init migrates the old max_turns default" "$(cat "$L2/.sdlc/config.json")" '"max_turns": 120'; has "init migrates the empty model default" "$(cat "$L2/.sdlc/config.json")" '"model": "opus"'
+has "init migrates the old max_turns default" "$(cat "$L2/.sdlc/config.json")" '"max_turns": 500'; has "init migrates the old item_max_minutes default" "$(cat "$L2/.sdlc/config.json")" '"item_max_minutes": 120'; has "init keeps a user-set max_minutes" "$(cat "$L2/.sdlc/config.json")" '"max_minutes": 600'; has "init migrates the empty model default" "$(cat "$L2/.sdlc/config.json")" '"model": "opus"'
 has "init fills missing loop keys" "$(cat "$L2/.sdlc/config.json")" '"fix_rounds": 2'; has "init keeps a user-set loop value" "$(cat "$L2/.sdlc/config.json")" '"max_items": 3'
 has "init fills the verifier skip keys" "$(cat "$L2/.sdlc/config.json")" '"agent": "auto"'; has "init fills loop.split_phases" "$(cat "$L2/.sdlc/config.json")" '"split_phases": true'
 # a max-turns stop leaves a resume file so the next run continues that session

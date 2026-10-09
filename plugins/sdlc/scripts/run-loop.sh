@@ -14,7 +14,7 @@
 #                   by a live loop is skipped by the others.
 #   --dry-run       print the queue and the commands; run nothing (needs neither gh nor claude)
 #   --once          one item then stop (what sdlc-autopilot.yml uses: the schedule provides the cadence)
-# Config (.sdlc/config.json → loop.*): enabled max_items(5) max_minutes(120) item_max_minutes(45) max_turns(120)
+# Config (.sdlc/config.json → loop.*): enabled max_items(5) max_minutes(480) item_max_minutes(120) max_turns(500)
 #   max_failures_per_slug(3) self_check(true) model("opus" — standard context, so long sessions auto-compact instead of growing
 #   toward 1M) effort("high" — passed as --effort, so the user's own effort setting does not carry into unattended sessions)
 #   fix_model("sonnet" — the short session that fixes a failing check) fix_rounds(2) checks_max_minutes(30)
@@ -72,10 +72,10 @@ pause_file="$root/$(cfg "$root" .loop.pause_file .sdlc/state/pause)"
 [ -f "$pause_file" ] && { echo "PAUSED  $pause_file exists — remove it to resume the loop"; exit 0; }
 is_git_repo "$root" || { echo "ERROR: $root is not a git repository" >&2; exit 2; }
 [ -z "$max_items" ] && max_items=$(cfg "$root" .loop.max_items 5)
-[ -z "$max_minutes" ] && max_minutes=$(cfg "$root" .loop.max_minutes 120)
+[ -z "$max_minutes" ] && max_minutes=$(cfg "$root" .loop.max_minutes 480)
 [ -z "$self_check" ] && self_check=$(cfg_bool "$root" .loop.self_check true)
 [ "$once" = 1 ] && max_items=1
-item_max=${item_max_arg:-$(cfg "$root" .loop.item_max_minutes 45)}; max_turns=$(cfg "$root" .loop.max_turns 120)
+item_max=${item_max_arg:-$(cfg "$root" .loop.item_max_minutes 120)}; max_turns=$(cfg "$root" .loop.max_turns 500)
 per_slug_max=$(cfg "$root" .loop.max_failures_per_slug 3); model=$(cfg "$root" .loop.model opus)
 effort=$(cfg "$root" .loop.effort high); fix_model=$(cfg "$root" .loop.fix_model sonnet)
 fix_rounds=$(cfg "$root" .loop.fix_rounds 2); checks_max=$(cfg "$root" .loop.checks_max_minutes 30)

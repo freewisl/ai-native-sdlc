@@ -199,7 +199,8 @@ else:
     L=c['loop']
     for k,v in tl.items():
         if k not in L: L[k]=v; ch.append('loop.%s=%s'%(k,json.dumps(v)))
-    if L.get('max_turns')==200: L['max_turns']=tl.get('max_turns',120); ch.append('loop.max_turns 200→%s (old default)'%L['max_turns'])
+    for k,old in (('max_turns',(120,200)),('item_max_minutes',(45,)),('max_minutes',(120,))):  # caps that were defaults once
+        if k in tl and L.get(k) in old and L[k]!=tl[k]: ch.append('loop.%s %s→%s (old default)'%(k,L[k],tl[k])); L[k]=tl[k]
     if L.get('model')=='': L['model']=tl.get('model','opus'); ch.append('loop.model ""→%s (old default)'%L['model'])
 tv=json.load(open(tpl,encoding='utf-8')).get('verify',{})
 V=c.setdefault('verify',{})
