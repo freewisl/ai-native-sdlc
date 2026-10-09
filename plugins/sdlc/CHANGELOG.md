@@ -3,6 +3,12 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.3] - 2026-10-09
+
+### Fixed
+- A session stopped by a cap with uncommitted changes stopped the run and said the next run would resume it. The next run then refused the dirty tree, so someone had to make a WIP commit and switch back to the default branch by hand. Now the next run starts right there on `sdlc/<slug>` and resumes that session first. A dirty tree that no stopped session left is still refused.
+- A resumed session now runs on its own branch: the run checks out `sdlc/<slug>` first, because the conversation it resumes was there.
+
 ## [0.8.2] - 2026-10-09
 
 Caps that stop a runaway session, not a large item.

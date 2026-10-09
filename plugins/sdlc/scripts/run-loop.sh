@@ -26,10 +26,12 @@
 #   tokens), merges on green, and starts a short fix session only when a check fails. A usage-limit stop ends the run and
 #   the next run RESUMES that session (claude --resume) instead of redoing the work; a max-turns or time-cap stop resumes
 #   too (every session gets its id up front with --session-id). The time cap kills claude itself, not just a subshell.
+#   A stopped session that leaves uncommitted changes stops the run with the tree as it is; the next run starts right there
+#   (on sdlc/<slug>, no commit or stash) and resumes that session first. A resumed session runs on its own branch.
 #   Every session's total_cost_usd / turns / tokens is recorded in the loop.item event.
 #   pause_file(".sdlc/state/pause")
 # Requires: roles.solo=true, loop.enabled not false (init turns it on for solo repositories), a git repository on its default branch
-#           with a clean tree, gh authenticated, claude.
+#           with a clean tree (or the tree a stopped session left on its branch), gh authenticated, claude.
 # Stops:  queue empty · max_items · max_minutes · pause file present · 3 consecutive failures. A slug that failed
 #         loop.max_failures_per_slug times is marked blocked in .sdlc/state/loop-failures.txt and skipped until a human clears it.
 # Never:  deploy commands of the gated tier, the approval variable, disabling hooks. What merges is exactly what /sdlc:go merges —
@@ -245,6 +247,7 @@ run_item() { # run_item <slug> → sets outcome (merged|open|failed|timeout|limi
   fi
   claim "$s"; item_cost=0; item_models=""; item_sessions=0
   printf 'ITEM    %s — %s%s\n' "$s" "$title" "$([ -n "$resume" ] && printf '  (resuming %s session %s)' "$phase" "$resume")"
+  [ -n "$resume" ] && [ -z "$(tree_dirty)" ] && git -C "$root" checkout -q "sdlc/$s" 2>/dev/null   # the conversation it resumes was on that branch
   if [ "$phase" = design ]; then
     if [ -n "$resume" ]; then
       run_claude "Continue the design phase of the /sdlc:go run for $s from where it stopped (intent, spec and plan on branch sdlc/$s; skip what is already committed), then stop after the plan is committed." "$log" "$item_max" "$resume"; rc=$?
@@ -323,8 +326,25 @@ self_check_pass() { # self_check_pass <from-sha> → prints clean | pr=<n> | pr=
 }
 
 # ---------- main loop ----------
-sync_default || exit 2
-start_epoch=$(epoch_now); from_sha=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo "")
+# Uncommitted changes on sdlc/<slug> left by that item's stopped session: resume it here first, as it is — no commit, no checkout
+resume_here=""
+if [ -n "$(tree_dirty)" ]; then
+  b=$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null)
+  case "$b" in sdlc/?*)
+    s="${b#sdlc/}"; fc=$(fail_count "$s")
+    if [ -s "$resume_dir/$s" ] && { [ -z "$fc" ] || [ "$fc" -lt "$per_slug_max" ]; } \
+       && { [ -z "$items_arg" ] || case ",$items_arg," in *",$s,"*) true;; *) false;; esac; }; then resume_here="$s"; fi;;
+  esac
+fi
+if [ -n "$resume_here" ]; then
+  echo "RESUME  $resume_here — its stopped session left uncommitted changes on $b; resuming it here before anything else"
+  [ "$has_remote" = 1 ] && [ "$dry" = 0 ] && git -C "$root" fetch -q origin 2>/dev/null
+  from_sha=$(git -C "$root" rev-parse -q --verify "origin/$def" 2>/dev/null || git -C "$root" rev-parse "$def" 2>/dev/null || echo "")
+else
+  sync_default || exit 2
+  from_sha=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo "")
+fi
+start_epoch=$(epoch_now)
 items=0; merged=0; opened=0; failed=0; consec_fail=0; stop=""; stop_dirty=""; done_slugs=" "; blocked=""; waiting=""; selfcheck="skipped"; run_cost=0; limit_text=""
 printf '== sdlc run  root=%s  default=%s  max_items=%s  max_minutes=%s  self_check=%s%s\n' "$root" "$def" "$max_items" "$max_minutes" "$self_check" "$([ "$dry" = 1 ] && printf '  (dry run)')"
 while :; do
@@ -333,8 +353,11 @@ while :; do
   [ $(( ($(epoch_now) - start_epoch) / 60 )) -ge "$max_minutes" ] && { stop="max_minutes"; break; }
   [ "$consec_fail" -ge 3 ] && { stop="3 consecutive failures"; break; }
   blocked=""; waiting=""; next=""
-  build_queue > "$root/.sdlc/state/loop-queue.txt"   # redirection, not $(...): build_queue must set blocked/waiting in this shell
-  for s in $(cat "$root/.sdlc/state/loop-queue.txt"); do case "$done_slugs" in *" $s "*) continue;; esac; next="$s"; break; done
+  if [ -n "$resume_here" ]; then next="$resume_here"; resume_here=""
+  else
+    build_queue > "$root/.sdlc/state/loop-queue.txt"   # redirection, not $(...): build_queue must set blocked/waiting in this shell
+    for s in $(cat "$root/.sdlc/state/loop-queue.txt"); do case "$done_slugs" in *" $s "*) continue;; esac; next="$s"; break; done
+  fi
   if [ -z "$next" ]; then
     if [ "$self_check" = "true" ] && [ "$selfcheck" = "skipped" ] && { [ "$merged" -gt 0 ] || { [ "$dry" = 1 ] && [ "$items" -gt 0 ]; }; }; then
       selfcheck=$(self_check_pass "$from_sha"); from_sha=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo "$from_sha")
@@ -352,7 +375,11 @@ while :; do
     dry) ;;
     *) failed=$((failed+1)); consec_fail=$((consec_fail+1)); n=$(fail_bump "$next"); [ "$n" -ge "$per_slug_max" ] && echo "BLOCKED $next failed $n times — remove its line from .sdlc/state/loop-failures.txt to retry";;
   esac
-  [ -n "$stop_dirty" ] && { echo "STOP    working tree left dirty by the session ($stop_dirty) — left as it is; the next run resumes"; stop="dirty tree"; break; }
+  if [ -n "$stop_dirty" ]; then
+    if [ -s "$resume_dir/$next" ]; then echo "STOP    the stopped session left uncommitted changes ($stop_dirty) — left as they are on sdlc/$next; the next run resumes that session right here (nothing to commit or stash)"
+    else echo "STOP    working tree left dirty by the session ($stop_dirty) — left as it is; commit or discard it before the next run"; fi
+    stop="dirty tree"; break
+  fi
   [ "$once" = 1 ] && [ "$items" -ge 1 ] && { stop="once"; break; }
 done
 mins=$(( ($(epoch_now) - start_epoch) / 60 ))

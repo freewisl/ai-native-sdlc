@@ -480,6 +480,32 @@ CL
 chmod +x "$STUB/claude"; mk3 m-turns; git_commit "$L3" more3 "2026-03-05T00:00:00Z"
 out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items m-turns --max-items 1 --no-self-check --claude-bin "$STUB/claude" 2>&1)
 check "a max-turns stop records the session for resume" "$([ "$(cat "$L3/.sdlc/state/loop-resume/m-turns" 2>/dev/null)" = sid-mt ] && echo true || echo false)" "$out"
+# a stopped session that leaves uncommitted changes on its branch: the next run resumes it right there, nothing to commit
+cat > "$STUB/claude" <<'CL'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CL_STUB_LOG"
+case "$*" in
+  *"--resume sid-ns"*)
+    printf 'resumed on %s with %s\n' "$(git branch --show-current)" "$(cat half.txt 2>/dev/null)" >> "$CL_STUB_LOG"
+    mkdir -p plan; printf -- '---\ntype: plan\nslug: n-stop\nstatus: approved\n---\n' > plan/n-stop.md; git add -A >/dev/null; git commit -qm "plan(n-stop)" >/dev/null 2>&1
+    echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-ns","total_cost_usd":0.3,"num_turns":10,"usage":{},"result":"SDLC_GO_PLANNED"}';;
+  *"--stop-after plan"*)
+    git checkout -q -b sdlc/n-stop; echo half > half.txt
+    echo '{"type":"result","is_error":true,"subtype":"error_max_turns","session_id":"sid-ns","total_cost_usd":0.2,"num_turns":500,"usage":{},"result":""}'; exit 1;;
+  *"--hand-off"*) echo n-stop >> "$GH_STUB_STATE/built"; echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-nb","total_cost_usd":1.0,"num_turns":20,"usage":{},"result":"SDLC_GO_PR 9"}';;
+esac
+exit 0
+CL
+chmod +x "$STUB/claude"; mk3 n-stop; git_commit "$L3" more4 "2026-03-06T00:00:00Z"
+out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items n-stop --no-self-check --claude-bin "$STUB/claude" 2>&1)
+has "a stopped session's uncommitted changes stop the run with a resume note" "$out" "the next run resumes that session right here"
+check "the half-done change stays on the item branch" "$([ -f "$L3/half.txt" ] && [ "$(git -C "$L3" branch --show-current)" = sdlc/n-stop ] && echo true || echo false)" ""
+out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items n-stop --no-self-check --claude-bin "$STUB/claude" 2>&1)
+lacks "the next run does not refuse that tree" "$out" "not clean"
+has "it resumes the session on its branch with the changes in place" "$(cat "$WORK/cl3.log")" "resumed on sdlc/n-stop with half"
+has "the resumed item finishes" "$out" "RESULT  n-stop → merged"
+printf 'y\n' > "$L3/stray2.txt"; out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items n-stop --no-self-check --dry-run --claude-bin "$STUB/claude" 2>&1)
+has "a dirty tree that no stopped session left is still refused" "$out" "not clean"; rm -f "$L3/stray2.txt"
 
 
 echo "== $PASS passed, $FAIL failed"
