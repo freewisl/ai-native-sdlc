@@ -357,7 +357,7 @@ printf '%s\n' "$*" >> "$CL_STUB_LOG"
 mode=$(cat "$CL_STUB_MODE_FILE" 2>/dev/null)
 case "$mode" in
   limit) echo '{"type":"result","is_error":true,"subtype":"success","session_id":"sid-limit","total_cost_usd":2.5,"num_turns":30,"usage":{"cache_read_input_tokens":900000,"output_tokens":4000},"result":"You'"'"'ve hit your session limit · resets 7pm (Asia/Seoul)"}'; echo ok > "$CL_STUB_MODE_FILE";;
-  *) echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-ok","total_cost_usd":1.25,"num_turns":12,"usage":{"cache_read_input_tokens":300000,"output_tokens":2000},"result":"SDLC_GO_PR 7"}';;
+  *) mdl=$(printf '%s' "$*" | sed -nE 's/.*--model ([^ ]+).*/\1/p'); echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-ok","total_cost_usd":1.25,"num_turns":12,"usage":{"cache_read_input_tokens":300000,"output_tokens":2000},"modelUsage":{"claude-'"$mdl"'-9":{}},"result":"SDLC_GO_PR 7"}';;
 esac
 exit 0
 CL
@@ -390,6 +390,9 @@ has "next run resumes the stopped session" "$(cat "$WORK/cl2.log")" "--resume si
 has "resume prompt continues the stopped phase instead of restarting" "$(cat "$WORK/cl2.log")" "Continue the design phase of the /sdlc:go run for c-one"
 has "checks are waited for in the shell" "$out" "CHECKS  PR #7"
 has "a failing check starts a short fix session" "$(cat "$WORK/cl2.log")" "has failing checks"
+check "the fix session runs on loop.fix_model" "$(grep 'has failing checks' "$WORK/cl2.log" | grep -q -- '--model sonnet' && echo true || echo false)" "$(grep 'has failing checks' "$WORK/cl2.log")"
+has "every loop session gets loop.effort" "$(head -1 "$WORK/cl2.log")" "--effort high"
+has "the models each item ran are recorded" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | grep c-one | tail -1)" '"models":"claude-opus-9,claude-sonnet-9"'
 has "both items merged by the shell after green checks" "$out" "merged=2"
 check "resume file removed after the resumed session" "$([ ! -s "$L2/.sdlc/state/loop-resume/c-one" ] && echo true || echo false)" ""
 has "item event records sessions incl. the fix round" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | grep c-one | tail -1)" '"sessions":2'
@@ -400,6 +403,10 @@ python3 - "$L2/.sdlc/config.json" <<'PY'
 import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['loop']['max_turns']=200; c['loop']['model']=''; c['loop'].pop('fix_rounds',None); c['loop']['max_items']=3; json.dump(c,open(p,'w'),indent=2)
 PY
 bash "$SCRIPTS/init.sh" --dir "$L2" --no-github >/dev/null 2>&1
+# models are aliases only: a full model id would pin the plugin to one generation
+pinned=$(grep -rnE 'claude-(opus|sonnet|haiku|fable|mythos)-[0-9]' "$PLUGIN/agents" "$PLUGIN/skills" "$PLUGIN/scripts" "$PLUGIN/templates" "$PLUGIN/hooks" 2>/dev/null)
+check "no full model id in agents, skills, scripts, templates or hooks" "$([ -z "$pinned" ] && echo true || echo false)" "$pinned"
+check "subagents that set a model also set effort" "$(for f in "$PLUGIN"/agents/*.md; do m=$(sed -n '2,/^---$/p' "$f" | grep '^model:' | grep -v inherit); [ -n "$m" ] && ! sed -n '2,/^---$/p' "$f" | grep -q '^effort:' && echo "$f"; done | grep -q . && echo false || echo true)" ""
 # --- two-phase items, --items order, depends_on, claims, worktree, dirty-tree stop ---
 L3="$WORK/loop3"; mkdir -p "$L3"; git_init "$L3"; printf 'x\n' > "$L3/README.md"; git_commit "$L3" init "2026-03-01T00:00:00Z"
 bash "$SCRIPTS/init.sh" --dir "$L3" --solo --no-github >/dev/null 2>&1

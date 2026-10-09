@@ -145,6 +145,8 @@
     "checks_max_minutes": 30,
     "split_phases": true,
     "model": "opus",
+    "effort": "high",
+    "fix_model": "sonnet",
     "allowed_tools": "Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash",
     "pause_file": ".sdlc/state/pause",
     "item_note": ""

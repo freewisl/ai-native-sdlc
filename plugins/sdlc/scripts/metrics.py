@@ -274,6 +274,16 @@ def gh_pr_indicators(root, since):
 
 
 # ----------------------------------------------------------------------------- indicators
+def cost_by_model(items):
+    """Mean cost per /sdlc:run item, grouped by the models its sessions ran (loop.item detail.models)."""
+    groups = {}
+    for e in items:
+        d = e.get("detail") or {}
+        if d.get("cost_usd") is not None:
+            groups.setdefault(d.get("models") or "unknown", []).append(float(d["cost_usd"]))
+    return " · ".join(f"{k}: {sum(v) / len(v):.2f} ({len(v)})" for k, v in sorted(groups.items())) or None
+
+
 def build(root, cfg, since):
     git = Git(root)
     chains = collect_artifacts(root, cfg, git, since)
@@ -348,6 +358,7 @@ def build(root, cfg, since):
         ("Plan approval → implemented (median h)", median_hours(p2impl), "plan.md first commit → last commit with status implemented", "leading (proxy for plan→merged PR)"),
         ("Request → PR via /sdlc:go (median min, n)", (lambda g: f"{statistics.median(g):.0f} ({len(g)})" if g else None)([float((e.get("detail") or {}).get("duration_min")) for e in evs("go.run") if isinstance((e.get("detail") or {}).get("duration_min"), (int, float))]), "go.run events (detail.duration_min)", "end-to-end leading indicator"),
         ("Headless session cost via /sdlc:run (total $, per item, items)", (lambda L: f"{sum(float((e.get('detail') or {}).get('cost_usd') or 0) for e in L):.2f} / {sum(float((e.get('detail') or {}).get('cost_usd') or 0) for e in L)/len(L):.2f} / {len(L)}" if L else None)([e for e in evs("loop.item") if (e.get('detail') or {}).get('cost_usd') is not None]), "loop.item events (total_cost_usd of every session, fix rounds included)", "API-rate equivalent; on a subscription it is the share of the usage limit"),
+        ("Headless cost per item by model ($ mean, items)", cost_by_model(evs("loop.item")), "loop.item events (models each item's sessions actually ran)", "a new model behind an alias shows up here; re-tune loop.effort when it does"),
         ("Autopilot loop: merged per run (mean, runs) / items that needed a human", (lambda L: f"{sum(int((e.get('detail') or {}).get('merged', 0)) for e in L) / len(L):.1f} ({len(L)}) / {sum(int((e.get('detail') or {}).get('open', 0)) + int((e.get('detail') or {}).get('failed', 0)) for e in L)}" if L else None)(evs("loop.run")), "loop.run events (/sdlc:run)", "needed a human = left open + failed"),
         ("First-pass merge share / rework cycles per change", None, "source needed: PR metadata (gh pr view … reviews, commits after first review)", ""),
         ("CLAUDE.md size (lines) / lessons / commits", (f"{cm['lines']} / {cm['lessons']} / {cm['commits']}" if cm else None), "CLAUDE.md, git log", "keep under a page; lessons grow when a mistake repeats"),

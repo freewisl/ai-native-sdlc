@@ -298,7 +298,9 @@ R-ID 단위의 전수 대응표는 [docs/PLAYBOOK-MAPPING.md](../../docs/PLAYBOO
   터미널 A `claude --worktree feature-auth`, 터미널 B `claude --worktree fix-rate-limit`. **2~3 세션이 출발점**이며, 실질 상한은 한 사람이 제대로 리뷰할 수
   있는 흐름의 수다 — 리뷰가 따라오는 동안만 세션을 늘린다.
 - 서브에이전트: 플러그인이 `agents/` 에 5종을 제공한다 — `sdlc-verifier`(앱 실행·동작 검증, 수정 금지), `sdlc-reviewer`(REVIEW.md 3 패스), `sdlc-researcher`(코드베이스 탐색 후 보고, 메인 컨텍스트 보호),
-  `sdlc-simplifier`(구현 후 불필요한 복잡도 제거), `sdlc-diagnoser`(읽기 전용 진단). 프로젝트 고유 서브에이전트는 `.claude/agents/*.md` 에 이름·설명·도구를 적어 git 에 넣는다.
+  `sdlc-simplifier`(구현 후 불필요한 복잡도 제거), `sdlc-diagnoser`(읽기 전용 진단).
+  모델과 effort: researcher 는 `haiku`·`medium`, verifier·simplifier 는 `sonnet`·`medium`, reviewer·diagnoser 는 세션의 모델과 effort 를 그대로 씀.
+  모델은 전부 별칭이라 새 모델이 나오면 수정 없이 따라가고, effort 를 적는 이유는 적지 않으면 세션 effort(예: `xhigh`)를 물려받기 때문. 프로젝트 고유 서브에이전트는 `.claude/agents/*.md` 에 이름·설명·도구를 적어 git 에 넣는다.
 - 거버넌스: 세션이 늘수록 산출이 늘므로 통제는 저장소의 설정에서 온다 — 훅과 권한은 모든 세션에 적용되고, 세션이 한 일은 그 세션을 돌린 엔지니어에게 귀속되어 기록된다.
 - 측정: 리뷰 품질이 유지되는 동안의 엔지니어당 동시 세션 수(OpenTelemetry 또는 로컬 `session.start/end` 이벤트)와 대기 대신 조종에 쓰는 시간; 후행으로 엔지니어당 주간 병합 수와 재작업률(PR 이력).
 
@@ -392,7 +394,9 @@ R-ID 단위의 전수 대응표는 [docs/PLAYBOOK-MAPPING.md](../../docs/PLAYBOO
 | `loop.item_note` | string | `""` | 모든 항목 요청 끝에 붙는 한 줄(`--note` 가 우선) |
 | `loop.max_failures_per_slug` | number | `3` | 같은 slug 가 이만큼 실패하면 `.sdlc/state/loop-failures.txt` 에 차단 기록, 사람이 지우기 전까지 건너뜀 |
 | `loop.self_check` | boolean | `true` | 실행 중 1건 이상 머지됐으면 머지된 diff 를 리뷰어+스캔으로 재점검, Important 만 승인된 intent 로(PR 경유) |
-| `loop.model` / `allowed_tools` | string | `"opus"` / `"Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash"` | 항목 세션의 모델과 허용 도구. 기본 `opus` 는 표준 문맥이라 긴 세션이 1M 까지 커지지 않고 자동 압축됨(`opus[1m]` 은 매 턴 다시 읽는 양이 커져 비쌈) |
+| `loop.effort` | string | `"high"` | 루프 세션마다 `--effort` 로 넘김 — 직접 쓰는 세션의 effort 설정(예: `xhigh`)이 무인 세션까지 따라오지 않게 함. `""` 면 넘기지 않음. 새 모델이 나와 비용이 달라지면(`/sdlc:metrics` 의 모델별 행) 이 값만 조정 |
+| `loop.fix_model` | string | `"sonnet"` | PR 체크가 실패했을 때 여는 짧은 수정 세션의 모델 |
+| `loop.model` / `allowed_tools` | string | `"opus"` / `"Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash"` | 항목 세션(설계·구현)의 모델과 허용 도구. 별칭(`opus`/`sonnet`/`haiku`)이라 그 계열의 최신 모델을 씀 — 세션이 실제로 쓴 모델 ID 는 `loop.item` 에 기록. 기본 `opus` 는 표준 문맥이라 긴 세션이 1M 까지 커지지 않고 자동 압축됨(`opus[1m]` 은 매 턴 다시 읽는 양이 커져 비쌈) |
 | `loop.fix_rounds` / `checks_max_minutes` | number | `2` / `30` | PR 체크는 셸이 기다리고(토큰 0) 초록이면 머지. 실패하면 짧은 수정 세션을 최대 이 횟수만큼. 대기 상한(분) |
 | `loop.pause_file` | string | `".sdlc/state/pause"` | 이 파일이 있으면 루프가 시작하지 않거나 다음 항목 전에 멈춤(정지 스위치) |
 | `verify.agent` / `agent_min_files` | string / number | `"auto"` / `4` | `sdlc-verifier` 서브에이전트 실행 규칙. `auto` 는 테스트 외 변경 파일이 이 수보다 적고 첫 회차에 모든 명령이 통과하면 건너뜀("verifier skipped (small change)" 를 보고·PR 본문에 남김). `always` / `never`. 리뷰어는 어느 쪽이든 diff 전체를 읽음 |
@@ -649,7 +653,7 @@ OS 별 파일 경로, 드롭인 디렉터리, `requiredMinimumVersion` 의 fail-
 
 **사람이 머지하지 않고 계속 돌릴 수 있나요?** 1인 저장소면 됩니다. `/sdlc:run` 을 치면(1인 저장소는 `init` 이 `loop.enabled` 를 켜 둡니다), 승인된 intent 를 한 건씩 새 세션의 `go --autopilot --hand-off` 로 처리하고, 머지된 결과를 리뷰어와 스캔 체크리스트로 다시 점검해 Important 만 새 intent 로 만들어 큐에 넣습니다. 고칠 것이 없으면 멈춥니다. 상한(건수·시간·연속 실패 3회), slug 별 차단, 정지 파일 `.sdlc/state/pause` 가 폭주를 막고, 머지 조건(PR 의 모든 체크 초록·리뷰어 Important 0·훅)은 `go` 와 같습니다. 세션 없이 돌리려면 로컬 cron 에 `run-loop.sh --once` 를 겁니다(`ci.mode github` 이면 `sdlc-autopilot.yml` 도 가능, 이때는 `SDLC_GH_TOKEN` 필요). production 배포는 여전히 사람 몫입니다.
 
-**토큰이 너무 빨리 닳습니다.** 실측(파일럿 125세션)에서 비용의 대부분은 CI 가 아니라 로컬 `go`/`run` 세션이었고, 원인은 넷이었습니다 — ① 한 세션이 CI 대기까지 붙들고 있어 문맥이 수십만 토큰으로 커지고 매 턴 그것을 다시 읽음 ② 한도에 걸려 끊긴 세션을 처음부터 다시 돌림(오류 종료 세션이 비용의 40%) ③ 여러 체크아웃에서 동시에 돌려 5시간 세션 한도를 빨리 소진 ④ 조사·검증 서브에이전트도 메인과 같은 고급 모델. 0.6.0 부터 `run` 은 `go --hand-off` 로 PR 까지만 세션을 쓰고 체크는 셸이 기다리며, 한도에 걸리면 루프를 멈추고 다음 실행에서 그 세션을 이어 받습니다(`claude --resume`). 루프 모델은 표준 문맥 `opus`, 턴 상한 120, researcher·verifier·simplifier 는 `sonnet` 입니다. 기본 로컬 모드에서는 CI 의 Claude 실행이 아예 없어 그 몫의 한도도 쓰지 않습니다(`ci.mode github` 에서도 `sdlc/*` 브랜치 PR 은 CI 리뷰를 건너뜀). 병렬 실행은 둘까지를 권합니다 — 구독 한도는 세션끼리 나눠 씁니다. 실제 사용량은 `/sdlc:metrics` 의 "Headless session cost" 행(항목별 `total_cost_usd` 합)으로 확인합니다. 이미 채택한 저장소는 `/sdlc:init` 을 다시 돌리면 `loop` 의 옛 기본값(턴 200, 모델 빈 값)이 새 기본값으로 바뀌고, 예전에 깔린 `sdlc-*.yml` 은 같은 `init` 이 지웁니다. 0.8.0 에서 네 가지를 더 줄였습니다 — ① 항목마다 설계·구현을 새 세션 둘로 나눠 구현 세션이 설계 대화를 다시 읽지 않음(`loop.split_phases`) ② 작은 변경(테스트 외 파일 4개 미만, 첫 회차 통과)은 verifier 서브에이전트를 건너뜀(`verify.agent`, 리뷰어는 그대로) ③ 시간 상한으로 죽은 세션도 처음부터가 아니라 이어서(`--session-id` 로 id 를 미리 정함) ④ CLAUDE.md 는 모든 세션의 모든 턴이 다시 읽으므로 한 페이지(120줄)를 넘으면 `/sdlc:lesson --trim` 으로 참고 내용을 필요할 때만 읽는 문서로 옮깁니다(`/sdlc:doctor` 가 넘으면 알려 줌).
+**토큰이 너무 빨리 닳습니다.** 실측(파일럿 125세션)에서 비용의 대부분은 CI 가 아니라 로컬 `go`/`run` 세션이었고, 원인은 넷이었습니다 — ① 한 세션이 CI 대기까지 붙들고 있어 문맥이 수십만 토큰으로 커지고 매 턴 그것을 다시 읽음 ② 한도에 걸려 끊긴 세션을 처음부터 다시 돌림(오류 종료 세션이 비용의 40%) ③ 여러 체크아웃에서 동시에 돌려 5시간 세션 한도를 빨리 소진 ④ 조사·검증 서브에이전트도 메인과 같은 고급 모델. 0.6.0 부터 `run` 은 `go --hand-off` 로 PR 까지만 세션을 쓰고 체크는 셸이 기다리며, 한도에 걸리면 루프를 멈추고 다음 실행에서 그 세션을 이어 받습니다(`claude --resume`). 루프 모델은 표준 문맥 `opus`(effort `high`, 체크 실패 수정 세션은 `sonnet`), 턴 상한 120, researcher 는 `haiku`, verifier·simplifier 는 `sonnet`(셋 다 effort `medium`) 입니다. 기본 로컬 모드에서는 CI 의 Claude 실행이 아예 없어 그 몫의 한도도 쓰지 않습니다(`ci.mode github` 에서도 `sdlc/*` 브랜치 PR 은 CI 리뷰를 건너뜀). 병렬 실행은 둘까지를 권합니다 — 구독 한도는 세션끼리 나눠 씁니다. 실제 사용량은 `/sdlc:metrics` 의 "Headless session cost" 행(항목별 `total_cost_usd` 합)으로 확인합니다. 이미 채택한 저장소는 `/sdlc:init` 을 다시 돌리면 `loop` 의 옛 기본값(턴 200, 모델 빈 값)이 새 기본값으로 바뀌고, 예전에 깔린 `sdlc-*.yml` 은 같은 `init` 이 지웁니다. 0.8.0 에서 네 가지를 더 줄였습니다 — ① 항목마다 설계·구현을 새 세션 둘로 나눠 구현 세션이 설계 대화를 다시 읽지 않음(`loop.split_phases`) ② 작은 변경(테스트 외 파일 4개 미만, 첫 회차 통과)은 verifier 서브에이전트를 건너뜀(`verify.agent`, 리뷰어는 그대로) ③ 시간 상한으로 죽은 세션도 처음부터가 아니라 이어서(`--session-id` 로 id 를 미리 정함) ④ CLAUDE.md 는 모든 세션의 모든 턴이 다시 읽으므로 한 페이지(120줄)를 넘으면 `/sdlc:lesson --trim` 으로 참고 내용을 필요할 때만 읽는 문서로 옮깁니다(`/sdlc:doctor` 가 넘으면 알려 줌).
 
 **비용은요?** evals 는 기본 `sonnet` 모델, 케이스당 `max_turns` 30 으로 실행되고, 로컬 cron 에 걸면 주 1회, 그 밖에는 직접 `/sdlc:evals run` 을 칠 때만 돕니다. `run-evals.sh --case <glob>` 으로 일부만, `--dry-run` 으로 호출 없이 점검할 수 있습니다. 모니터의 탐지는 모델을 쓰지 않으며 2σ 이상에서만 `claude -p` 가 호출됩니다.
 

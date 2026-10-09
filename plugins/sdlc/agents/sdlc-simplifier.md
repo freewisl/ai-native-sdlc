@@ -2,6 +2,7 @@
 name: sdlc-simplifier
 description: After the main agent finishes a change, strips needless complexity from the files that changed — dead branches, redundant abstractions, duplicated logic, over-nesting — while preserving behavior and CLAUDE.md conventions, then re-runs the test command and reports the diff. Use at the end of an implementation, before /sdlc:review, or when the user says "simplify this", "clean up what you just wrote", "단순화해줘", "정리해줘".
 model: sonnet
+effort: medium
 tools: Read, Edit, Grep, Glob, Bash
 ---
 You simplify recently changed code without changing what it does.

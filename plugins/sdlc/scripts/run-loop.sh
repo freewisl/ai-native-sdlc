@@ -16,7 +16,10 @@
 #   --once          one item then stop (what sdlc-autopilot.yml uses: the schedule provides the cadence)
 # Config (.sdlc/config.json → loop.*): enabled max_items(5) max_minutes(120) item_max_minutes(45) max_turns(120)
 #   max_failures_per_slug(3) self_check(true) model("opus" — standard context, so long sessions auto-compact instead of growing
-#   toward 1M) fix_rounds(2) checks_max_minutes(30) allowed_tools("Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash")
+#   toward 1M) effort("high" — passed as --effort, so the user's own effort setting does not carry into unattended sessions)
+#   fix_model("sonnet" — the short session that fixes a failing check) fix_rounds(2) checks_max_minutes(30)
+#   allowed_tools("Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash"). Models are aliases (opus/sonnet/haiku): they follow the
+#   newest model of each line without a change here; the model each session actually ran is recorded on loop.item.
 # Token economy: each item runs as two fresh sessions when loop.split_phases (default): design (/sdlc:go --stop-after plan:
 #   intent, spec, plan committed on sdlc/<slug>) and build (/sdlc:go --hand-off: implement from the committed plan) — the
 #   build session does not carry the design conversation. go runs with --hand-off (stops once the PR is pushed); this script waits for the PR checks in the shell (no
@@ -32,6 +35,7 @@
 # Never:  deploy commands of the gated tier, the approval variable, disabling hooks. What merges is exactly what /sdlc:go merges —
 #         green checks, reviewer Important = 0, hooks passed. Events: loop.run (summary) and loop.item (per slug) in events.jsonl.
 set -u
+{ # the whole script is one block, read in full before it runs: editing this file under a running loop cannot change that loop
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$HERE/lib/common.sh"; . "$HERE/lib/hooks-extra.sh"; . "$HERE/lib/scripts-extra.sh"
@@ -73,6 +77,7 @@ is_git_repo "$root" || { echo "ERROR: $root is not a git repository" >&2; exit 2
 [ "$once" = 1 ] && max_items=1
 item_max=${item_max_arg:-$(cfg "$root" .loop.item_max_minutes 45)}; max_turns=$(cfg "$root" .loop.max_turns 120)
 per_slug_max=$(cfg "$root" .loop.max_failures_per_slug 3); model=$(cfg "$root" .loop.model opus)
+effort=$(cfg "$root" .loop.effort high); fix_model=$(cfg "$root" .loop.fix_model sonnet)
 fix_rounds=$(cfg "$root" .loop.fix_rounds 2); checks_max=$(cfg "$root" .loop.checks_max_minutes 30)
 auto_merge=$(cfg_bool "$root" .roles.auto_merge true)
 resume_dir="$root/.sdlc/state/loop-resume"; mkdir -p "$resume_dir" 2>/dev/null || true
@@ -162,17 +167,17 @@ wait_capped() { # wait_capped <pid> <seconds> → 0 finished, 124 killed
   wait "$pid" 2>/dev/null; return $?
 }
 new_sid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
-run_claude() { # run_claude <prompt> <log-file> <max-minutes> [resume-session-id] → exit code; output in log; sets cur_sid; parses the result
-  local prompt="$1" log="$2" mins="$3" resume="${4:-}" rc
+run_claude() { # run_claude <prompt> <log-file> <max-minutes> [resume-session-id] [model] → exit code; output in log; sets cur_sid; parses the result
+  local prompt="$1" log="$2" mins="$3" resume="${4:-}" m="${5:-$model}" rc
   local cmd=( "$claude_bin" -p "$prompt" --output-format json --max-turns "$max_turns" --permission-mode acceptEdits --allowedTools "$tools" )
   if [ -n "$resume" ]; then cmd+=( --resume "$resume" ); cur_sid="$resume"   # sessions persist so a stopped run can be resumed
   else cur_sid=$(new_sid); cmd+=( --session-id "$cur_sid" ); fi            # id known up front: even a time-cap kill can be resumed
-  [ -n "$model" ] && cmd+=( --model "$model" ); [ -n "$plugin_dir" ] && cmd+=( --plugin-dir "$plugin_dir" )
+  [ -n "$m" ] && cmd+=( --model "$m" ); [ -n "$effort" ] && cmd+=( --effort "$effort" ); [ -n "$plugin_dir" ] && cmd+=( --plugin-dir "$plugin_dir" )
   # exec: $! is claude itself, so the time cap kills the session instead of orphaning it behind a dead subshell
   ( cd "$root" && exec env -u CLAUDECODE "${cmd[@]}" < /dev/null > "$log" 2>&1 ) & wait_capped $! $(( mins * 60 )); rc=$?
   parse_result "$log"; return $rc
 }
-parse_result() { # parse_result <log> → r_err r_sub r_sid r_cost r_turns r_cr r_out r_limit (reset text when a usage limit stopped it)
+parse_result() { # parse_result <log> → r_err r_sub r_sid r_cost r_turns r_cr r_out r_limit (reset text when a usage limit stopped it) r_models
   local line
   line=$(python3 - "$1" <<'PY'
 import json,sys,re
@@ -187,14 +192,16 @@ for l in reversed(open(sys.argv[1],encoding='utf-8',errors='replace').read().spl
 u=d.get('usage') or {}; t=d.get('result') or ''
 m=re.search(r"hit your (session|weekly|usage|daily) limit[^\n]*", t, re.I)
 f=lambda v: str(v).replace('\t',' ').replace('\n',' ')
-print('\t'.join(f(v) for v in [str(bool(d.get('is_error'))).lower(), d.get('subtype',''), d.get('session_id',''), round(d.get('total_cost_usd') or 0,4),
-      d.get('num_turns') or 0, u.get('cache_read_input_tokens',0), u.get('output_tokens',0), m.group(0) if m else '']))
+print('\x1f'.join(f(v) for v in [str(bool(d.get('is_error'))).lower(), d.get('subtype',''), d.get('session_id',''), round(d.get('total_cost_usd') or 0,4),
+      d.get('num_turns') or 0, u.get('cache_read_input_tokens',0), u.get('output_tokens',0), m.group(0) if m else '',
+      ','.join(sorted((d.get('modelUsage') or {}).keys()))]))
 PY
 )
-  IFS=$'\t' read -r r_err r_sub r_sid r_cost r_turns r_cr r_out r_limit <<EOF
+  IFS=$'\037' read -r r_err r_sub r_sid r_cost r_turns r_cr r_out r_limit r_models <<EOF   # unit separator: a tab IFS would collapse empty fields
 $line
 EOF
   item_cost=$(python3 -c "print(round(${item_cost:-0}+${r_cost:-0},4))"); item_sessions=$(( ${item_sessions:-0} + 1 ))
+  [ -n "$r_models" ] && item_models=$(printf '%s,%s' "${item_models:-}" "$r_models" | tr ',' '\n' | grep -v '^$' | sort -u | paste -sd, -)
   run_cost=$(python3 -c "print(round(${run_cost:-0}+${r_cost:-0},4))")
 }
 open_pr() { # open_pr <slug> → number of the open PR from sdlc/<slug>, or empty
@@ -232,11 +239,11 @@ run_item() { # run_item <slug> → sets outcome (merged|open|failed|timeout|limi
     if [ -n "$resume" ]; then printf 'WOULD RESUME  session %s for %s (%s phase; claude -p --resume, ≤ %s min, ≤ %s turns)\n' "$resume" "$s" "$phase" "$item_max" "$max_turns"
     else
       [ "$phase" = design ] && printf 'WOULD RUN  claude -p "/sdlc:go --slug %s --autopilot --stop-after plan %s" (design session: intent, spec, plan)\n' "$s" "$title"
-      printf 'WOULD RUN  claude -p "/sdlc:go --slug %s --autopilot --hand-off %s" (fresh session, ≤ %s min, ≤ %s turns), then wait for PR checks in the shell and merge on green\n' "$s" "$title" "$item_max" "$max_turns"
+      printf 'WOULD RUN  claude -p "/sdlc:go --slug %s --autopilot --hand-off %s" (fresh session, model %s, effort %s, ≤ %s min, ≤ %s turns), then wait for PR checks in the shell and merge on green\n' "$s" "$title" "${model:-default}" "${effort:-default}" "$item_max" "$max_turns"
     fi
     outcome=dry; return
   fi
-  claim "$s"; item_cost=0; item_sessions=0
+  claim "$s"; item_cost=0; item_models=""; item_sessions=0
   printf 'ITEM    %s — %s%s\n' "$s" "$title" "$([ -n "$resume" ] && printf '  (resuming %s session %s)' "$phase" "$resume")"
   if [ "$phase" = design ]; then
     if [ -n "$resume" ]; then
@@ -274,7 +281,7 @@ run_item() { # run_item <slug> → sets outcome (merged|open|failed|timeout|limi
           [ "$round" -ge "$fix_rounds" ] && { echo "CHECKS  still failing after $round fix round(s) — PR #$pr left open for a human"; break; }
           round=$((round+1))
           printf 'FIX     PR #%s round %s — short session for the failing checks\n' "$pr" "$round"
-          run_claude "PR #$pr (branch sdlc/$s) has failing checks. Check out that branch, read the failures (gh pr checks $pr; gh run view <run-id> --log-failed), fix the code — never weaken a test — run the verify commands from CLAUDE.md, commit and push, then stop. Do not wait for the checks and do not merge; print SDLC_FIX pushed when done." "$log.fix$round" "$item_max"
+          run_claude "PR #$pr (branch sdlc/$s) has failing checks. Check out that branch, read the failures (gh pr checks $pr; gh run view <run-id> --log-failed), fix the code — never weaken a test — run the verify commands from CLAUDE.md, commit and push, then stop. Do not wait for the checks and do not merge; print SDLC_FIX pushed when done." "$log.fix$round" "$item_max" "" "$fix_model"
           [ -n "$r_limit" ] && { outcome=limited; limit_text="$r_limit"; break; }
           [ -n "$(tree_dirty)" ] || to_default >/dev/null 2>&1;;
         *) echo "CHECKS  did not finish in $checks_max min — PR #$pr left open"; break;;
@@ -287,7 +294,7 @@ finish_item() { # finish_item <slug> <log> <rc> <resumed> — leave a dirty tree
   local s="$1" log="$2" rc="$3" resumed="$4"
   if [ -n "$(tree_dirty)" ]; then stop_dirty="$(tree_dirty)"; else to_default >/dev/null 2>&1 || true; fi
   release
-  log_event "$root" loop.item "$outcome" "/sdlc:run" "{\"slug\":$(json_escape "$s"),\"exit\":$rc,\"log\":$(json_escape "$(rel_path "$root" "$log")"),\"cost_usd\":$item_cost,\"sessions\":$item_sessions,\"turns\":${r_turns:-0},\"cache_read\":${r_cr:-0},\"output\":${r_out:-0},\"resumed\":$([ -n "$resumed" ] && printf true || printf false),\"split\":$split_phases}"
+  log_event "$root" loop.item "$outcome" "/sdlc:run" "{\"slug\":$(json_escape "$s"),\"exit\":$rc,\"log\":$(json_escape "$(rel_path "$root" "$log")"),\"cost_usd\":$item_cost,\"sessions\":$item_sessions,\"turns\":${r_turns:-0},\"cache_read\":${r_cr:-0},\"output\":${r_out:-0},\"models\":$(json_escape "${item_models:-}"),\"resumed\":$([ -n "$resumed" ] && printf true || printf false),\"split\":$split_phases}"
   printf 'RESULT  %s → %s  ($%s, %s session(s); log: %s)\n' "$s" "$outcome" "$item_cost" "$item_sessions" "$(rel_path "$root" "$log")"
 }
 
@@ -354,3 +361,4 @@ printf '== done  items=%s merged=%s open=%s failed=%s blocked=[%s] waiting=[%s] 
 [ "$json_out" = 1 ] && printf '{"items":%s,"merged":%s,"open":%s,"failed":%s,"blocked":%s,"waiting":%s,"self_check":%s,"stop":%s,"minutes":%s,"dry_run":%s}\n' "$items" "$merged" "$opened" "$failed" "$(json_escape "$(trim "$blocked")")" "$(json_escape "$(trim "$waiting")")" "$(json_escape "$selfcheck")" "$(json_escape "$stop")" "$mins" "$([ "$dry" = 1 ] && printf true || printf false)"
 [ "$failed" -gt 0 ] && exit 1
 exit 0
+}

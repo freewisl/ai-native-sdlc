@@ -17,7 +17,7 @@ A repository with `roles.solo: true`. There the loop is on by default (`init` se
 
 ## Inputs
 - `$ARGUMENTS`: `--items a,b,c` (only these slugs, in this order) · `--max-items N` (default `loop.max_items`, 5) · `--max-minutes M` (120) · `--item-max-minutes M` (per session, 45) · `--note "<text>"` (appended to every item's request — a project-wide reminder) · `--once` (one item) · `--no-self-check` · `--dry-run` (queue and commands only).
-- `.sdlc/config.json` → `loop.*`: `enabled` (on for solo repositories — `init` sets it; false switches the loop off), `max_items`, `max_minutes`, `item_max_minutes`, `max_turns`, `max_failures_per_slug`, `self_check`, `split_phases`, `item_note`, `model`, `allowed_tools`, `pause_file`.
+- `.sdlc/config.json` → `loop.*`: `enabled` (on for solo repositories — `init` sets it; false switches the loop off), `max_items`, `max_minutes`, `item_max_minutes`, `max_turns`, `max_failures_per_slug`, `self_check`, `split_phases`, `item_note`, `model`, `effort` (passed as `--effort`, so the user's own effort setting does not carry into unattended sessions), `fix_model`, `allowed_tools`, `pause_file`.
 - An intent's `depends_on: [slug, ...]` keeps it waiting until those PRs merged.
 - Parallel: one loop per worktree (`--dir <worktree>`); a slug a live loop has claimed is skipped by the others. Two at a time at most — the subscription limit is shared.
 

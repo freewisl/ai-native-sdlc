@@ -3,6 +3,23 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-10-09
+
+Model and effort, set where they matter and nowhere else.
+
+### Changed
+- Loop sessions get `--effort` from `loop.effort` (default `high`): without it, a user's own effort setting (for example `xhigh`) carried into every unattended session.
+- The short session that fixes a failing check runs on `loop.fix_model` (default `sonnet`).
+- `sdlc-researcher` runs on `haiku` at effort `medium`; `sdlc-verifier` and `sdlc-simplifier` set effort `medium` (a subagent without `effort` inherits the session's). `sdlc-reviewer` and `sdlc-diagnoser` keep the session's model and effort.
+
+### Added
+- `loop.item` records the models each item's sessions actually ran (`detail.models`); `/sdlc:metrics` shows the mean cost per item by model, so a new model behind an alias is visible.
+- Test: no full model id in agents, skills, scripts, templates or hooks — aliases only, so a new model generation needs no plugin change; a subagent that sets a model also sets effort.
+
+### Fixed
+- `run-loop.sh` parsed a session result with a tab field separator, which collapses empty fields; it now uses the unit separator.
+- `run-loop.sh` is one block that bash reads in full before running it: editing the file (a checkout used as `--plugin-dir`, say) no longer changes a loop that is already running from it.
+
 ## [0.8.0] - 2026-10-03
 
 Four more token savings, and the loop takes over what hand-written parallel runners used to do.
