@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""Stand-in for `claude -p … --output-format stream-json` in the engine tests.
+
+The prompt says what to do (`/sdlc:go --item <slug> --design|--build|--fix`, `--self-check`, or a resume prompt that names
+the same). What actually happens is scripted per `<slug>:<phase>` in $STUB_CLAUDE_SCENARIO (a list of actions consumed in
+order; `ok` once it runs out). Every call is appended to $STUB_CLAUDE_CALLS; the cost of a session id accumulates across
+resumes in $STUB_CLAUDE_STATE, like the real total_cost_usd does.
+"""
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+
+args = sys.argv[1:]
+if args[:1] == ["--help"]:
+    print("Usage: claude [options] [command] [prompt]\n  --permission-prompts <mode>\n  --max-budget-usd <amount>\n  --plugin-dir <path>")
+    sys.exit(0)
+
+
+def opt(name, default=""):
+    if name in args:
+        i = args.index(name)
+        return args[i + 1] if i + 1 < len(args) else default
+    return default
+
+
+def load(path, default):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return default
+
+
+def save(path, data):
+    if path:
+        with open(path, "w") as fh:
+            json.dump(data, fh)
+
+
+def emit(ev):
+    sys.stdout.write(json.dumps(ev) + "\n")
+    sys.stdout.flush()
+
+
+def git(*a):
+    return subprocess.run(["git"] + list(a), capture_output=True, text=True)
+
+
+prompt = opt("-p")
+sid = opt("--session-id") or opt("--resume")
+resumed = "--resume" in args
+model = opt("--model") or "default"
+m = re.search(r"--item (\S+) --(design|build|fix)", prompt)
+if m:
+    slug, phase = m.group(1), m.group(2)
+elif "--self-check" in prompt:
+    slug, phase = "", "self-check"
+else:
+    slug, phase = "", "other"
+key = "%s:%s" % (slug, phase) if slug else phase
+
+state_path = os.environ.get("STUB_CLAUDE_STATE", "")
+state = load(state_path, {"cost": {}, "used": {}})
+scen = load(os.environ.get("STUB_CLAUDE_SCENARIO", ""), {})
+todo = scen.get(key, [])
+n = state["used"].get(key, 0)
+action = todo[n] if n < len(todo) else "ok"
+state["used"][key] = n + 1
+cost = round(state["cost"].get(sid, 0.0) + float(scen.get("cost_step", 0.5)), 4)
+state["cost"][sid] = cost
+save(state_path, state)
+
+calls = os.environ.get("STUB_CLAUDE_CALLS")
+if calls:
+    with open(calls, "a") as fh:
+        fh.write(json.dumps({"key": key, "action": action, "sid": sid, "resumed": resumed, "model": model,
+                             "prompt": prompt, "claudecode": os.environ.get("CLAUDECODE"), "cwd": os.getcwd(),
+                             "branch": git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip()}) + "\n")
+
+name, _, param = action.partition(":")
+emit({"type": "system", "subtype": "init", "session_id": sid, "model": model,
+      "plugins": [] if name == "no_plugin" else [{"name": "sdlc", "path": "/stub"}]})
+
+doc_path = os.path.join("work", slug + ".md") if slug else ""
+
+
+def read_doc():
+    with open(doc_path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def write_doc(text):
+    with open(doc_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def set_status(text, status):
+    return re.sub(r"(?m)^status:.*$", "status: " + status, text, count=1)
+
+
+def add_section(text, title, body):
+    if re.search(r"(?m)^## %s\s*$" % re.escape(title), text):
+        return re.sub(r"(?ms)^## %s\s*$.*?(?=^## |\Z)" % re.escape(title), "## %s\n%s\n\n" % (title, body), text)
+    return text.rstrip("\n") + "\n\n## %s\n%s\n" % (title, body)
+
+
+def commit(msg):
+    git("add", "-A", "--", ".", ":(exclude).sdlc/state", ":(exclude).sdlc/logs")
+    git("commit", "-q", "-m", msg)
+
+
+def result(text, subtype="success", is_error=False, api_error=None, rc=0):
+    emit({"type": "result", "subtype": subtype, "is_error": is_error, "result": text, "session_id": sid, "num_turns": 3,
+          "total_cost_usd": cost, "modelUsage": {"claude-%s" % model: {"outputTokens": 10}}, "permission_denials": [],
+          "api_error_status": api_error})
+    sys.exit(rc)
+
+
+def design():
+    t = read_doc()
+    t = add_section(t, "Plan", "1. Write src/%s.txt — checked by the test command." % slug)
+    t = add_section(t, "Proof", "| R | check | kind |\n|---|---|---|\n| R1 | test command | auto |")
+    write_doc(set_status(t, "planned"))
+    commit("design %s" % slug)
+
+
+def build(important=0, tally=True, extra=None):
+    os.makedirs("src", exist_ok=True)
+    with open(os.path.join("src", slug + ".txt"), "w") as fh:
+        fh.write("built %s\n" % slug)
+    if extra:
+        extra()
+    t = read_doc()
+    if tally:
+        t = add_section(t, "Review", "SDLC_REVIEW_TALLY important=%d nits=1 validated=yes" % important)
+    write_doc(set_status(t, "built"))
+    commit("build %s" % slug)
+
+
+def fix():
+    if "conflicts" in prompt:
+        base = re.search(r"`git merge (\S+)` conflicts", prompt).group(1)
+        git("merge", "-q", "-X", "ours", "--no-edit", base)
+    if os.path.exists("FAIL"):
+        git("rm", "-q", "FAIL")
+    t = read_doc()
+    if "SDLC_REVIEW_TALLY" not in t or re.search(r"important=[1-9]", t):
+        t = add_section(t, "Review", "SDLC_REVIEW_TALLY important=0 nits=1 validated=yes")
+        write_doc(t)
+    with open("FIXED-%s" % slug, "a") as fh:
+        fh.write("fixed\n")
+    commit("fix %s" % slug)
+
+
+def on_sigint(signum, frame):
+    sys.exit(130)
+
+
+if name == "sleep":
+    signal.signal(signal.SIGINT, on_sigint)
+    time.sleep(float(param or 30))
+    name = "ok"
+
+if name in ("ok", "no_plugin"):
+    if phase == "design":
+        design()
+        result("done SDLC_PLANNED %s" % slug)
+    elif phase == "build":
+        build()
+        result("done SDLC_BUILT %s" % slug)
+    elif phase == "fix":
+        fix()
+        result("SDLC_FIXED")
+    elif phase == "self-check":
+        for d in scen.get("selfcheck_docs", []) if n == 0 else []:
+            with open(os.path.join("work", d["slug"] + ".md"), "w") as fh:
+                fh.write("---\nslug: %s\ntitle: %s\nstatus: %s\n---\n\n## Goal\n%s\n" % (
+                    d["slug"], d.get("title", d["slug"]), d.get("status", "ready"), d.get("goal", "Fix a finding.")))
+        result("SDLC_SELFCHECK items=%d" % (len(scen.get("selfcheck_docs", [])) if n == 0 else 0))
+    else:
+        result("ok")
+elif name == "max_turns":
+    os.makedirs("src", exist_ok=True)
+    with open(os.path.join("src", "%s-partial-%d.txt" % (slug, n)), "w") as fh:
+        fh.write("partial\n")
+    result("", subtype="error_max_turns", is_error=True)
+elif name == "max_turns_noprogress":
+    result("", subtype="error_max_turns", is_error=True)
+elif name == "limit_session":
+    emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour",
+                                                          "resetsAt": int(time.time() + float(param or 1))}})
+    result("You've hit your session limit · resets 3pm (Asia/Seoul)", is_error=True)
+elif name == "limit_opus":
+    result("You've hit your Opus limit · resets 5pm (Asia/Seoul)", is_error=True)
+elif name == "needs_input":
+    t = add_section(read_doc(), "Questions", "1. Which currency? (recommended: KRW)\n   - KRW\n   - USD")
+    write_doc(set_status(t, "needs-input"))
+    commit("question %s" % slug)
+    result("SDLC_NEEDS_INPUT %s" % slug)
+elif name == "error":
+    result("something broke", subtype="error_during_execution", is_error=True)
+elif name == "infra":
+    result("API Error: Overloaded", subtype="error_during_execution", is_error=True, api_error=529)
+elif name == "gave_up":
+    result("I could not finish this.")
+elif name == "new_dep":
+    def dep():
+        with open("package.json") as fh:
+            pj = json.load(fh)
+        pj.setdefault("dependencies", {})["left-pad"] = "^1.3.0"
+        with open("package.json", "w") as fh:
+            json.dump(pj, fh, indent=2)
+    build(extra=dep)
+    result("SDLC_BUILT %s" % slug)
+elif name == "fail_gate":
+    def fail():
+        with open("FAIL", "w") as fh:
+            fh.write("the test command fails while this file exists\n")
+    build(extra=fail)
+    result("SDLC_BUILT %s" % slug)
+elif name == "important":
+    build(important=1)
+    result("SDLC_BUILT %s" % slug)
+elif name == "no_tally":
+    build(tally=False)
+    result("SDLC_BUILT %s" % slug)
+elif name == "delete_test":
+    build(extra=lambda: git("rm", "-q", "tests/test_base.py"))
+    result("SDLC_BUILT %s" % slug)
+elif name == "skip_test":
+    def skip():
+        with open("tests/test_base.py", "a") as fh:
+            fh.write("\n@pytest.mark.skip\ndef test_later():\n    assert True\n")
+    build(extra=skip)
+    result("SDLC_BUILT %s" % slug)
+elif name == "change_acceptance":
+    def change():
+        t = read_doc()
+        write_doc(add_section(t, "Acceptance criteria", "R1. WHEN anything THE SYSTEM SHALL do less."))
+    build(extra=change)
+    result("SDLC_BUILT %s" % slug)
+elif name == "conflict":
+    build()
+    branch = git("symbolic-ref", "--short", "HEAD").stdout.strip()
+    git("checkout", "-q", "main")
+    os.makedirs("src", exist_ok=True)
+    with open(os.path.join("src", slug + ".txt"), "w") as fh:
+        fh.write("main's own version\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "main changes the same file")
+    git("checkout", "-q", branch)
+    result("SDLC_BUILT %s" % slug)
+elif name == "dirty_built":
+    build()
+    with open("LEFTOVER-%s" % slug, "w") as fh:
+        fh.write("left uncommitted\n")
+    result("SDLC_BUILT %s" % slug)
+else:
+    result("unknown stub action %s" % action, subtype="error_during_execution", is_error=True, rc=1)

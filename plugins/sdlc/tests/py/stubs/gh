@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Stand-in for `gh` in the engine tests: pull requests in a JSON file ($STUB_GH_DB) against the repository's origin,
+which is a local bare repo. `pr merge` really squash-merges into origin. $STUB_GH_MERGE_FAIL=1 makes merges fail."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+args = sys.argv[1:]
+DB = os.environ.get("STUB_GH_DB", "gh-db.json")
+
+
+def load():
+    try:
+        with open(DB) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {"next": 1, "prs": [], "calls": []}
+
+
+def save(db):
+    with open(DB, "w") as fh:
+        json.dump(db, fh, indent=1)
+
+
+def opt(name, default=None):
+    if name in args:
+        i = args.index(name)
+        return args[i + 1] if i + 1 < len(args) else default
+    return default
+
+
+def git(*a, cwd=None):
+    return subprocess.run(["git"] + list(a), capture_output=True, text=True, cwd=cwd)
+
+
+def find(db, n):
+    for pr in db["prs"]:
+        if str(pr["number"]) == str(n):
+            return pr
+    sys.stderr.write("no pull request %s\n" % n)
+    sys.exit(1)
+
+
+db = load()
+db.setdefault("calls", []).append(args)
+save(db)
+
+if args[:2] == ["auth", "status"]:
+    sys.exit(0)
+if args[:2] == ["label", "create"]:
+    sys.exit(0)
+if args[:1] != ["pr"]:
+    sys.stderr.write("stub gh: unsupported %s\n" % args)
+    sys.exit(1)
+
+sub = args[1]
+if sub == "list":
+    head, state = opt("--head"), (opt("--state") or "open").upper()
+    fields = (opt("--json") or "number").split(",")
+    out = []
+    for pr in db["prs"]:
+        if head and pr["head"] != head:
+            continue
+        if state != "ALL" and pr["state"] != state:
+            continue
+        out.append({f: pr.get(f) for f in fields})
+    out.sort(key=lambda p: -int(p.get("number") or 0))
+    lim = int(opt("--limit") or 30)
+    print(json.dumps(out[:lim]))
+elif sub == "create":
+    n = db["next"]
+    db["next"] = n + 1
+    url = "https://github.test/o/r/pull/%d" % n
+    db["prs"].append({"number": n, "head": opt("--head"), "headRefName": opt("--head"), "base": opt("--base"),
+                      "title": opt("--title"), "body": opt("--body"), "isDraft": "--draft" in args, "state": "OPEN",
+                      "url": url, "labels": [], "reviews": [], "reviewDecision": "", "author": {"login": "me"},
+                      "comments": []})
+    save(db)
+    print(url)
+elif sub == "edit":
+    pr = find(db, args[2])
+    if opt("--body") is not None:
+        pr["body"] = opt("--body")
+    if opt("--add-label"):
+        pr["labels"].append({"name": opt("--add-label")})
+    save(db)
+elif sub == "ready":
+    find(db, args[2])["isDraft"] = False
+    save(db)
+elif sub == "comment":
+    find(db, args[2])["comments"].append(opt("--body"))
+    save(db)
+elif sub == "close":
+    find(db, args[2])["state"] = "CLOSED"
+    save(db)
+elif sub == "merge":
+    pr = find(db, args[2])
+    if os.environ.get("STUB_GH_MERGE_FAIL") == "1" or pr["state"] != "OPEN" or pr.get("isDraft"):
+        sys.stderr.write("GraphQL: Pull request is not mergeable\n")
+        sys.exit(1)
+    origin = git("remote", "get-url", "origin").stdout.strip()
+    tmp = tempfile.mkdtemp(prefix="stub-gh-")
+    clone = os.path.join(tmp, "c")
+    steps = [git("clone", "-q", origin, clone), git("checkout", "-q", pr["base"], cwd=clone),
+             git("merge", "--squash", "origin/" + pr["head"], cwd=clone),
+             git("commit", "-q", "-m", "%s (#%d)" % (pr["title"], pr["number"]), cwd=clone),
+             git("push", "-q", "origin", pr["base"], cwd=clone)]
+    for r in steps:
+        if r.returncode != 0:
+            sys.stderr.write("merge failed: %s\n" % (r.stderr or r.stdout))
+            sys.exit(1)
+    if "--delete-branch" in args:
+        git("push", "-q", "origin", "--delete", pr["head"], cwd=clone)
+    pr["state"] = "MERGED"
+    save(db)
+else:
+    sys.stderr.write("stub gh: unsupported pr %s\n" % sub)
+    sys.exit(1)

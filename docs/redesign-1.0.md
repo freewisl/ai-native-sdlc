@@ -40,7 +40,7 @@ One file replaces the intent, spec and plan files.
 ---
 slug: entry-crud
 title: 수입·지출 입력/수정/삭제
-status: ready          # proposed | ready | planned | done | dropped | needs-input
+status: ready          # proposed | ready | planned | built | done | dropped | needs-input
 depends_on: []
 test_changes: none     # none | allowed (design decides; existing test files stay locked otherwise)
 created: 2026-10-12T09:30:00Z
@@ -50,18 +50,19 @@ source: user           # user | goal:<id> | self-check
 ## Acceptance criteria        (R1. WHEN … THE SYSTEM SHALL … — frozen once planned)
 ## Plan                       (numbered steps, each with how it is checked)
 ## Proof                      (| R | test or command | kind |)
+## Review                     (findings + `SDLC_REVIEW_TALLY important=N nits=M validated=yes` — the gate reads it)
 ## Departures
 ## Learned
 ## Questions                  (needs-input only: multiple choice, recommended answer first)
 ```
 
 **Lifecycle**
-- **Solo:** an item is enqueued as `ready`.
-- **Team:** an item is enqueued as `proposed`; a human merging the enqueue PR is the approval, and the merge sets it to `ready`.
-- **Design session:** fills in the Plan and Proof sections and commits the doc as `planned` on `sdlc/<slug>`. In team mode it also opens a draft PR, and a human's PR approval lets the build start.
-- **Build session:** writes the code and the PR.
-- **Gate:** when it passes, the PR is merged and the doc becomes `done` in the merge commit.
-- **Needs input:** the item is parked and its question goes to status. It is not counted as a failure.
+- **Enqueue** = commit the doc to the default branch as `ready`. Solo: directly (no remote) or a queue PR merged at once. Team: the queue PR waits for a person; merging it is the approval. `proposed` is for ideas a person still has to accept (self-check's pre-existing problems, rejected-review follow-ups).
+- **Design session** (engine creates `sdlc/<slug>` first): fills Plan and Proof, commits the doc as `planned`. Team: the engine opens a draft PR; an approving review by someone else, `reviewDecision: APPROVED`, or the `sdlc:approved` label lets the build start.
+- **Build session:** writes code and tests, verifies, reviews (reviewer + validate), records the tally in `## Review`, commits the doc as `built`. It does not push or open the PR.
+- **Gate (engine):** passes → the engine commits `done` on the branch, pushes, opens/updates the PR and merges it (team: marks it ready, a person merges). The merge commit carries `done`.
+- **Needs input:** a session sets `needs-input` and writes `## Questions`; the item is parked (not a failure). `sdlc.py answer` stores the answer; the engine writes it into the doc and continues.
+- **Dropped:** a session may set `dropped` (reason in Departures) when the item turns out unnecessary.
 
 The repository is the source of truth. A slug is done when its PR merged, or when the doc says `done` on the default branch.
 
@@ -69,16 +70,19 @@ The repository is the source of truth. A slug is done when its PR merged, or whe
 
 The CLI subcommands are:
 - `init`: adopt and migrate
-- `enqueue <files>`
-- `run [--detach]`
+- `enqueue [--new] <files>` — while a loop runs in the same checkout (no remote), docs go to `.sdlc/state/inbox/` and the loop commits them between items
+- `run [--detach] [--items] [--max-items] [--max-minutes] [--dry-run]`
 - `status [--json]`
-- `gate <pr|branch>`
-- `stop`
-- `resume`
+- `stop [--after-item]` — now (the session gets SIGINT and is recorded, so it resumes) or after the current item (pause file)
+- `resume` — clear the pause, start detached
+- `answer <slug> <text>`, `retry <slug>`, `drop <slug> [reason]`, `rate <slug> good|fix|reject [note]`
+- `gate <slug>`, `ship <slug>` — the end of an interactive `/sdlc:go`: the same gate and merge the loop uses
+
+Engine state (`.sdlc/state/items.json`) holds only what the repository cannot say: failures, waits and their reasons, pending answers, the last stopped session, cost. Claims live in the git common dir.
 
 **Loop**
 - With `--detach`, the loop runs under nohup, writes its pid and `loop-status.json`, and continues until the queue is empty.
-- If only waiting items are left (dependencies or human approval in another loop), it polls again every 10 minutes. If only items waiting on a human are left, it exits and reports them.
+- If only waiting items are left that resolve without anyone here (team PR approvals and merges, another loop's item), it polls every `poll_minutes` (10) for up to `idle_hours` (12). If only items waiting for you are left (questions, gate reasons, blocked), it exits and says so.
 - It also stops for: the pause file, N consecutive failures, a usage limit it cannot wait out (`loop.limit_wait_hours`), or `max_minutes` (default: unlimited).
 
 **Per item**
@@ -100,15 +104,15 @@ The CLI subcommands are:
 
 **Gate (shell, no tokens)**
 Every check below runs before any merge, by both `go` and `run`:
-1. In a temporary worktree at the PR head with the default branch merged in, run the build, test and lint commands. A conflict starts a short rebase session.
-2. The review tally line in the PR body says `important=0`, and the findings were validated.
+1. In the loop's checkout on `sdlc/<slug>` with the default branch merged in uncommitted (aborted afterwards — installed dependencies and caches are the session's), run the build, test and lint commands. A conflict is fixable: a fix session merges and resolves.
+2. The review tally line in the work doc's `## Review` says `important=0`.
 3. Test integrity: no existing test file is deleted, no test cases are removed, and no skip/only/xfail/@Disabled is added.
 4. The Acceptance criteria are unchanged since the design commit, or the change is explained in Departures.
 5. No new dependency in the manifests. A new dependency sends the PR to a human (`gate.new_dependencies: human|allow`).
 6. No changed file matches `risk.human` globs. A match sends the PR to a human.
 7. `checks/*` executables pass.
 
-A pass leads to a merge, and the engine verifies that the merge happened. A failure leads to the "needs human" label and a PR comment listing the reasons. Repositories without a remote merge locally with a squash merge, and the same gate applies.
+Fixable failures (1, 2, 7) get a fix session on `loop.fix_model`, up to `fix_rounds`, then count as a failure. Failures for a person (3–6) send the item to "needs a person": PR comment + `sdlc:needs-human` label, item state `needs-human`, and the loop moves on. A pass leads to a merge, and the engine verifies that the merge happened. Repositories without a remote squash-merge locally (in a linked worktree: where the default branch is checked out), and the same gate applies.
 
 **Self-check**
 - After merges, the engine reviews the merged diff.
@@ -169,7 +173,9 @@ The status view shows:
 
 ## Phases / progress
 
-- [ ] P1 Python engine core: config, work docs, git/gh, claude runner + result parsing, gate, loop, status, enqueue, stop/resume, unit tests with stub claude/gh
+Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `tests/py/stubs`), run on Python 3.9 and 3.12.
+
+- [x] P1 Python engine core: config, work docs, git/gh, claude runner + result parsing, gate, loop, status, enqueue, stop/resume, unit tests with stub claude/gh
 - [ ] P2 init (python): detect, scaffold, migrate v1 → v2, `--check`; github-setup.sh kept
 - [ ] P3 skills: init, go (+ references), run (fill + start + stop/resume), status; agents (reviewer validate mode); delete the old skills and diagnoser
 - [ ] P4 hooks adapted (work doc, test lock add-only + bash bypass, one deploy tier) + bash hook tests updated
