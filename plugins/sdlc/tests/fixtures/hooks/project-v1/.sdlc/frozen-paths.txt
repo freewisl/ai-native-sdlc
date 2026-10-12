@@ -1,0 +1,3 @@
+# fixture: frozen paths
+src/gen/
+schemas/*.avsc   # trailing comment is ignored

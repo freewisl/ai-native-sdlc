@@ -13,8 +13,6 @@ sdlc_plugin_version() {
   local v; v=$(json_file_get "$(sdlc_plugin_root)/.claude-plugin/plugin.json" .version)
   printf '%s' "${v:-unknown}"
 }
-# default config shipped with the plugin (used when the project has no .sdlc/config.json)
-sdlc_default_config() { printf '%s/templates/config/config.json' "$(sdlc_plugin_root)"; }
 
 # ---------- JSON helpers common.sh lacks ----------
 # json_get_raw <json> <path>: like json_get, but a JSON `false` comes back as "false".
@@ -54,43 +52,17 @@ PY
   fi
 }
 
-# json_keys <json> <path>: object keys, one per line, in file order
-json_keys() {
-  local json="$1" path="$2"
-  if has_cmd jq; then
-    printf '%s' "$json" | jq -r "$path // {} | if type == \"object\" then keys_unsorted[] else empty end" 2>/dev/null
-  else
-    SDLC_JSON="$json" python3 - "$path" <<'PY' 2>/dev/null
-import json,os,sys
-def walk(cur,path):
-    for part in [p for p in path.strip('.').replace('[','.').replace(']','').split('.') if p]:
-        if isinstance(cur,list):
-            try: cur=cur[int(part)]
-            except Exception: return None
-        elif isinstance(cur,dict): cur=cur.get(part)
-        else: return None
-        if cur is None: return None
-    return cur
-try: cur=walk(json.loads(os.environ.get('SDLC_JSON') or 'null'),sys.argv[1])
-except Exception: cur=None
-if isinstance(cur,dict):
-    for k in cur: print(k)
-PY
-  fi
-}
-
 # ---------- config readers (same file as cfg(), but false-safe and array-aware) ----------
-_cfg_json() { [ -f "$1/$SDLC_CONFIG_REL" ] && cat "$1/$SDLC_CONFIG_REL"; return 0; }
+_cfg_json() { _cfg_text "$1"; }
 # cfg_raw <root> <path> [default]
-cfg_raw()  { local v=""; v=$(json_get_raw "$(_cfg_json "$1")" "$2"); printf '%s' "${v:-${3:-}}"; }
+cfg_raw()  { local t v=""; t=$(_cfg_json "$1"); if cfg_mentions "$t" "$2"; then v=$(json_get_raw "$t" "$2"); fi; printf '%s' "${v:-${3:-}}"; }
 # cfg_bool <root> <path> [default]  → prints true|false
 cfg_bool() {
   local v; v=$(cfg_raw "$1" "$2" "${3:-false}")
   case "$v" in true|1|yes|on) printf 'true';; *) printf 'false';; esac
 }
 # cfg_lines <root> <path>  → array elements one per line
-cfg_lines() { json_lines "$(_cfg_json "$1")" "$2"; }
-cfg_keys()  { json_keys  "$(_cfg_json "$1")" "$2"; }
+cfg_lines() { local t; t=$(_cfg_json "$1"); if cfg_mentions "$t" "$2"; then json_lines "$t" "$2"; fi; }
 
 # ---------- verify command resolution ----------
 # verify_commands <root> → lines "name<TAB>command" for verify.commands (default: test).
@@ -117,6 +89,151 @@ verify_commands_human() {
     out="${out:+$out | }$name: $cmd"
   done <<< "$(verify_commands "$1")"
   printf '%s' "$out"
+}
+
+# ---------- test lock (guard-edit, guard-bash) ----------
+# An existing test is locked: it may be neither changed nor deleted. Existing = already on the default branch, as of the point
+# where this change branched off it — the engine's merge gate measures the same way. A test file this change adds is free to
+# edit while it is being written (the gate only checks it for skip/only); a test file that does not exist yet may always be
+# created. Without a git base to compare with, every test file that exists counts as existing.
+# Unlocked when protect.protect_tests is off, SDLC_ALLOW_TEST_EDIT=1, .sdlc/state/allow-test-edit exists, or the active work
+# doc says `test_changes: allowed` (the design decides that, per change).
+SDLC_TEST_PATH_ARR=(auto); SDLC_TEST_SPEC_DIR=""; SDLC_TEST_BASE=""
+
+# auto_test_path <rel> → the built-in test-path set ("auto"); a legacy <paths.spec> artifact dir is not a test dir
+auto_test_path() {
+  local rel="$1" base="${1##*/}"
+  case "/$rel" in */test/*|*/tests/*|*/__tests__/*) return 0;; esac
+  if [ -z "$SDLC_TEST_SPEC_DIR" ]; then
+    case "/$rel" in */spec/*) return 0;; esac
+  else
+    case "$rel" in "$SDLC_TEST_SPEC_DIR"/*) ;; *) case "/$rel" in */spec/*) return 0;; esac;; esac
+  fi
+  case "$base" in
+    *_test.go|*.test.*|*.spec.*|test_*.py|*_test.py|*Test.java|*Tests.java|*Spec.scala|*_spec.rb) return 0;;
+  esac
+  return 1
+}
+
+# test_paths_load <root> → SDLC_TEST_PATH_ARR (one pattern per element) and SDLC_TEST_SPEC_DIR. A config that does not
+# set protect.test_paths means "auto" (a version-2 file only holds what differs from the defaults); an explicit [] means none.
+test_paths_load() {
+  local lines pat
+  SDLC_TEST_PATH_ARR=()
+  lines=$(cfg_lines "$1" .protect.test_paths)
+  if [ -z "$lines" ] && [ -z "$(cfg_raw "$1" .protect.test_paths)" ]; then lines="auto"; fi
+  while IFS= read -r pat; do
+    pat=$(trim "$pat"); [ -n "$pat" ] && SDLC_TEST_PATH_ARR[${#SDLC_TEST_PATH_ARR[@]}]="$pat"
+  done <<< "$lines"
+  SDLC_TEST_SPEC_DIR=$(cfg "$1" .paths.spec ""); SDLC_TEST_SPEC_DIR="${SDLC_TEST_SPEC_DIR%/}"
+  return 0
+}
+# is_test_path <rel> → 0 when the path matches the loaded test paths (cheap: no external command, no here-string)
+is_test_path() {
+  local i=0 n=${#SDLC_TEST_PATH_ARR[@]} pat
+  while [ "$i" -lt "$n" ]; do
+    pat="${SDLC_TEST_PATH_ARR[$i]}"; i=$((i + 1))
+    if [ "$pat" = "auto" ]; then auto_test_path "$1" && return 0
+    else glob_match "$pat" "$1" && return 0; fi
+  done
+  return 1
+}
+# test_edit_allowed <root> → 0 when one of the unlocks is set
+test_edit_allowed() {
+  [ "${SDLC_ALLOW_TEST_EDIT:-}" = "1" ] && return 0
+  [ -f "$1/.sdlc/state/allow-test-edit" ] && return 0
+  local doc; doc=$(active_work_file "$1")
+  [ -n "$doc" ] && [ "$(frontmatter_get "$1/$doc" test_changes)" = "allowed" ] && return 0
+  return 1
+}
+# test_lock_on <root> → 0 when existing test files are locked right now
+test_lock_on() {
+  [ "$(cfg_bool "$1" .protect.protect_tests true)" = "true" ] || return 1
+  test_edit_allowed "$1" && return 1
+  return 0
+}
+# test_base_rev <root> → SDLC_TEST_BASE (cached for the run): the commit existing tests are measured against — where HEAD
+# branched off the default branch, which is origin/<protect.default_branch> when that exists, else the local branch. "-" when
+# there is no such commit (not a repository, no commits, no default branch).
+test_base_rev() {
+  [ -n "$SDLC_TEST_BASE" ] && return 0
+  local def ref b
+  SDLC_TEST_BASE="-"
+  def=$(cfg "$1" .protect.default_branch main)
+  case "$def" in -*) def=main;; esac                       # never hand git something that reads as an option
+  for ref in "origin/$def" "$def"; do
+    git -C "$1" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 || continue
+    b=$(git -C "$1" merge-base HEAD "$ref" 2>/dev/null) || b=""
+    SDLC_TEST_BASE="${b:-$ref}"; return 0
+  done
+  return 0
+}
+# test_file_is_new <root> <rel> → 0 when the file is not in the base: a test this change adds
+test_file_is_new() {
+  test_base_rev "$1"
+  [ "$SDLC_TEST_BASE" != "-" ] || return 1
+  git -C "$1" cat-file -e "$SDLC_TEST_BASE:./$2" 2>/dev/null && return 1
+  return 0
+}
+# test_file_locked <root> <rel> <path> → 0 when <path> is an existing test file and existing tests are locked now
+test_file_locked() {
+  case "$3" in /*) ;; *) set -- "$1" "$2" "$1/$3";; esac
+  [ -e "$3" ] || [ -L "$3" ] || return 1      # a test file that does not exist yet may always be created
+  test_paths_load "$1"; is_test_path "$2" || return 1
+  test_lock_on "$1" || return 1
+  test_file_is_new "$1" "$2" && return 1      # a test this change adds is not an existing one
+  return 0
+}
+
+# ---------- production deploy gate (guard-bash) ----------
+# One tier. A command matching a deploy pattern needs the approval env var (default RELEASE_APPROVAL).
+# Default patterns — keep identical to DEPLOY_PATTERNS in scripts/sdlclib/config.py (tests/hooks.sh compares them).
+SDLC_DEFAULT_DEPLOY_PATTERNS='(deploy|release|rollout|promote)[^|;&]*(prod|production|live)
+(prod|production|live)[^|;&]*(deploy|release|rollout|promote)
+kubectl [^|;&]*(apply|rollout|set image)[^|;&]*(prod|production)
+helm (upgrade|install)[^|;&]*(prod|production)
+terraform apply[^|;&]*(prod|production)'
+SDLC_DEPLOY_PATTERNS="$SDLC_DEFAULT_DEPLOY_PATTERNS"; SDLC_DEPLOY_ENV=RELEASE_APPROVAL
+
+# valid_ident <name> → 0 when it is usable as a shell variable name (indirect expansion of anything else is an error)
+valid_ident() { case "$1" in ''|[0-9]*|*[!A-Za-z0-9_]*) return 1;; esac; return 0; }
+
+# deploy_gate_config <root> → SDLC_DEPLOY_PATTERNS (one per line) and SDLC_DEPLOY_ENV. Source order: protect.deploy_patterns,
+# a version-1 config's environments.production.patterns, the default list; an explicit empty list switches the gate off.
+deploy_gate_config() {
+  local cj raw name
+  SDLC_DEPLOY_PATTERNS="$SDLC_DEFAULT_DEPLOY_PATTERNS"; SDLC_DEPLOY_ENV=RELEASE_APPROVAL
+  sdlc_initialized "$1" || return 0
+  cj=$(_cfg_json "$1")
+  case "$cj" in *deploy_patterns*|*deploy_approval_env*|*production*) ;; *) return 0;; esac   # nothing to read: the defaults stand
+  raw=$(json_get_raw "$cj" .protect.deploy_patterns)
+  if [ -n "$raw" ]; then
+    SDLC_DEPLOY_PATTERNS=$(json_lines "$cj" .protect.deploy_patterns)
+  else
+    raw=$(json_get_raw "$cj" .environments.production.patterns)
+    if [ -n "$raw" ]; then SDLC_DEPLOY_PATTERNS=$(json_lines "$cj" .environments.production.patterns); fi
+  fi
+  name=$(json_get "$cj" .protect.deploy_approval_env)
+  [ -z "$name" ] && name=$(json_get "$cj" .environments.production.approval_env)
+  if valid_ident "$name"; then SDLC_DEPLOY_ENV="$name"; fi
+  return 0
+}
+# deploy_match <command> → prints the first deploy pattern the command matches and returns 0; returns 1 on no match
+deploy_match() {
+  local cmd="$1" pat rc
+  [ -n "$SDLC_DEPLOY_PATTERNS" ] || return 1
+  set --
+  while IFS= read -r pat; do
+    if [ -n "$pat" ]; then set -- "$@" -e "$pat"; fi
+  done <<< "$SDLC_DEPLOY_PATTERNS"
+  [ $# -gt 0 ] || return 1
+  printf '%s\n' "$cmd" | grep -E -i -q "$@" 2>/dev/null; rc=$?
+  [ "$rc" = 1 ] && return 1                      # clean miss — the common case costs one grep
+  while IFS= read -r pat; do                     # a hit, or a pattern grep cannot compile: one by one, so a bad one never disables the rest
+    [ -z "$pat" ] && continue
+    if printf '%s\n' "$cmd" | grep -E -i -q -e "$pat" 2>/dev/null; then printf '%s' "$pat"; return 0; fi
+  done <<< "$SDLC_DEPLOY_PATTERNS"
+  return 1
 }
 
 # ---------- tool payload ----------
@@ -146,8 +263,6 @@ one_line() { printf '%s' "$1" | tr '\n\r\t' '   '; }
 # trunc <string> [max=120]
 trunc() { local s="$1" n="${2:-120}"; if [ "${#s}" -gt "$n" ]; then printf '%s...' "${s:0:$n}"; else printf '%s' "$s"; fi; }
 epoch_now() { date +%s; }
-# file_mtime <file> → epoch seconds (0 when unknown)
-file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || printf '0'; }
 is_int() { case "$1" in ''|*[!0-9-]*) return 1;; *) return 0;; esac; }
 
 # ---------- session state (batch) ----------
@@ -175,16 +290,6 @@ json.dump(d,open(f,'w'))
 PY
   fi
   return 0
-}
-
-# ---------- gate log (human readable: ts \t decision \t env \t cmd) ----------
-gate_log() { # <root> <decision> <env> <cmd>
-  local root="$1" f
-  sdlc_initialized "$root" || return 0
-  f=$(cfg "$root" .gate.log ".sdlc/logs/gate.log")
-  case "$f" in /*) ;; *) f="$root/$f";; esac
-  mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
-  printf '%s\t%s\t%s\t%s\n' "$(now_iso)" "$2" "$3" "$(one_line "$4")" >> "$f" 2>/dev/null || true
 }
 
 # ---------- bounded execution (macOS has no `timeout`) ----------

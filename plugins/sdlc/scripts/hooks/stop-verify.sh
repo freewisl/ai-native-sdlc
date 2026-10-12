@@ -1,8 +1,7 @@
 #!/bin/bash
 # Stop — "verification is part of done": when verify.required_before_stop is on and files were edited without a
-# successful verify run afterwards, block once with the verify commands; when plan.enforce_sync is on, ask once per
-# session whether the active plan needs a 'Departures from plan' update (design §3). stop_hook_active → always allow.
-# Reads: verify.required_before_stop, verify.commands, commands.*, plan.enforce_sync
+# successful verify run afterwards, block once with the verify commands. stop_hook_active → always allow.
+# Reads: verify.required_before_stop, verify.commands, commands.*
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../lib/common.sh"
@@ -21,7 +20,7 @@ block_stop() { # <rule> <reason>
   exit 0
 }
 
-# --- 1. verify before done
+# verify before done
 if [ "$(cfg_bool "$root" .verify.required_before_stop false)" = "true" ]; then
   configured=false
   while IFS=$'\t' read -r name vcmd; do [ -n "$vcmd" ] && configured=true; done <<< "$(verify_commands "$root")"
@@ -44,18 +43,6 @@ if [ "$(cfg_bool "$root" .verify.required_before_stop false)" = "true" ]; then
         *)      reason="[sdlc] Verification is part of done: run the verify commands ($list) and paste their output before finishing. If a test fails, fix the code, not the test." ;;
       esac
       block_stop "verify_$stale" "$reason"
-    fi
-  fi
-fi
-
-# --- 2. plan ↔ implementation sync (once per session)
-if [ "$(cfg_bool "$root" .plan.enforce_sync false)" = "true" ]; then
-  plan_rel=$(active_plan_file "$root")
-  if [ -n "$plan_rel" ] && [ -f "$root/$plan_rel" ] && [ "$(state_get "$root" plan_sync_checked)" != "true" ]; then
-    edit_ep=$(state_get "$root" last_edit_epoch); mt=$(file_mtime "$root/$plan_rel")
-    if is_int "$edit_ep" && is_int "$mt" && [ "$mt" -lt "$edit_ep" ]; then
-      state_set "$root" plan_sync_checked true
-      block_stop plan_sync "[sdlc] Implementation departed from plan? Update $plan_rel 'Departures from plan' in the same commit, or state that no departure occurred."
     fi
   fi
 fi

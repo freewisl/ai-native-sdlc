@@ -2,7 +2,7 @@
 # sdlc plugin — shared shell library. Source from hooks and scripts:
 #   . "$(dirname "$0")/../lib/common.sh"      (from scripts/hooks/*.sh)
 #   . "$(dirname "$0")/lib/common.sh"         (from scripts/*.sh)
-# Design contract: _workspace/02_design.md §6. No dependency beyond bash 3.2+, and jq OR python3.
+# No dependency beyond bash 3.2+, and jq OR python3.
 
 SDLC_CONFIG_REL=".sdlc/config.json"
 
@@ -63,20 +63,32 @@ project_root() {
   printf '%s' "${top:-$cwd}"
 }
 
+# _cfg_text <root> → the config file's text (empty when there is none), read without starting another program
+_cfg_text() { local f="$1/$SDLC_CONFIG_REL"; [ -f "$f" ] && printf '%s' "$(<"$f")"; return 0; }
+# cfg_mentions <config-text> <json-path> → 1 when the path is a plain .a.b.c whose last key does not occur in the text at all:
+# a key the file never names cannot be set, so the caller keeps its default and jq (or python) is never started
+cfg_mentions() {
+  case "$2" in *[!A-Za-z0-9_.]*) return 0;; esac
+  case "$1" in *"${2##*.}"*) return 0;; esac
+  return 1
+}
 # cfg <root> <json-path> [default]   reads .sdlc/config.json (path like .protect.protect_tests)
 cfg() {
-  local root="$1" path="$2" def="${3:-}" v=""
-  [ -f "$root/$SDLC_CONFIG_REL" ] && v=$(json_file_get "$root/$SDLC_CONFIG_REL" "$path")
+  local root="$1" path="$2" def="${3:-}" v="" t
+  t=$(_cfg_text "$root")
+  if cfg_mentions "$t" "$path"; then v=$(json_get "$t" "$path"); fi
   printf '%s' "${v:-$def}"
 }
 sdlc_initialized() { [ -f "$1/$SDLC_CONFIG_REL" ]; }
 
-# rel_path <root> <abs-or-rel path> → path relative to root (no leading ./)
+# rel_path <root> <abs-or-rel path> → path relative to root (no leading ./). A path that lies under the root only through
+# a symlink (/var vs /private/var) is matched on the physical root too; one outside the root stays absolute.
 rel_path() {
-  local root="${1%/}" p="$2"
+  local root="${1%/}" p="$2" phys
   case "$p" in
     "$root"/*) p="${p#"$root"/}" ;;
-    /*) : ;;
+    /*) phys=$(cd "$root" 2>/dev/null && pwd -P)
+        if [ -n "$phys" ]; then case "$p" in "$phys"/*) p="${p#"$phys"/}" ;; esac; fi ;;
   esac
   printf '%s' "${p#./}"
 }
@@ -91,7 +103,7 @@ glob_match() {
   local simple="${pat//\*\*\//}"
   case "$p" in $pat) return 0;; $simple) return 0;; */$pat) return 0;; esac
   case "$pat" in */*) return 1;; esac
-  case "$(basename "$p")" in $pat) return 0;; esac
+  case "${p##*/}" in $pat) return 0;; esac
   return 1
 }
 
@@ -107,15 +119,8 @@ log_event() {
 }
 
 # ---------- hook responses ----------
-# block <message>  → exit 2, message to Claude via stderr (format per design §3)
+# block <message>  → exit 2, message to Claude via stderr: "<what>. Why: <rule>. To proceed: <route>."
 block() { printf '[sdlc] BLOCKED: %s\n' "$1" >&2; exit 2; }
-# ask_json <reason> → PreToolUse "ask" decision (human confirms in interactive session)
-ask_json() {
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' "$(json_escape "$1")"
-  exit 0
-}
-# context_json <text> → SessionStart/UserPromptSubmit additional context (stdout is added to context on exit 0)
-context_out() { printf '%s\n' "$1"; }
 
 # ---------- session state ----------
 state_dir() { printf '%s' "$1/.sdlc/state"; }
@@ -140,10 +145,44 @@ PY
 }
 state_get() { local f; f=$(session_state_file "$1"); [ -f "$f" ] && json_file_get "$f" ".$2"; }
 
-# active plan file (set by /sdlc:plan): .sdlc/state/active-plan contains repo-relative path
-active_plan_file() { local f="$(state_dir "$1")/active-plan"; [ -f "$f" ] && cat "$f"; }
-# frontmatter_get <file> <key>
+# frontmatter_get <file> <key> → the value of a top-level `key:` in the leading --- block, quotes and a trailing
+# `# comment` removed (empty when the file has no frontmatter or the key is absent)
 frontmatter_get() {
   [ -f "$1" ] || return 0
-  sed -n '2,/^---$/p' "$1" | grep -E "^$2:" | head -1 | sed -E "s/^$2:[[:space:]]*//; s/^\"(.*)\"$/\1/"
+  awk -v key="$2" '
+    NR == 1 { if ($0 !~ /^---[ \t\r]*$/) exit; next }
+    /^---[ \t\r]*$/ { exit }
+    {
+      line = $0; sub(/\r$/, "", line); n = length(key) + 1
+      if (substr(line, 1, n) == key ":") {
+        v = substr(line, n + 1); sub(/^[ \t]+/, "", v); q = substr(v, 1, 1)
+        if (q == "\"" || q == "\047") { v = substr(v, 2); j = index(v, q); if (j > 0) v = substr(v, 1, j - 1) }
+        else { sub(/[ \t]+#.*$/, "", v); sub(/^#.*$/, "", v); sub(/[ \t]+$/, "", v) }
+        print v; exit
+      }
+    }' "$1" 2>/dev/null
+}
+
+# ---------- active work doc ----------
+# .sdlc/state/active-work holds one slug (written by the engine for the session it runs, or by /sdlc:go). The doc is
+# <paths.work>/<slug>.md. It applies ONLY while the checkout is on branch sdlc/<slug>: a stale file left by an abandoned
+# session must never block anything.
+ACTIVE_WORK_REL=".sdlc/state/active-work"
+current_branch() { git -C "$1" symbolic-ref --quiet --short HEAD 2>/dev/null; }
+work_dir() { local d; d=$(cfg "$1" .paths.work work); d="${d%/}"; printf '%s' "${d:-work}"; }
+# active_work_slug <root> → the slug, when its branch is the one checked out
+active_work_slug() {
+  local f="$1/$ACTIVE_WORK_REL" slug
+  [ -f "$f" ] || return 0
+  slug=$(head -n 1 "$f" 2>/dev/null | tr -d '[:space:]')
+  case "$slug" in ''|[!a-z0-9]*|*[!a-z0-9._-]*) return 0;; esac
+  [ "$(current_branch "$1")" = "sdlc/$slug" ] && printf '%s' "$slug"
+  return 0
+}
+# active_work_file <root> → repo-relative path of the active work doc, when it applies and the file exists
+active_work_file() {
+  local slug rel; slug=$(active_work_slug "$1"); [ -n "$slug" ] || return 0
+  rel="$(work_dir "$1")/$slug.md"
+  [ -f "$1/$rel" ] && printf '%s' "$rel"
+  return 0
 }

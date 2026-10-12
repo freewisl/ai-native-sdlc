@@ -1,8 +1,10 @@
 #!/bin/bash
-# PreToolUse Edit|Write|MultiEdit|NotebookEdit — in order: (1) frozen/generated paths, (2) test-file lock,
-# (3) approved-plan requirement, (4) secret scan of the new text (design §3). Uninitialized project → (4) only.
-# Reads: protect.frozen_paths_file, protect.generated_paths, protect.protect_tests, protect.test_paths, paths.spec, paths.evals,
-#        plan.require_for_edits, plan.exempt_paths, secrets.scan_edits, secrets.extra_patterns (via secret-scan.sh)
+# PreToolUse Edit|Write|MultiEdit|NotebookEdit — in order: (1) frozen/generated paths, (2) test-file lock (an existing
+# test file — one already on the default branch — is locked; one this change adds is free), (3) design first (only while
+# an active work doc applies and is ready or proposed: then just the work dir and .sdlc/ can be edited), (4) secret scan
+# of the new text. Uninitialized project → (4) only.
+# Reads: protect.frozen_paths_file, protect.generated_paths, protect.protect_tests, protect.test_paths, paths.work,
+#        secrets.scan_edits, secrets.extra_patterns (via secret-scan.sh), .sdlc/state/active-work (see lib/common.sh)
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../lib/common.sh"
@@ -20,41 +22,6 @@ rel=$(rel_path "$root" "$path")
 deny() { # deny <rule> <message>  — audit log + exit 2
   log_event "$root" hook.guard deny "$1" "{\"tool\":$(json_escape "$tool"),\"path\":$(json_escape "$rel")}"
   block "$2"
-}
-
-# built-in test-path set (§2.1 "auto"); <paths.spec> itself is the artifact dir, not a test dir
-auto_test_path() { # <rel> <spec-dir>
-  local rel="$1" spec="${2%/}" base; base=$(basename "$rel")
-  case "/$rel" in */test/*|*/tests/*|*/__tests__/*) return 0;; esac
-  case "$rel" in "$spec"/*) ;; *) case "/$rel" in */spec/*) return 0;; esac;; esac
-  case "$base" in
-    *_test.go|*.test.*|*.spec.*|test_*.py|*_test.py|*Test.java|*Tests.java|*Spec.scala|*_spec.rb) return 0;;
-  esac
-  return 1
-}
-is_test_path() { # <root> <rel>
-  local pat spec; spec=$(cfg "$1" .paths.spec spec)
-  while IFS= read -r pat; do
-    pat=$(trim "$pat"); [ -z "$pat" ] && continue
-    if [ "$pat" = "auto" ]; then auto_test_path "$2" "$spec" && return 0
-    else glob_match "$pat" "$2" && return 0; fi
-  done <<< "$(cfg_lines "$1" .protect.test_paths)"
-  return 1
-}
-test_edit_allowed() { # <root>
-  [ "${SDLC_ALLOW_TEST_EDIT:-}" = "1" ] && return 0
-  [ -f "$(state_dir "$1")/allow-test-edit" ] && return 0
-  local p; p=$(active_plan_file "$1")
-  [ -n "$p" ] && [ -f "$1/$p" ] && [ "$(frontmatter_get "$1/$p" test_changes)" = "allowed" ] && return 0
-  return 1
-}
-is_exempt_path() { # <root> <rel>
-  local pat
-  while IFS= read -r pat; do
-    pat=$(trim "$pat"); [ -z "$pat" ] && continue
-    glob_match "$pat" "$2" && return 0
-  done <<< "$(cfg_lines "$1" .plan.exempt_paths)"
-  return 1
 }
 
 initialized=false; sdlc_initialized "$root" && initialized=true
@@ -78,38 +45,29 @@ if [ "$initialized" = true ]; then
     fi
   done <<< "$(cfg_lines "$root" .protect.generated_paths)"
 
-  # (1b) ticketed paths — migrations, infra: edits need a change ticket (playbook Stage 5 "block edits to migrations and infra without a change ticket")
-  ticket_env=$(cfg "$root" .protect.ticket_env CHANGE_TICKET); case "$ticket_env" in ''|*[!A-Za-z0-9_]*) ticket_env=CHANGE_TICKET;; esac
-  while IFS= read -r pat; do
-    pat=$(trim "$pat"); [ -z "$pat" ] && continue
-    if glob_match "$pat" "$rel" && [ -z "${!ticket_env:-}" ]; then
-      deny ticketed_path "editing '$rel' needs a change ticket (matches '$pat' in protect.ticketed_paths). Why: migrations and infrastructure changes are gated by change management. To proceed: get the change ticket approved and run the session with $ticket_env=<ticket id>; the ticket id is logged with the edit."
-    fi
-  done <<< "$(cfg_lines "$root" .protect.ticketed_paths)"
+  # (2) test-file lock — a test file that does not exist yet is always allowed; paths outside the project are not its tests
+  case "$rel" in /*) ;; *)
+    if test_file_locked "$root" "$rel" "$path"; then
+      doc=$(active_work_file "$root"); doc_hint="${doc:-the work doc of this change ($(work_dir "$root")/<slug>.md)}"
+      deny test_lock "test file '$rel' is locked. Why: existing tests (those already on the default branch) change only when the design says so — fix the code, not the test (protect.protect_tests); test files this change adds stay free to edit. To proceed, only if the test itself is wrong or the new behavior needs it changed: that is a design decision — set 'test_changes: allowed' in $doc_hint when designing the change; a build session asks a person instead of flipping it itself. As a last resort the user runs the session with SDLC_ALLOW_TEST_EDIT=1."
+    fi ;;
+  esac
 
-  # (2) test-file lock
-  if [ "$(cfg_bool "$root" .protect.protect_tests true)" = "true" ] && is_test_path "$root" "$rel"; then
-    if ! test_edit_allowed "$root"; then
-      plan_rel=$(active_plan_file "$root"); plan_hint="${plan_rel:-the approved plan}"
-      deny test_lock "test file '$rel' is locked. Why: during a fix the code changes, not the test (protect.protect_tests) — fix the code, not the test. To proceed, only if the test itself is wrong or new behavior needs new tests: (1) set 'test_changes: allowed' in $plan_hint (a plan change the engineer approves), or (2) let /sdlc:verify --bugfix manage .sdlc/state/allow-test-edit for the write-the-failing-test step; as a last resort the user runs the session with SDLC_ALLOW_TEST_EDIT=1."
-    fi
-  fi
-
-  # (3) approved plan required
-  if [ "$(cfg_bool "$root" .plan.require_for_edits false)" = "true" ] && ! is_exempt_path "$root" "$rel"; then
-    plan_rel=$(active_plan_file "$root"); status=""
-    [ -n "$plan_rel" ] && [ -f "$root/$plan_rel" ] && status=$(frontmatter_get "$root/$plan_rel" status)
-    if [ "$status" != "approved" ]; then
-      if [ -n "$plan_rel" ]; then why="the active plan $plan_rel has status '${status:-missing}'"; else why="there is no active plan"; fi
-      deny no_approved_plan "editing '$rel' without an approved plan ($why). Why: plan.require_for_edits is on — nothing is implemented without an approved plan. To proceed: run /sdlc:plan (writes $(cfg "$root" .paths.plan plan)/<slug>.md with status: approved and sets .sdlc/state/active-plan); paths listed in plan.exempt_paths are not affected."
-    fi
+  # (3) design first — a change is built after its design is on record: work/<slug>.md says planned
+  doc=$(active_work_file "$root")
+  if [ -n "$doc" ]; then
+    status=$(frontmatter_get "$root/$doc" status)
+    case "$status" in ready|proposed)
+      wdir=$(work_dir "$root")
+      case "$rel" in /*|"$wdir"/*|.sdlc/*) ;; *)
+        deny design_first "design first — fill Plan and Proof, then set status planned. '$rel' cannot be edited while $doc has status '$status'. Why: a change is built only after its design is on record. To proceed: write Plan and Proof in $doc and set its status to planned (the work doc, everything under $wdir/ and .sdlc/ stay editable)." ;;
+      esac ;;
+    esac
   fi
 fi
 
 # (4) secret scan — also for projects that have not adopted sdlc yet
 scan=true; [ "$initialized" = true ] && scan=$(cfg_bool "$root" .secrets.scan_edits true)
-evals_dir=evals; [ "$initialized" = true ] && evals_dir=$(cfg "$root" .paths.evals evals)
-case "$rel" in "${evals_dir%/}"/*) scan=false;; esac   # eval fixtures hold intentionally fake secrets
 if [ "$scan" = "true" ]; then
   text=$(edit_new_text "$input")
   if [ -n "$text" ]; then

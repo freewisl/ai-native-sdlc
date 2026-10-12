@@ -1,6 +1,7 @@
 #!/bin/bash
-# SessionStart — log the session, record it in .sdlc/state, and inject a compact SDLC context block (design §3).
-# Reads: hooks.session_context, hooks.log_events, paths.intent, paths.plan, verify.*, commands.*, protect.*, plan.require_for_edits, environments.production.*
+# SessionStart — log the session, record it in .sdlc/state, and inject a compact SDLC context block.
+# Reads: hooks.session_context, hooks.log_events, verify.*, commands.*, protect.*, paths.work, the active work doc
+# (.sdlc/state/active-work, see lib/common.sh) and the loop engine's .sdlc/state/loop.pid + loop-status.json.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../lib/common.sh"
@@ -23,45 +24,56 @@ state_set_many "$root" started "$(now_iso)" source "${source:-startup}"
 
 # --- gather
 ver=$(sdlc_plugin_version)
-plan_line="none — /sdlc:go writes one for the next change"
-plan_rel=$(active_plan_file "$root")
-if [ -n "$plan_rel" ]; then
-  if [ -f "$root/$plan_rel" ]; then
-    slug=$(frontmatter_get "$root/$plan_rel" slug); status=$(frontmatter_get "$root/$plan_rel" status)
-    plan_line="$plan_rel (slug: ${slug:-?}, status: ${status:-?})"
+wdir=$(work_dir "$root")
+
+work_line="none — /sdlc:go \"<request>\" starts one"
+status=""
+slug=$(active_work_slug "$root")
+if [ -n "$slug" ]; then
+  doc=$(active_work_file "$root")
+  if [ -n "$doc" ]; then
+    dslug=$(frontmatter_get "$root/$doc" slug); status=$(frontmatter_get "$root/$doc" status)
+    work_line="$doc (slug: ${dslug:-$slug}, status: ${status:-?})"
   else
-    plan_line="$plan_rel (file missing — .sdlc/state/active-plan is stale)"
+    work_line="$wdir/$slug.md — file missing (.sdlc/state/active-work is stale)"
   fi
 fi
-intent_dir=$(cfg "$root" .paths.intent intent)
-triage_n=0
-[ -d "$root/$intent_dir/triage" ] && triage_n=$(find "$root/$intent_dir/triage" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+
+loop_line=""
+if [ -f "$root/.sdlc/state/loop.pid" ]; then
+  pid=""; read -r pid _ < "$root/.sdlc/state/loop.pid" || true
+  if is_int "$pid" && [ "$pid" -gt 0 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null; then
+    lf="$root/.sdlc/state/loop-status.json"
+    lstate=$(json_file_get "$lf" .state); litem=$(json_file_get "$lf" .item); lphase=$(json_file_get "$lf" .phase)
+    loop_line="${lstate:-running}${litem:+ — $litem}${lphase:+ ($lphase)}, pid $pid — /sdlc:status shows the details"
+  fi
+fi
+
 verify_line=$(verify_commands_human "$root")
 [ "$(cfg_bool "$root" .verify.required_before_stop false)" = "true" ] && verify_line="$verify_line (required before stop)"
 
-guards=""
 frozen_file=$(cfg "$root" .protect.frozen_paths_file ".sdlc/frozen-paths.txt"); case "$frozen_file" in /*) ;; *) frozen_file="$root/$frozen_file";; esac
 frozen_n=0; [ -f "$frozen_file" ] && frozen_n=$(grep -Ev '^[[:space:]]*(#|$)' "$frozen_file" 2>/dev/null | wc -l | tr -d ' ')
 guards="frozen paths: $frozen_n entr$( [ "$frozen_n" = 1 ] && printf 'y' || printf 'ies')"
 if [ "$(cfg_bool "$root" .protect.protect_tests true)" = "true" ]; then
-  if [ "${SDLC_ALLOW_TEST_EDIT:-}" = "1" ] || [ -f "$(state_dir "$root")/allow-test-edit" ]; then
-    guards="$guards · test edits: UNLOCKED for this fix"
+  if test_edit_allowed "$root"; then
+    guards="$guards · existing test files: UNLOCKED for this change"
   else
-    guards="$guards · test files locked during fixes (unlock only when the test itself must change: plan test_changes: allowed, or /sdlc:verify --bugfix)"
+    guards="$guards · existing test files locked, new ones are free (unlock: test_changes: allowed in the work doc, decided in the design)"
   fi
 fi
-[ "$(cfg_bool "$root" .plan.require_for_edits false)" = "true" ] && guards="$guards · edits need an approved plan"
-prod_env=$(cfg "$root" .environments.production.approval_env RELEASE_APPROVAL)
-[ "$(cfg "$root" .environments.production.autonomy gated)" = "gated" ] && guards="$guards · production commands gated ($prod_env)"
+case "$status" in ready|proposed) guards="$guards · design first: edits outside $wdir/ wait until the work doc is planned";; esac
+deploy_gate_config "$root"
+[ -n "$SDLC_DEPLOY_PATTERNS" ] && guards="$guards · production deploys gated ($SDLC_DEPLOY_ENV)"
 
 # --- emit (≤ 12 lines; stdout is added to Claude's context)
 printf '%s\n' "[sdlc] sdlc plugin v$ver — AI-native SDLC loop is active in this project (.sdlc/config.json)."
-printf '%s\n' "Active plan: $plan_line"
-printf '%s\n' "Pending intents ($intent_dir/triage/): $triage_n"
+printf '%s\n' "Use: /sdlc:go \"<request>\" for one change · /sdlc:run \"<goal>\" for a goal or the queue · /sdlc:status for progress and what needs you"
+printf '%s\n' "Active work: $work_line"
+[ -n "$loop_line" ] && printf '%s\n' "Loop: $loop_line"
 printf '%s\n' "Verify commands: $verify_line"
 printf '%s\n' "Guards: $guards"
 printf '%s\n' "Rules:"
-printf '%s\n' "- Every change starts from a committed plan.md — /sdlc:go writes it (or /sdlc:plan step by step)"
-printf '%s\n' "- Verify before reporting done (run the Commands in CLAUDE.md and paste output; never edit tests during a fix)"
-printf '%s\n' "- Same mistake twice → /sdlc:lesson adds it to CLAUDE.md"
+printf '%s\n' "- One work doc per change ($wdir/<slug>.md): design first (Plan and Proof, status planned), then build"
+printf '%s\n' "- Verify before reporting done (run the Commands in CLAUDE.md and paste output); fix the code, not the test"
 exit 0

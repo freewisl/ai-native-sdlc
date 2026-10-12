@@ -1,5 +1,5 @@
 #!/bin/bash
-# PostToolUse Edit|Write|MultiEdit — record the edit in session state, then run the formatter (design §3).
+# PostToolUse Edit|Write|MultiEdit|NotebookEdit — record the edit in session state (stop-verify reads it), then run the formatter.
 # Never fails the hook: formatter problems are a one-line stderr note, exit 0. Cap per run: SDLC_FORMAT_TIMEOUT seconds (default 20).
 # Reads: hooks.format_on_edit, commands.format ("auto" = detect by extension + tool presence), commands.lint_file (optional per-file linter, {file} substituted)
 set -u
@@ -17,11 +17,6 @@ path=$(json_get "$input" .tool_input.file_path)
 case "$path" in ''|/*) ;; *) path="$root/$path";; esac
 
 state_set_many "$root" last_edit_ts "$(now_iso)" last_edit_epoch "$(epoch_now)" edited true
-# editing the active plan itself keeps plan and implementation in sync → no "departures" nag this session
-plan_rel=$(active_plan_file "$root")
-if [ -n "$plan_rel" ] && [ -n "$path" ] && [ "$(rel_path "$root" "$path")" = "$plan_rel" ]; then
-  state_set "$root" plan_sync_checked true
-fi
 
 # --- formatter
 [ "$(cfg_bool "$root" .hooks.format_on_edit true)" = "true" ] || exit 0

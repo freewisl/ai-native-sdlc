@@ -1,6 +1,6 @@
 #!/bin/bash
 # PostToolUse Bash — when the command was a verify command (commands.test/build/lint or verify.commands), record
-# last_verify_{ts,epoch,cmd,ok,name} in session state and log verify.run (design §3). Result heuristics on tool_response.
+# last_verify_{ts,epoch,cmd,ok,name} in session state and log verify.run (stop-verify reads it). Result heuristics on tool_response.
 # Reads: commands.test, commands.build, commands.lint, verify.commands
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
