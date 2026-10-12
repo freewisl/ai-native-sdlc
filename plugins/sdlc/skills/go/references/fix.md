@@ -1,0 +1,22 @@
+# Fix
+
+The merge gate — run by the shell, not by a session's own report — failed on this branch. Interactive: `sdlc.py ship` exited 1 and printed the brief. Loop (`--item <slug> --fix`): the prompt after the flags is the brief. Either way it lists what failed, with the last lines of each command's output.
+
+Work through it in this order:
+
+1. **Merge conflict** with the default branch (the brief says `git merge <base>` conflicts). Run `git merge <base>` with the ref the brief names and resolve every conflict keeping both sides' intent: read what the other side changed (`git log -p <base> -- <file>`), never take one side wholesale, and make the result compile. Run the commands, then commit the merge.
+2. **A command failed** (build, test, lint, or `checks/<name>`). Read the output, find the cause, fix the code, rerun that command and then the whole set the gate runs (`gate.commands`, by default build, test and lint). If it fails in the gate but passes on your branch, the cause came in with the default branch — the gate tests your branch merged with it — so `git merge <base>`, rerun, fix.
+3. **No review tally, or Important findings open.** Run references/review.md: review, validate, fix, record. The gate reads the last tally line in `## Review`.
+4. **Commit** as a new commit: `sdlc(<slug>): fix <what>` (the engine looks for it).
+
+Never:
+- weaken, skip or delete a test to get green — fix the code;
+- edit the Acceptance criteria;
+- loosen a lint rule, raise a timeout or disable a check;
+- try to get around what the brief lists "for a person" (a new dependency, a risk path, test integrity, changed criteria). Fix the rest; those go to a person, who sees the reasons.
+
+If it cannot be fixed without breaking one of those, write what blocks it — the failing command, the cause, what would unblock it — in `## Departures`, commit that note, and print `SDLC_FIX_BLOCKED <one line>` instead of `SDLC_FIXED`. The item then goes to a person with your note.
+
+Finish:
+- Loop: print `SDLC_FIXED`. The engine reruns the gate; you do not.
+- Interactive: run `sdlc.py ship <slug>` again. At most three rounds, then stop and show the user the last brief verbatim and what you tried.

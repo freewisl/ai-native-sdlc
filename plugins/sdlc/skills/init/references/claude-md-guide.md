@@ -1,78 +1,48 @@
 # Filling CLAUDE.md at init time
 
-`init.sh` writes marker-delimited stubs; the skill fills them from a repository inspection. The goal is
-the blog's "Payments service" example: what a new joiner needs on day one, under a page.
+`sdlc.py init` writes five sections between `<!-- sdlc:begin … -->` and `<!-- sdlc:end … -->` markers. Commands and Verifying your work come from detection; Conventions and Architecture start as `TODO:` lines for you to replace. The goal is what a new joiner needs on day one, under a page (`claude_md.max_lines`, 120): Claude reads the whole file every session, so a stale line costs context every time.
 
-## Command detection heuristics
+## Commands the engine detects — verify them, do not trust them
 
 | Evidence | build | test | lint | run |
 |---|---|---|---|---|
-| `Makefile` with targets | `make build` | `make test` | `make lint` | `make run` |
-| `package.json` scripts (`npm`/`pnpm`/`yarn`/`bun` by lockfile) | `<pm> run build` | `<pm> test` | `<pm> run lint` | `<pm> start` or `<pm> run dev` |
-| `pom.xml` (`mvnw` if present) | `./mvnw -q -DskipTests package` | `./mvnw -q test` | `./mvnw -q checkstyle:check` (only if plugin configured) | `./mvnw spring-boot:run` (Spring Boot) |
-| `build.gradle(.kts)` | `./gradlew build -x test` | `./gradlew test` | `./gradlew check -x test` | `./gradlew bootRun` (Spring) |
-| `go.mod` | `go build ./...` | `go test ./...` | `golangci-lint run` if config exists, else `go vet ./...` | `go run .` |
+| `package.json` scripts (pnpm / yarn / bun / npm by lockfile) | `<pm> run build` | `<pm> run test` | `<pm> run lint` | `<pm> run start` · `dev` · `serve` |
+| `Makefile` targets | `make build` | `make test` · `check` | `make lint` | `make run` · `serve` · `dev` |
+| `pom.xml` (`./mvnw` when present) | `mvn -q -DskipTests package` | `mvn -q test` | — | `mvn spring-boot:run` (plugin in the pom) |
+| `build.gradle(.kts)` (`./gradlew` when present) | `gradle build -x test` | `gradle test` | — | `gradle bootRun` (Spring Boot) |
 | `Cargo.toml` | `cargo build` | `cargo test` | `cargo clippy -- -D warnings` | `cargo run` |
-| `pyproject.toml` / `requirements.txt` | `python -m build` only if packaging config exists, else empty | `pytest -q` | `ruff check .` if ruff config, else `flake8` if config | from README |
-| `*.csproj` / `*.sln` | `dotnet build` | `dotnet test` | `dotnet format --verify-no-changes` | `dotnet run` |
-| `Gemfile` | empty | `bundle exec rspec` or `bundle exec rake test` | `bundle exec rubocop` | `bundle exec rails s` |
+| `go.mod` | `go build ./...` | `go test ./...` | `go vet ./...` | `go run .` (with `main.go`) |
+| `Package.swift` | `swift build` | `swift test` | — | — |
+| `pubspec.yaml` | — | `flutter test` · `dart test` | `flutter analyze` · `dart analyze` | — |
+| `pyproject.toml` · `requirements.txt` | — | `pytest` | `ruff check .` or `flake8`, only when configured | — |
+| `Gemfile` | — | `bundle exec rspec` or `rake test` | `bundle exec rubocop` when present | — |
+| `composer.json` | `composer build` | `composer test` | `composer lint` | — (scripts that exist) |
 
-Rules: only list a command whose tool is actually configured (a lint command with no config produces
-noise). Prefer the wrapper the repo ships (`mvnw`, `gradlew`). Read CI workflow steps: what CI runs is
-the truth about how the project is built and tested. If several test commands exist (unit/integration),
-list them the way the blog does: `make test (unit), make itest (integration, needs docker)`.
+Not detected: `*.csproj` / `*.sln` (`dotnet build`, `dotnet test`), a Python package build, and anything project-specific.
 
-## Healthy-output examples
+- List a command only when its tool is really configured; a lint command without a config is noise. Prefer the wrapper the repository ships (`mvnw`, `gradlew`).
+- What CI runs is the truth about how the project is built and tested: when detection and CI (`.github/workflows`, `.gitlab-ci.yml`, `Jenkinsfile`) disagree, follow CI.
+- Several test commands (unit, integration): `commands.test` holds the fast one the gate re-runs before every merge; CLAUDE.md lists both, e.g. `Test: make test (unit), make itest (integration, needs docker)`.
+- To change a command: `sdlc.py init --commands test="…"` rewrites the config value; the lines in CLAUDE.md "Commands" and "Verifying your work" are edited by hand. The two must say the same thing.
 
-Run each non-destructive command once and quote its last meaningful line. Typical healthy tails:
+## Running a command once
 
-| Tool | Healthy tail |
-|---|---|
-| pytest | `42 passed in 3.1s` |
-| jest/vitest | `Tests: 42 passed, 42 total` |
-| maven | `BUILD SUCCESS` |
-| gradle | `BUILD SUCCESSFUL in 12s` |
-| go test | `ok  	module/pkg	0.42s` (one `ok` per package, no `FAIL`) |
-| cargo test | `test result: ok. 42 passed; 0 failed` |
-| eslint/ruff | no output, exit 0 |
+Run the `test` command (and `build` / `lint` when cheap) once and quote the last meaningful line. Healthy tails: pytest `42 passed in 3.1s` · jest/vitest `Tests: 42 passed, 42 total` · maven `BUILD SUCCESS` · gradle `BUILD SUCCESSFUL` · go `ok  module/pkg  0.42s` · cargo `test result: ok. 42 passed` · eslint/ruff no output, exit 0.
 
-Do not run commands that need credentials, a database or docker unless the user confirms. Do not run
-`run`/`start` commands (they block). When a command cannot be run, write the placeholder
-`example: (run once and paste the healthy tail here)` — never invent output.
+Do not run commands that need credentials, a database or docker unless the user says so, and never a `run` / `start` command (it blocks). When one cannot be run, write the command as it is and say it is unchecked — never invent output.
 
 ## Section rules
 
-**Commands** — one line per command, as in the blog: `- Test: make test (unit), make itest (integration, needs docker)`.
-Add the healthy-output example in parentheses or on the same line.
+- **Commands:** one line per command, with the healthy-output example when you have it.
+- **Conventions:** facts a linter or reviewer enforces today — language and framework versions, "money is always BigDecimal", where tests live, who owns a dependency. Sources: README, CONTRIBUTING, linter configs, `.editorconfig`, existing prose. 3–6 bullets, nothing aspirational.
+- **Architecture:** where things live and what talks to what: `api/ holds REST controllers, core/ holds domain logic, adapters/ talks to external systems`. Name generated directories and frozen packages. Frozen paths also go into `.sdlc/frozen-paths.txt` (the edit hook enforces it); generated paths go into REVIEW.md and `protect.generated_paths`.
+- **Things Claude gets wrong:** leave the stub line. When the same mistake shows up a second time (the reviewer flags repeats, a work doc's `## Learned` collects candidates), one line goes here. Never pre-fill guesses.
+- **Verifying your work:** keep the template block; its commands must match `.sdlc/config.json`. A command that does not exist stays `TODO: set the <build|test|lint> command` rather than an invented one.
 
-**Conventions** — facts a linter or a reviewer enforces today: language/framework versions,
-"Money is always BigDecimal, never double", test location rules, dependency ownership. Source them from
-README, CONTRIBUTING, linter configs, `.editorconfig`, existing CLAUDE.md prose. 3–6 bullets.
+## A CLAUDE.md that already existed
 
-**Architecture** — where things live and what talks to what: `api/ holds REST controllers, core/ holds
-domain logic, adapters/ talks to external systems`. Name generated directories and frozen packages
-("never edit generated classes") — and add those paths to `.sdlc/frozen-paths.txt` so the hook enforces it.
+Sections the user already had are left alone; init appends only the missing ones (matched by heading) and adds `@AGENTS.md` when an AGENTS.md exists — do not repeat its content. If the file is already over a page, suggest trimming it to what a new joiner needs on day one; do not do it unasked.
 
-**Things Claude gets wrong** — start with `- (none yet)`. The working rule (blog): when Claude makes a
-mistake twice, the correction goes here (`/sdlc:lesson`). Do not pre-fill guesses.
+## An empty repository
 
-**Verifying your work** — the blog's verification block with real commands:
-```
-- Build: <build> (must finish without errors)
-- Test: <test> (all green; never skip or delete a failing test)
-- Lint: <lint> (zero warnings)
-Run all three before reporting any task complete, and paste the output.
-If a test fails, fix the code, not the test.
-```
-
-## Existing CLAUDE.md
-
-If the file existed before init, `init.sh` appended only the sections that were missing (matched by
-heading). Fill only those. If the pre-existing file is already over a page, suggest (do not perform)
-cutting it down to what a new joiner needs on day one; stale lines cost context every session.
-
-## Empty repository
-
-Nothing to detect: write the commands as `TODO: add <build|test|lint> command`, conventions as the
-language/framework the user names, architecture as the intended layout (one or two bullets), and say
-in the summary that `/sdlc:doctor` will keep flagging the empty test command until it is set.
+Nothing to detect. The commands stay `TODO`, Conventions name the language and framework the user states, Architecture is the intended layout in a bullet or two. `init --check` keeps failing the test command until one is set; for a new app the first work item (the skeleton, see `/sdlc:run`) sets it up and records it. Until then the merge gate has nothing to run.

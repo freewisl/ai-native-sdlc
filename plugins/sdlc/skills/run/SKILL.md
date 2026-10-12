@@ -1,49 +1,65 @@
 ---
 name: run
-description: Runs the autopilot loop for a solo repository — works through every approved intent with /sdlc:go (autopilot + merge) in fresh sessions, then reviews what merged and files Important findings as new approved intents through a PR, repeating until nothing is left to fix or a cap is reached. Use when the user types "/sdlc:run", "run the loop until it's clean", "keep going through the backlog", "무인으로 돌려", "백로그 끝까지", "알아서 계속 돌려".
-argument-hint: "[--items a,b,c] [--max-items N] [--max-minutes M] [--item-max-minutes M] [--note \"<text>\"] [--once] [--no-self-check] [--dry-run]"
-disable-model-invocation: true
-allowed-tools: Read, Bash(bash "${CLAUDE_PLUGIN_ROOT}/scripts/*"), Bash(git *), Bash(gh *)
+description: Runs the background loop that works through a queue of work items without the user — turns a goal into PR-sized work items and starts the loop, only queues items, starts or resumes the loop, or stops it. Use when the user types /sdlc:run or says "build X, fill the backlog and run it", "queue this", "add these to the queue", "run the loop", "keep going in the background", "resume the loop", "stop the loop", "stop after this one", "X 만들어, 알아서 채우고 돌려", "백로그 채우고 돌려", "큐에 넣어", "돌려", "이어서 돌려", "멈춰", "이것만 끝내고 멈춰". One change done in this session is /sdlc:go, not this.
+argument-hint: '["<goal>"] [--queue "<what>"] [--items a,b] [--max-items N] [--max-minutes M] [--dry-run] [stop [--after-item]]'
+allowed-tools: Read, Write, Glob, Grep, Task, Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/*")
 ---
 
-# /sdlc:run — the loop that keeps running
+# /sdlc:run — fill the queue, run the loop
 
-## What changes
-- **`/sdlc:go`:** one sentence, one change, one PR; a human types the next sentence and (without `--merge`) merges.
-- **`/sdlc:run`:** the backlog is the input. Every approved intent becomes a merged PR, the merged result is reviewed again, and Important findings become the next items — until the queue is empty. The human's job moves from typing and merging to reading what merged (the playbook's auto-mode stance: review artifacts after the session instead of watching edits).
+Arguments: $ARGUMENTS
 
-## When to use
-A repository with `roles.solo: true`. There the loop is on by default (`init` sets `loop.enabled`, `roles.autopilot` and `roles.auto_merge`): green checks + the reviewer agent + hooks are the merge gate, and the owner adds a pause only by setting one of those false. Never on team repositories: there the intent and plan approvals belong to other people, and the script refuses. Typed by the user only (`disable-model-invocation`) — a loop that merges code must never start from a phrase the model inferred.
+`sdlc.py` below means `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sdlc.py"`. Talk to the user in their language. The loop gives every work item fresh sessions — design, build, a shell gate, merge — and goes on until the queue is empty; you only fill the queue and start or stop it. If a command says there is no `.sdlc/config.json` or that the layout is version 1, tell the user to run `/sdlc:init` and stop.
 
-## Inputs
-- `$ARGUMENTS`: `--items a,b,c` (only these slugs, in this order) · `--max-items N` (default `loop.max_items`, 5) · `--max-minutes M` (480; no new item starts after it) · `--item-max-minutes M` (per session, 120) · `--note "<text>"` (appended to every item's request — a project-wide reminder) · `--once` (one item) · `--no-self-check` · `--dry-run` (queue and commands only).
-- `.sdlc/config.json` → `loop.*`: `enabled` (on for solo repositories — `init` sets it; false switches the loop off), `max_items`, `max_minutes`, `item_max_minutes`, `max_turns`, `max_failures_per_slug`, `self_check`, `split_phases`, `item_note`, `model`, `effort` (passed as `--effort`, so the user's own effort setting does not carry into unattended sessions), `fix_model`, `allowed_tools`, `pause_file`.
-- An intent's `depends_on: [slug, ...]` keeps it waiting until those PRs merged.
-- Parallel: one loop per worktree (`--dir <worktree>`); a slug a live loop has claimed is skipped by the others. Two at a time at most — the subscription limit is shared.
-
-## Steps
-1. **Preflight.** `bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-loop.sh" --dry-run $ARGUMENTS`. Show the queue it prints (approved intents without an implemented plan, an open PR, or a block mark) and the caps. If it refuses — not solo, `loop.enabled` false, dirty tree, pause file, gh not logged in — print its message verbatim and stop; do not work around any of these.
-2. **Run.** `bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-loop.sh" $ARGUMENTS`. The script does the work: for each item two fresh sessions (`loop.split_phases`, default on) — design, `claude -p "/sdlc:go --slug <slug> --autopilot --stop-after plan <title>"`, which commits intent, spec and the approved plan on `sdlc/<slug>`, then build, `"/sdlc:go --slug <slug> --autopilot --hand-off <title>"`, which starts from that committed plan instead of carrying the design conversation (each capped in minutes and turns, standard-context model so it auto-compacts); the shell then waits for the PR checks (no tokens), merges on green, and runs a short fix session only when a check fails (`loop.fix_rounds`). A session stopped by the usage limit, the turn cap or the time cap is resumed by the next run (`claude --resume` with the id it was given up front) instead of redone; a usage-limit stop also ends the run. A session that leaves the tree dirty stops the run and leaves the tree as it is; when that session was stopped by a cap, the next run starts right there on `sdlc/<slug>` and resumes it first — do not commit, stash or switch branches for it. Then the self-check pass once something merged. Report the cost line the script prints per item and per run. Do not run `/sdlc:go` yourself in this session — the point of the loop is one clean context per change.
-3. **Report** what the script printed: items, merged, left open (checks not green — a human looks), failed/blocked (with the log path each), self-check result, why it stopped. For every blocked slug say how to clear it (`.sdlc/state/loop-failures.txt`). For every open PR give the URL.
-4. **Never** set the release approval variable, run deploy commands of the gated tier, edit hooks or `loop.*` to get past a stop, or delete the pause file. If the user wants to stop a running loop: `touch .sdlc/state/pause`.
-
-## Stop conditions (the script's, not yours)
-| Stop | Why |
+| The user says | Mode |
 |---|---|
-| Queue empty after self-check | Nothing Important left — the loop is done |
-| `max_items` / `max_minutes` | Cost and blast-radius cap per run |
-| 3 consecutive failures | Something systemic (auth, build) — a human looks |
-| Pause file | The owner said stop |
-| Per-slug block after `max_failures_per_slug` | The same change keeps failing; it needs a person, not a fourth try |
+| `/sdlc:run "goal"`, "X 만들어, 알아서 채우고 돌려", "백로그 채우고 돌려" | Goal |
+| "큐에 넣어", `--queue "…"` | Goal, stopping after step 5: queue only |
+| `/sdlc:run`, "돌려", "이어서 돌려" | Start or resume |
+| "멈춰", "stop" · "이것만 끝내고 멈춰" | Stop · Stop after this item |
 
-## Output
-The script's summary line, the list of merged PR numbers, open PRs, blocked slugs with log paths, and one line on what a human should read (`git log --merges` since the start SHA, the `loop.item` events).
+## Goal
+1. **Look first.** Read `.sdlc/config.json` (`language`, `mode`, `paths.work` — default `work` — and `commands`), CLAUDE.md and the existing work docs (Glob the work dir; `sdlc.py status` shows the queue). On an existing codebase sweep it with the `sdlc-researcher` agent. When the goal hinges on a decision only the user can take (which provider, which platform), ask one short multiple-choice question first, recommended answer first — never invent it.
+2. **Split** the goal into work items, one pull request each, typically 3–12 (a small goal is one item; more than a dozen: queue the first dozen and say the rest follows once they merge).
+   - One coherent change with its own tests that a single build session can finish.
+   - A new app: item 1 is the skeleton — project setup, one passing test, and the build/test/lint commands recorded in `commands.*` of `.sdlc/config.json` and in CLAUDE.md. An empty test command makes the gate verify nothing; on an existing repository without one, tell the user.
+   - Independent where possible. `depends_on: [slug]` only for a real order: an item starts after its dependencies merged.
+   - Acceptance criteria: numbered `R1. WHEN … THE SYSTEM SHALL …`, observable and testable, a handful per item. They freeze once the item is planned, so describe behavior, not implementation. Leave Plan and Proof to the design session.
+3. **Write one doc per item** into the work dir as `<slug>.md` (slug: lowercase ascii, digits, `-`; the file name equals the slug). Format: `${CLAUDE_PLUGIN_ROOT}/skills/go/references/work-doc.md`; skeleton: `${CLAUDE_PLUGIN_ROOT}/templates/<language>/work.md`.
+   ```
+   ---
+   slug: entry-crud
+   title: 수입·지출 입력/수정/삭제
+   status: ready
+   depends_on: [project-skeleton]
+   test_changes: none
+   created: 2026-10-12T09:30:02Z
+   source: goal:a1b2c3
+   ---
+   ## Goal
+   <who needs what, and why — plain words>
 
-## Governance
-- What merges is exactly what `/sdlc:go` merges: tests and the `evals` check green, reviewer Important = 0, hooks passed, pushed through a PR (the push guard still blocks the default branch). The loop adds no bypass.
-- The gated deploy tier stays human. The loop never deploys.
-- Unattended runs (`sdlc-autopilot.yml`) use `--once` on a schedule; the same caps and the pause file apply. PRs opened with the default `GITHUB_TOKEN` do not trigger other workflows, so that workflow needs `SDLC_GH_TOKEN` (fine-grained PAT) for the review and evals checks to run on the loop's PRs.
-- Self-check intents carry `approved_by: sdlc:run (self-check)` — the audit trail says which approvals were automatic.
+   ## Acceptance criteria
+   R1. WHEN … THE SYSTEM SHALL …
+   ```
+   No comments after frontmatter values (they would become part of the value); the title is in `language` and quoted when it contains `: `. `created` is UTC and ascending, a second apart, in the order you want the items worked; `source` carries one short id shared by every item of this goal.
+4. **Show the list** — slug, title, depends_on — in a few lines. No approval round: the user delegated the split, and "그건 빼" works later.
+5. **Queue it:** `sdlc.py enqueue --new`. "not queued: …" → fix the docs it names and run it again. The end of its output says how the items joined the queue:
+   - `committed on <branch>`, `merged <PR>` or `inbox (…)` → they are on the queue.
+   - `PR … the items join the queue when a person merges it`, or `could not be merged` → they are **not** on the queue yet, and a loop started now would exit with "queue empty". Do not start it: give the PR link, say who has to merge it, and that "돌려" starts the loop afterwards.
+6. **Start:** `sdlc.py run --detach` (add `--max-items N` / `--max-minutes M` when the user capped it; starting twice is harmless), then `sdlc.py status` to confirm `loop: running`. A refusal — uncommitted changes in this checkout, paused, team mode without a GitHub remote, `gh` not logged in, `claude` not found — is printed verbatim: say what to fix. Do not work around it, and do not commit or stash the user's changes for them.
+7. **Tell the user**, briefly:
+   - Follow it with "어디까지 됐어?". Stop it with "멈춰" (the running session is recorded; "이어서 돌려" continues it) or "이것만 끝내고 멈춰". A question the loop cannot settle is parked for them while the rest goes on. It stops by itself when the queue is empty, only items waiting for them are left, failures pile up, or a usage limit resets too far away, and says why. Cost so far is in the status.
+   - The loop works in this checkout and switches branches here: leave the files alone while it runs, or use another `git worktree`.
+   - Solo: what passes the gate is merged by the loop; a few merges a week are offered for a quick rating.
+   - Team: a person merges the queue PR (that is the approval of the list). Each item then gets a draft design PR; an approving review by someone other than its author, or the label `sdlc:approved`, lets the build start. A passed gate marks the PR ready, and a person merges it. The loop polls every 10 minutes and gives up after 12 idle hours ("이어서 돌려" restarts it).
 
-## Measurement
-`loop.run` (items, merged, open, failed, self_check, stop, minutes) and `loop.item` events; `/sdlc:metrics` shows merged-per-run and the share of items that needed a human (open + blocked).
+## Start or resume
+`sdlc.py status` first. Running: say so and show its loop line. `paused`, or the user says "이어서": `sdlc.py resume` (it clears the pause and starts the loop in the background; while the loop is still finishing an item it cancels a pending "stop after this item"). Otherwise `sdlc.py run --detach`; `--items a,b`, `--max-items N` and `--max-minutes M` pass through. `sdlc.py run --dry-run` prints what would run and what waits, and starts nothing. Nothing runnable: say what waits for the user (the status list) instead of starting. When the status shows why the last run stopped, say it plainly: usage limit and its reset time, N failures in a row, twelve idle hours, nothing runnable.
+
+## Stop
+"멈춰" → `sdlc.py stop`: the running session is asked to stop and recorded, so `resume` continues the same work; allow it up to a minute. "이것만 끝내고 멈춰" → `sdlc.py stop --after-item`: the current item finishes, then the loop stops. Not running: say so.
+
+## Rules
+- Never run the items yourself in this session; each one gets a fresh session from the loop.
+- The loop never deploys and never touches the default branch directly (hooks and the merge step enforce it). Do not edit hooks or `loop.*`, delete the pause file by hand, or set the release approval variable to get past a stop.
