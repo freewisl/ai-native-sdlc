@@ -11,7 +11,7 @@ Run it from inside the repository (or pass --root). Standard library only, Pytho
   resume                             clear a pause and start the loop in the background
   answer SLUG TEXT                   answer an item's question; the loop continues it
   retry SLUG                         clear an item's failures / "needs a person" and let the loop take it again
-  drop SLUG [REASON]                 take an item off the queue (closes its PR)
+  drop SLUG [REASON]                 take an item off the queue: dropped on the default branch (team: through a PR), PR closed
   rate SLUG good|fix|reject [NOTE]   rate an auto-merged change; fix/reject with a note queues a follow-up
   gate SLUG [--json]                 run the merge gate on sdlc/SLUG (checked out, clean) — exit 0 pass, 1 fix, 2 person
   ship SLUG                          gate, then merge (team: hand to a person) — the end of an interactive /sdlc:go
@@ -239,12 +239,21 @@ def cmd_retry(a: argparse.Namespace) -> int:
 
 
 def cmd_drop(a: argparse.Namespace) -> int:
+    from sdlclib.enqueue import EnqueueError, record_drop
     cfg, git, forge = _forge_and_git(a.root)
+    if cfg.legacy:
+        eprint("this repository still has a version-1 sdlc layout — run /sdlc:init once to migrate it")
+        return 2
     reason = " ".join(a.reason).strip() or "dropped by request"
-    st.update(a.root, a.slug, state="dropped", reasons=[reason])
-    if forge.kind == "github" and forge.state(a.slug) == "open":
-        run(["gh", "pr", "close", forge.number(a.slug), "--comment", "sdlc: dropped — " + reason], cwd=a.root, timeout=60)
-    print("%s dropped" % a.slug)
+    slug = os.path.basename(a.slug)[:-3] if a.slug.endswith(".md") else a.slug             # `work/x.md` and `x` both work
+    try:
+        how = record_drop(cfg, git, forge, slug, reason)["how"]       # the doc on the default branch is what every clone reads
+    except EnqueueError as e:
+        eprint("not dropped:\n" + str(e))
+        return 1
+    st.update(a.root, slug, state="dropped", reasons=[reason])
+    forge.close(slug, "sdlc: dropped — " + reason)
+    print("%s dropped — %s" % (slug, how))
     return 0
 
 

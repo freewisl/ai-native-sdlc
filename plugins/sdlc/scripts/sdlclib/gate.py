@@ -3,8 +3,9 @@
 Runs in the loop's worktree on `sdlc/<slug>` with the default branch merged in (not committed — aborted afterwards), so
 installed dependencies and build caches are the ones the session used. Two kinds of failure:
 - fixable: a command failed, a check failed, the review tally is missing or not clean → a short fix session;
-- human: something a person must look at — test integrity, acceptance changed after design, a new dependency,
-  a risk path → the PR waits with the reasons.
+- human: something a person must look at — an existing test changed without the design's say-so, a test deleted or
+  weakened, acceptance criteria or `test_changes` changed after design, a new dependency, a risk path, a guard file → the
+  PR waits with the reasons.
 """
 from __future__ import annotations
 
@@ -110,27 +111,93 @@ def _section(text: Optional[str], name: str) -> str:
     return re.sub(r"\s+", " ", WorkDoc.parse(text).section(name)).strip()
 
 
-def acceptance_changed(cfg: Config, git: Git, slug: str, base: str, head: str) -> Optional[str]:
-    """Acceptance criteria at the design commit vs head. The design commit is the first commit on the branch where the
-    doc is planned — or, for an item that was planned before the branch was cut (a migrated one), the doc as the branch
-    started from it."""
+def design_text(cfg: Config, git: Git, slug: str, base: str, head: str) -> Optional[str]:
+    """The work doc as the design decided it. The design commit is the first commit on the branch where the doc is planned
+    — or, for an item that was planned before the branch was cut (a migrated one), the doc as the branch started from it.
+    None when there is no such commit."""
     rel = "%s/%s.md" % (cfg.rel("work"), slug)
-    design = None
     start = git.show(git.out("merge-base", base, head) or base, rel)
     if start and WorkDoc.parse(start).status in ("planned", "built", "done"):
-        design = start
-    else:
-        for sha in git.out("log", "--format=%H", "--reverse", "%s..%s" % (base, head), "--", rel).split():
-            text = git.show(sha, rel)
-            if text and WorkDoc.parse(text).status in ("planned", "built", "done"):
-                design = text
-                break
+        return start
+    for sha in git.out("log", "--format=%H", "--reverse", "%s..%s" % (base, head), "--", rel).split():
+        text = git.show(sha, rel)
+        if text and WorkDoc.parse(text).status in ("planned", "built", "done"):
+            return text
+    return None
+
+
+def acceptance_changed(cfg: Config, git: Git, slug: str, base: str, head: str) -> Optional[str]:
+    """Acceptance criteria at the design commit vs head."""
+    design = design_text(cfg, git, slug, base, head)
     if design is None:
         return None
+    rel = "%s/%s.md" % (cfg.rel("work"), slug)
     before, after = _section(design, "Acceptance criteria"), _section(git.show(head, rel), "Acceptance criteria")
     if before and before != after:
         return "acceptance criteria changed after the design commit (work/%s.md)" % slug
     return None
+
+
+def test_changes_of(text: Optional[str]) -> str:
+    """`allowed` or `none` — anything but exactly `allowed` leaves existing tests locked, as the hooks read it too."""
+    return "allowed" if text and str(WorkDoc.parse(text).meta.get("test_changes", "")).strip() == "allowed" else "none"
+
+
+def test_changes_changed(cfg: Config, git: Git, slug: str, base: str, head: str) -> Optional[str]:
+    """`test_changes` at the design commit vs head: like the criteria it is the design's decision, so a session cannot
+    unlock existing tests for itself."""
+    design = design_text(cfg, git, slug, base, head)
+    if design is None:
+        return None
+    before = test_changes_of(design)
+    after = test_changes_of(git.show(head, "%s/%s.md" % (cfg.rel("work"), slug)))
+    if before != after:
+        return "test_changes changed after the design commit: %s → %s (work/%s.md)" % (before, after, slug)
+    return None
+
+
+def existing_tests_changed(cfg: Config, git: Git, slug: str, base: str, head: str) -> Optional[str]:
+    """Existing test files (present where the branch left the default branch) that the branch modified, deleted or renamed
+    away, when the design did not allow that. Test files the branch adds are free."""
+    design = design_text(cfg, git, slug, base, head)
+    frozen = test_changes_of(design if design is not None else git.show(head, "%s/%s.md" % (cfg.rel("work"), slug)))
+    if frozen == "allowed" or not cfg.get("protect.protect_tests", True):
+        return None
+    kinds = {"M": "modified", "T": "modified", "D": "deleted or renamed"}
+    files = ["%s (%s)" % (path, kinds[st]) for st, path in git.changed(base, head) if st in kinds and is_test_path(cfg, path)]
+    if not files:
+        return None
+    return "existing tests changed, but the design said test_changes: none — " + _list(files, 8)
+
+
+def _list(items: List[str], cap: int) -> str:
+    return ", ".join(items[:cap]) + (" … (+%d more)" % (len(items) - cap) if len(items) > cap else "")
+
+
+# ---------- guard files ----------
+def _guard_rel(cfg: Config, path: str) -> str:
+    """A configured path as git names it: relative to the repository root, no `./`."""
+    p = os.path.normpath(path)
+    if os.path.isabs(p) and p.startswith(cfg.root.rstrip(os.sep) + os.sep):
+        p = os.path.relpath(p, cfg.root)
+    return p
+
+
+def guard_files_changed(cfg: Config, git: Git, base: str, head: str) -> Optional[str]:
+    """The files that keep a session in bounds — `.sdlc/config.json`, the frozen-paths file, the Claude Code settings and
+    the gate's own checks directory. A change to any of them on the branch always waits for a person: a session must not
+    loosen its own guardrails and have that merged unattended. Work docs and `.sdlc/state` are not guard files."""
+    files = {".sdlc/config.json", ".claude/settings.json", ".claude/settings.local.json"}
+    frozen = str(cfg.get("protect.frozen_paths_file", "") or "")
+    if frozen:
+        files.add(_guard_rel(cfg, frozen))
+    checks = cfg.rel("checks") + "/"
+    kinds = {"A": "added", "D": "deleted or renamed"}
+    hits = ["%s (%s)" % (path, kinds.get(st, "modified")) for st, path in sorted(git.changed(base, head), key=lambda c: c[1])
+            if path in files or path.startswith(checks)]
+    if not hits:
+        return None
+    return "guard files changed, a person merges these — " + _list(hits, 8)
 
 
 # ---------- dependencies ----------
@@ -296,18 +363,20 @@ def run_gate(cfg: Config, git: Git, slug: str, base: str, run_commands: bool = T
             res.fixable.append("no review tally in work/%s.md (## Review → SDLC_REVIEW_TALLY important=… nits=…)" % slug)
         elif tally[0] > 0:
             res.fixable.append("review: %d Important finding(s) open" % tally[0])
-    # 3. test integrity
+    # 3. test integrity: existing tests untouched unless the design allowed it; none deleted, weakened or skipped either way
     if cfg.get("gate.test_integrity", True):
+        t = existing_tests_changed(cfg, git, slug, base, head)
+        if t:
+            res.human.append(t)
         res.human += ["test integrity: " + i for i in test_integrity(cfg, git, base, head)]
-    # 4. acceptance frozen
+    # 4. the design's decisions frozen: acceptance criteria and test_changes
     if cfg.get("gate.acceptance_frozen", True):
-        a = acceptance_changed(cfg, git, slug, base, head)
-        if a:
-            res.human.append(a)
+        res.human += [x for x in (acceptance_changed(cfg, git, slug, base, head),
+                                  test_changes_changed(cfg, git, slug, base, head)) if x]
     # 5. new dependencies
     if cfg.get("gate.new_dependencies", "human") != "allow":
         res.human += ["new dependency: " + d for d in new_dependencies(git, base, head)]
-    # 6. risk paths
+    # 6. risk paths — and the guard files, whatever risk.human says
     risky = cfg.get("risk.human", []) or []
     if risky:
         hits = []
@@ -317,4 +386,7 @@ def run_gate(cfg: Config, git: Git, slug: str, base: str, run_commands: bool = T
                 hits.append("%s (%s)" % (path, pat))
         if hits:
             res.human.append("risk path: " + ", ".join(hits[:5]) + (" …" if len(hits) > 5 else ""))
+    g = guard_files_changed(cfg, git, base, head)
+    if g:
+        res.human.append(g)
     return res

@@ -19,7 +19,7 @@ source: user
 - `slug`: the file name; kebab-case ascii (a-z 0-9 - . _), at most five words.
 - `title`: in `language`; quote it when it contains `: ` or ` #`.
 - `depends_on`: `[slug, slug]` — the item waits until those are done.
-- `test_changes`: `none` or `allowed` — decided by the design.
+- `test_changes`: `none` or `allowed` — decided by the design and frozen with it: the gate sends a later change to a person.
 - `created`: the current UTC time, ISO — take it from `date -u +%Y-%m-%dT%H:%M:%SZ`, never type one from memory. The queue works oldest first, so docs written together get ascending values, a second apart, in the order they should be worked. `source`: `user`, `goal:<id>`, `self-check` or `review:<slug>`.
 
 One `key: value` per line and nothing after the value — a trailing `# comment` becomes part of the value and breaks the doc. The template is `templates/<language>/work.md` (`{{slug}}`, `{{title}}`, `{{created}}`); replace each comment you fill, and make sure Goal holds real text.
@@ -30,11 +30,11 @@ One `key: value` per line and nothing after the value — a trailing `# comment`
 |---|---|---|
 | `proposed` | an idea a person has to accept (`sdlc.py accept <slug>` makes it `ready`) | review and self-check, for pre-existing problems |
 | `ready` | queued; design is next | you when you create it (interactive); a person; the engine after an answer |
-| `planned` | designed, criteria frozen; build is next | the design |
+| `planned` | designed, criteria and `test_changes` frozen; build is next | the design |
 | `built` | built and reviewed; the gate is next | the build / review |
 | `done` | the gate passed | the engine (`ship`) — never you |
 | `needs-input` | waits for an answer in `## Questions` | a loop session that cannot go on |
-| `dropped` | will not be done; the first line of `## Departures` says why | a session, with evidence |
+| `dropped` | will not be done; the first line of `## Departures` says why. The default branch carries the same (the engine records it; a person: `sdlc.py drop`) | a session, with evidence |
 
 ## Sections (in this order)
 
@@ -81,7 +81,7 @@ Every R has at least one row; a row names a concrete test or command; `kind` is 
 ## Questions, Departures, Learned
 
 - **Questions** (only for `needs-input`; when to ask: references/questions.md): at most three, numbered; each is one line ending in `(recommended: <option>)`, then the options as bullets, the recommended one first. The engine appends `**Answer** (date): …` below.
-- **Departures:** each time the build leaves the Plan — a file added or dropped, a step reordered, another approach — one line with the reason, in the same commit as the code. For a `dropped` doc the first line is the reason; replace the template comment, because the engine prints that line.
+- **Departures:** each time the build leaves the Plan — a file added or dropped, a step reordered, another approach — one line with the reason, in the same commit as the code. For a `dropped` doc the first line is the reason; replace the template comment, because the engine records that line as the reason of the drop.
 - **Learned:** things a later change should know. The second time the same mistake shows up, the review turns it into one line in CLAUDE.md "Things Claude gets wrong" (references/review.md).
 
 ## Size

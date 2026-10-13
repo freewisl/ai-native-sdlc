@@ -193,11 +193,18 @@ class Forge:
     def publish(self, slug: str, title: str, body: str, draft: bool = False) -> Tuple[bool, str]:
         raise NotImplementedError
 
-    def merge(self, slug: str, title: str) -> Tuple[bool, str]:
+    def merge(self, slug: str, title: str, note: str = "") -> Tuple[bool, str]:
+        """Squash-merge the item. `note` is one line for whoever reads the history later; the local forge writes it into
+        the commit message, on GitHub it already stands at the top of the PR body."""
         raise NotImplementedError
 
     def flag_human(self, slug: str, reasons: List[str]) -> None:
         pass
+
+    def close(self, slug: str, comment: str) -> bool:
+        """Close the item's open PR with a comment that says why (a dropped item). False when there is none to close — a
+        local branch has no PR."""
+        return False
 
     def approved(self, slug: str) -> bool:
         return False
@@ -222,7 +229,7 @@ class LocalForge(Forge):
     def publish(self, slug: str, title: str, body: str, draft: bool = False) -> Tuple[bool, str]:
         return self.git.branch_exists("sdlc/" + slug), "sdlc/" + slug
 
-    def merge(self, slug: str, title: str) -> Tuple[bool, str]:
+    def merge(self, slug: str, title: str, note: str = "") -> Tuple[bool, str]:
         """Squash merge onto the default branch: here, or — in a linked worktree — where the default branch is checked out."""
         g, b = self.git, "sdlc/" + slug
         where = g.root
@@ -242,7 +249,8 @@ class LocalForge(Forge):
         if g("diff", "--cached", "--quiet", cwd=where).ok:
             g("branch", "-D", b)
             return True, g.out("rev-parse", "HEAD", cwd=where)     # nothing left to merge: already in
-        r = g("commit", "-q", "--no-verify", "-m", "%s (%s)" % (title, b), cwd=where)
+        msg = "%s (%s)" % (title, b) + ("\n\n" + note if note else "")
+        r = g("commit", "-q", "--no-verify", "-m", msg, cwd=where)
         if not r.ok:
             g("reset", "-q", "--hard", "HEAD", cwd=where)
             return False, "commit failed: " + r.text()[-300:]
@@ -315,7 +323,7 @@ class GitHubForge(Forge):
             return False, "gh pr create failed: " + r.text()[-300:]
         return True, (r.out.strip().splitlines() or [""])[-1]
 
-    def merge(self, slug: str, title: str) -> Tuple[bool, str]:
+    def merge(self, slug: str, title: str, note: str = "") -> Tuple[bool, str]:
         n = self.number(slug)
         if not n:
             return False, "no open PR for sdlc/" + slug
@@ -334,6 +342,13 @@ class GitHubForge(Forge):
         self._gh("pr", "comment", n, "--body", body)
         self._gh("label", "create", "sdlc:needs-human", "--color", "D93F0B", "--force")
         self._gh("pr", "edit", n, "--add-label", "sdlc:needs-human")
+
+    def close(self, slug: str, comment: str) -> bool:
+        try:
+            pr = self._pr(slug, "open")
+        except RuntimeError:
+            return False
+        return bool(pr) and self._gh("pr", "close", str(pr["number"]), "--comment", comment, timeout=60).ok
 
     def approved(self, slug: str) -> bool:
         """A person approved the PR: reviewDecision (with required reviews), an APPROVED review by someone other than

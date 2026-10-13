@@ -19,4 +19,4 @@ Done when: build, test and lint are green, every R has a result in the Proof, th
 ## Instead of finishing
 
 - A decision only a person can make (an existing test must change, a new dependency looks unavoidable, a criterion turns out wrong) → `needs-input` (references/questions.md). Commit the work so far first; it stays on the branch.
-- The item is unnecessary — the behavior is already there, with proof → `dropped`.
+- The item is unnecessary — the behavior is already there, with proof → `dropped`, the reason as the first line of `## Departures` (references/questions.md: the engine records the drop on `<default>` and closes the item's PR).

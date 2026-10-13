@@ -34,12 +34,13 @@ DEFAULTS: Dict[str, Any] = {
         "commands": ["build", "test", "lint"],   # re-run by the shell before every merge (empty commands are skipped)
         "timeout_minutes": 30,
         "review": True,                          # the work doc's review tally must say important=0
-        "test_integrity": True,                  # no existing test deleted, no case removed, no skip/only added
-        "acceptance_frozen": True,               # acceptance criteria unchanged since the design commit
+        "test_integrity": True,                  # existing tests untouched unless the work doc says test_changes: allowed;
+                                                 # none deleted, no case removed, no skip/only added either way
+        "acceptance_frozen": True,               # acceptance criteria and test_changes unchanged since the design commit
         "new_dependencies": "human",             # human | allow
         "checks": True,                          # every executable in paths.checks passes
     },
-    "risk": {"human": []},                       # globs: a PR touching these waits for a human merge
+    "risk": {"human": []},                       # globs: a PR touching these waits for a human merge (guard files always do)
     "protect": {
         "frozen_paths_file": ".sdlc/frozen-paths.txt",
         "generated_paths": [],
@@ -120,11 +121,14 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     p = section(raw, "protect")
     prot = {k: p[k] for k in ("frozen_paths_file", "generated_paths", "protect_tests", "test_paths", "block_direct_push",
                               "default_branch") if k in p}
+    kept = set()                                       # 0.x keys whose content lives on in 1.0: not "dropped"
     prod = section(section(raw, "environments"), "production")
     if prod.get("patterns"):
         prot["deploy_patterns"] = prod["patterns"]
+        kept.add("environments")
     if prod.get("approval_env"):
         prot["deploy_approval_env"] = prod["approval_env"]
+        kept.add("environments")
     new["protect"] = prot
     if p.get("ticketed_paths"):
         new["risk"] = {"human": list(p["ticketed_paths"])}
@@ -159,8 +163,10 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     if roles.get("solo") and roles.get("auto_merge") is False:
         notes.append("roles.auto_merge=false: in 1.0 solo mode the loop merges what passes the gate — use mode team to "
                      "merge by hand")
+    if "solo" in roles:
+        kept.add("roles")                              # roles.solo became mode
     dropped = [k for k in ("source_of_truth", "environments", "gate", "policies", "evals", "monitor", "ci", "plan", "roles")
-               if k in raw]
+               if k in raw and k not in kept]
     if dropped:
         notes.append("dropped (not used by 1.0): " + ", ".join(dropped))
     return new, notes

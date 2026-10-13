@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 from . import state as st
 from .config import PHASES, Config
-from .enqueue import EnqueueError, drain_inbox, enqueue, prepare
+from .enqueue import EnqueueError, departure_reason, drain_inbox, enqueue, prepare, record_drop
 from .events import log_event
 from .gate import GateResult, run_gate
 from .gitops import Forge, Git, make_forge, remote_host
@@ -458,10 +458,7 @@ class Engine:
                     return self.park(slug, ran or rec.get("parked_phase") or "design")
                 if s in ("proposed", "dropped"):
                     if s == "dropped":
-                        d = self.doc(slug)
-                        why = (d.section("Departures") if d else "").strip().splitlines()[:1]
-                        st.update(self.root, slug, state="dropped", reasons=why or ["dropped by the session"])
-                        self.say("DROPPED %s — %s" % (slug, why[0] if why else "the session judged it unnecessary"))
+                        self.session_dropped(slug)
                     return Outcome.SKIPPED
                 if s in ("ready", ""):
                     ran = "design"
@@ -675,6 +672,26 @@ class Engine:
             self.forge.flag_human(slug, reasons)
         return Outcome.HUMAN
 
+    def session_dropped(self, slug: str) -> None:
+        """A session found the item unnecessary and set its doc to `dropped` — on the item branch, which nobody merges. The
+        record `sdlc.py drop` makes goes to the default branch (team: a PR that waits for a person), where every clone
+        reads it, and the item's own PR is closed. The local state is set first and stays whatever happens here: when the
+        record cannot be made this checkout still leaves the item alone, the failure is announced, and the loop goes on."""
+        reason = departure_reason(self.doc(slug)) or "dropped by the session"
+        st.update(self.root, slug, state="dropped", reasons=[reason])
+        try:
+            res = record_drop(self.cfg, self.git, self.forge, slug, reason, from_loop=True)
+        except (EnqueueError, OSError) as e:
+            err = " ".join(str(e).replace(self.root + os.sep, "").split())[:300]
+            st.update(self.root, slug, reasons=[reason, "not recorded on %s: %s" % (self.default, err)])
+            self.say("DROPPED %s — %s (NOT recorded on %s: %s — `sdlc.py drop %s \"<reason>\"` records it)" % (
+                slug, reason, self.default, err, slug))
+            self.event("loop.item", "drop-not-recorded", reason, {"slug": slug, "error": err})
+            return
+        self.forge.close(slug, "sdlc: dropped — " + reason)
+        self.say("DROPPED %s — %s (%s)" % (slug, reason, res["how"]))
+        self.event("loop.item", "dropped", reason, {"slug": slug, "how": res["how"], "pr": res["pr"], "merged": res["merged"]})
+
     def park(self, slug: str, phase: str) -> str:
         self.commit_all(slug, "sdlc(%s): question for a person" % slug)
         st.update(self.root, slug, parked_phase=phase, stop=None)
@@ -823,7 +840,7 @@ class Engine:
             self.say("READY   %s — gate passed; %s waits for a person to merge" % (slug, url))
             self.event("loop.item", "awaiting-merge", url, {"slug": slug, "pr": url})
             return Outcome.AWAITING
-        ok, info = self.forge.merge(slug, title)
+        ok, info = self.forge.merge(slug, title, tests_allowed_note(d))
         if not ok:
             return self.needs_human(slug, ["merge did not happen: %s" % info])
         rec = st.update(self.root, slug, state=None, reasons=None, stop=None, merged=now_iso())
@@ -868,8 +885,9 @@ class Engine:
 
     # ------------------------------------------------------------------ self-check
     def self_check_due(self) -> bool:
-        return bool(self.cfg.get("loop.self_check", True)) and bool(self.done["merged"]) and self.self_checks < 2 \
-            and not self.only and self.git.head() != self.from_sha
+        """Solo only: it reviews what this loop merged itself, and in team mode a person merges."""
+        return not self.team and bool(self.cfg.get("loop.self_check", True)) and bool(self.done["merged"]) \
+            and self.self_checks < 2 and not self.only and self.git.head() != self.from_sha
 
     def self_check(self) -> int:
         """Review what merged in this run; validated Important findings on changed lines become new items."""
@@ -941,10 +959,33 @@ class Engine:
         return len(ready)
 
 
+def tests_allowed_note(d: Optional[WorkDoc]) -> str:
+    """One line for the PR body and the merge commit when the design let this item change existing tests — the reason is
+    the first line of the Plan, Departures or Proof that speaks of `test_changes` or existing tests. Empty otherwise."""
+    if d is None or str(d.meta.get("test_changes", "")).strip() != "allowed":
+        return ""
+    why = ""
+    for name in ("Plan", "Departures", "Proof"):
+        for raw in re.sub(r"<!--.*?-->", "", d.section(name), flags=re.S).splitlines():
+            line = re.sub(r"^[\s>*+-]+|^\d+[.)]\s+", "", raw.strip()).strip()
+            if re.search(r"test_changes|existing tests?", line, re.I):
+                line = re.sub(r"^[*_`]*test_changes(?:[*_`]*\s*[:=]|[*`]+)\s*[*`]*\s*(?:allowed)?\s*[*`]*[\s,;:—–-]*", "", line,
+                              flags=re.I).strip()
+                if line:
+                    why = line[:200]
+                    break
+        if why:
+            break
+    return "Existing tests were allowed to change in this item (test_changes: allowed)" + (" — " + why if why else ".")
+
+
 def pr_body(cfg: Config, d: Optional[WorkDoc], slug: str, rec: dict) -> str:
     if d is None:
         return "sdlc work item `%s`" % slug
     parts = []
+    note = tests_allowed_note(d)
+    if note:
+        parts.append("> " + note)
     for name in ("Goal", "Acceptance criteria", "Proof", "Review", "Departures"):
         body = d.section(name).strip()
         if body:

@@ -22,7 +22,7 @@ Agents (Task `subagent_type`): `sdlc:sdlc-builder`, `sdlc:sdlc-reviewer`, `sdlc:
 ## Rules that always hold
 - The record of a change is `work/<slug>.md` (dir: `paths.work`). Its branch is `sdlc/<slug>`; commits read `sdlc(<slug>): design|build|review|fix …`.
 - Acceptance criteria are frozen once the doc is `planned`; the gate sends a changed one to a person. If one is wrong, ask (`needs-input`, or the user) instead of editing it.
-- Existing test files are locked unless the doc says `test_changes: allowed`; new test files are always fine. Never weaken, skip or delete a test — fix the code.
+- Existing test files are locked unless the doc says `test_changes: allowed`; new test files are always fine. The lock applies only while you work on an sdlc item, and with `test_changes: none` the gate sends any modification, deletion or rename of an existing test to a person. Never weaken, skip or delete a test — fix the code.
 - A new dependency sends the PR to a person. Avoid it unless the plan says why.
 - Never push, open or merge a PR yourself (`sdlc.py ship` and the engine do that), never commit to `<default>`, never `--no-verify`.
 - A hook that blocks you (frozen path, test lock, secret, protected branch) is a decision. Report it; do not route around it or set an override variable.
@@ -53,4 +53,4 @@ There is no user: never ask (that is `needs-input`, references/questions.md), ne
 | `--continue` (added to any of these) | a previous session stopped mid-phase: read `git status`, `git log <base>..HEAD` and the doc, pick up, do not redo committed work | as above | as above |
 | `--self-check <from>..<to>` (on `<default>`) | references/self-check.md: review the merged diff and write new work docs; commit nothing, touch no other file | only new `work/*.md` survive; anything else is reverted | `SDLC_SELFCHECK items=<n>` |
 
-When a `--design` or `--build` session cannot go on without a person, or the item turns out to be unnecessary, it sets `needs-input` or `dropped` instead of guessing — references/questions.md.
+When a `--design` or `--build` session cannot go on without a person, or the item turns out to be unnecessary, it sets `needs-input` or `dropped` instead of guessing — references/questions.md. A `dropped` doc is the engine's cue: it records the drop on `<default>` the way `sdlc.py drop` does (team mode: through a PR a person merges) and closes the item's PR — you do neither.

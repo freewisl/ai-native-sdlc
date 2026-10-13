@@ -1166,6 +1166,10 @@ class Migration(Case):
         self.assertIn(".sdlc/LESSONS.md holds 0.x lessons", notes)
         self.assertNotIn("loop.model", notes)                               # opus/sonnet/high are the 0.x defaults: nothing to say
 
+    def test_a_key_whose_content_was_carried_over_is_not_listed_as_dropped(self):
+        dropped = [n for n in self.res["notes"] if n.startswith("dropped (not used by 1.0)")]
+        self.assertEqual(dropped, ["dropped (not used by 1.0): gate, policies, evals, monitor, ci, plan"])    # not environments, roles
+
     def test_only_unfinished_intents_become_work_docs(self):
         made = sorted(n for n in os.listdir(self.repo.path("work")) if n != "README.md")
         self.assertEqual(made, ["a-ready.md", "b-planned.md", "d-draft.md"])

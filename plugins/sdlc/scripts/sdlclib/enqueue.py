@@ -4,6 +4,9 @@
   go to `.sdlc/state/inbox/` and the loop commits them between items, so the two never fight over the working tree.
 - GitHub: a `sdlc/queue-<time>` branch built in a throwaway worktree, a PR, and (solo) an immediate merge. In a team
   repository that PR is the approval point: a person merging it is what puts the items on the queue.
+Taking an item off the queue (`drop`) travels the same way: the doc on the default branch becomes `dropped`, with the reason
+first under Departures, so every clone sees it. `record_drop` is that, for a person (`sdlc.py drop`) and for the loop (a
+session that judged an item unnecessary).
 """
 from __future__ import annotations
 
@@ -38,10 +41,12 @@ def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = ""
             continue
         file_slug = os.path.splitext(os.path.basename(p))[0]
         errs = problems(d, file_slug)
-        if d.status not in NEW_STATUSES:
-            errs.append("status '%s' — a new item is ready, proposed or needs-input" % d.status)
         committed = git.show(base, "%s/%s.md" % (work, d.slug))
-        if committed is not None and committed.strip() != (read_text(p) or "").strip() and not _accepts(committed, d):
+        leaving = committed is not None and _drops(committed, d)
+        if d.status not in NEW_STATUSES and not leaving:
+            errs.append("status '%s' — a new item is ready, proposed or needs-input" % d.status)
+        replaces = leaving or (committed is not None and _accepts(committed, d))      # the two steps that may replace a doc
+        if committed is not None and committed.strip() != (read_text(p) or "").strip() and not replaces:
             errs.append("work/%s.md is already on %s — pick another slug" % (d.slug, base))
         if "slug" not in d.meta:
             d.meta["slug"] = d.slug
@@ -55,11 +60,12 @@ def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = ""
         errors += ["%s: %s" % (p, e) for e in errs]
         docs.append(d)
     known = {d.slug for d in docs}
-    for d in docs:
+    staying = [d for d in docs if d.status != "dropped"]        # an item leaving the queue waits for nothing
+    for d in staying:
         for dep in d.depends_on:
             if dep not in known and git.show(base, "%s/%s.md" % (work, dep)) is None:
                 errors.append("%s: depends_on '%s' — no such work doc" % (d.slug, dep))
-    cyc = _cycle({d.slug: d.depends_on for d in docs})
+    cyc = _cycle({d.slug: d.depends_on for d in staying})
     if cyc:
         errors.append("dependency cycle: " + " → ".join(cyc))
     if len(known) != len(docs):
@@ -73,6 +79,12 @@ def _accepts(committed: str, d: WorkDoc) -> bool:
     """A person accepting a proposal: the doc on the default branch is `proposed`, this one is it, now `ready`. Edits are
     allowed — nothing has worked on a proposal yet."""
     return d.status == "ready" and WorkDoc.parse(committed).status == "proposed"
+
+
+def _drops(committed: str, d: WorkDoc) -> bool:
+    """A person taking an item off the queue: the doc on the default branch is anything not finished, this one is it, now
+    `dropped`. Nothing is lost by it — why goes under Departures."""
+    return d.status == "dropped" and WorkDoc.parse(committed).status not in ("done", "built")
 
 
 def accepted(cfg: Config, git: Git, base: str, slugs: List[str]) -> List[str]:
@@ -102,6 +114,58 @@ def accepted(cfg: Config, git: Git, base: str, slugs: List[str]) -> List[str]:
     for d in docs:
         d.save(d.path)
     return [d.path for d in docs]
+
+
+def dropped(cfg: Config, git: Git, base: str, slug: str, reason: str, check_tree: bool = True) -> List[str]:
+    """Stage a `dropped` copy of the doc as it is on the default branch — the reason as the first line under Departures —
+    for `prepare` + `enqueue`. Returns [] when the doc there already says dropped, and raises when it cannot be dropped.
+    `check_tree`: refuse while the doc has uncommitted edits in this working tree (someone's own work, which a commit on the
+    default branch here would overwrite); the loop commits on the default branch from an item branch and has no such edits."""
+    work = cfg.rel("work")
+    rel = "%s/%s.md" % (work, slug)
+    text = git.show(base, rel)
+    if text is None:
+        raise EnqueueError("%s: no work doc on %s" % (slug, base))
+    path = os.path.join(git.root, ".sdlc", "state", "new", slug + ".md")
+    d = WorkDoc.parse(text, path)
+    if d.status == "dropped":
+        return []
+    if d.status in ("done", "built"):
+        raise EnqueueError("%s: status is %s — a finished item is not dropped" % (slug, d.status))
+    if check_tree and git("status", "--porcelain", "--", rel).out.strip():
+        raise EnqueueError("%s: %s has uncommitted changes here — commit or discard them first" % (slug, rel))
+    earlier = _uncommented(d.section("Departures"))
+    d.status = "dropped"
+    d.set_section("Departures", " ".join(reason.split()) + ("\n\n" + earlier if earlier else ""))
+    d.save(path)
+    return [path]
+
+
+def _uncommented(text: str) -> str:
+    return re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
+
+
+def departure_reason(d: Optional[WorkDoc]) -> str:
+    """Why a doc was dropped: the first line under Departures that is not a template hint. Empty when there is none."""
+    return (_uncommented(d.section("Departures")).splitlines() or [""])[0].strip() if d is not None else ""
+
+
+def record_drop(cfg: Config, git: Git, forge: Forge, slug: str, reason: str, from_loop: bool = False) -> Dict[str, object]:
+    """Take an item off the queue where every clone reads the queue: the doc on the default branch becomes `dropped` (see
+    `dropped`), committed there or — on GitHub — merged through a queue PR that, in a team repository, a person merges.
+    Returns `enqueue`'s {queued, how, pr, merged}; raises EnqueueError when it cannot be done. `from_loop`: the caller is the
+    loop itself, so the commit is made at once instead of waiting in the inbox for the loop to make it."""
+    git.fetch()
+    base = git.base_ref(cfg.default_branch)
+    paths = dropped(cfg, git, base, slug, reason, check_tree=not from_loop)
+    try:
+        if not paths:
+            return {"queued": [], "how": "already dropped on %s" % cfg.default_branch, "pr": "", "merged": False}
+        return enqueue(cfg, git, forge, prepare(cfg, git, base, paths), paths, from_loop=from_loop, verb="drop")
+    finally:
+        for p in paths:                                      # scratch copies: what counts is committed (or in the inbox)
+            if os.path.isfile(p):
+                os.remove(p)
 
 
 def _cycle(graph: Dict[str, List[str]]) -> Optional[List[str]]:
@@ -145,9 +209,22 @@ def _commit_docs(git: Git, where: str, work: str, docs: List[WorkDoc], message: 
     return r.ok, (r.text() if not r.ok else git.out("rev-parse", "HEAD", cwd=where))
 
 
+def _all_dropped(docs: List[WorkDoc]) -> bool:
+    return bool(docs) and all(d.status == "dropped" for d in docs)
+
+
+def _state_of(d: WorkDoc) -> str:
+    if d.status != "dropped":
+        return d.status
+    why = departure_reason(d)
+    return "dropped: " + why if why else "dropped"
+
+
 def message_for(docs: List[WorkDoc], verb: str = "queue") -> str:
+    if verb == "queue" and _all_dropped(docs):
+        verb = "drop"
     head = "sdlc: %s %s" % (verb, docs[0].slug) if len(docs) == 1 else "sdlc: %s %d work items" % (verb, len(docs))
-    return head + "\n\n" + "\n".join("- %s — %s (%s)" % (d.slug, d.title, d.status) for d in docs)
+    return head + "\n\n" + "\n".join("- %s — %s (%s)" % (d.slug, d.title, _state_of(d)) for d in docs)
 
 
 def enqueue(cfg: Config, git: Git, forge: Forge, docs: List[WorkDoc], originals: List[str],
@@ -210,7 +287,9 @@ def enqueue(cfg: Config, git: Git, forge: Forge, docs: List[WorkDoc], originals:
         git("worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
     title = msg.split("\n", 1)[0]
-    body = msg.split("\n", 1)[1].strip() + ("\n\nMerging this PR puts these items on the sdlc queue." if not cfg.solo else "")
+    leaving = _all_dropped(docs)
+    body = msg.split("\n", 1)[1].strip() + ("\n\nMerging this PR %s." % (
+        "takes these items off the sdlc queue" if leaving else "puts these items on the sdlc queue") if not cfg.solo else "")
     ok, url = forge.publish(qslug, title, body)
     if not ok:
         git("branch", "-D", branch)
@@ -220,9 +299,11 @@ def enqueue(cfg: Config, git: Git, forge: Forge, docs: List[WorkDoc], originals:
     if cfg.solo:
         ok, info = forge.merge(qslug, title)
         result["merged"] = ok
-        result["how"] = "merged %s" % url if ok else "PR %s could not be merged (%s) — merge it to queue the items" % (url, info)
+        result["how"] = "merged %s" % url if ok else "PR %s could not be merged (%s) — merge it to %s" % (
+            url, info, "record the drop" if leaving else "queue the items")
     else:
-        result["how"] = "PR %s — the items join the queue when a person merges it" % url
+        result["how"] = "PR %s — the %s when a person merges it" % (
+            url, "items leave the queue" if leaving else "items join the queue")
     git("branch", "-D", branch)
     if result["merged"] and git.branch() == default and not git.dirty() and not loop_pid(git.root):
         git("pull", "-q", "--ff-only", timeout=120)

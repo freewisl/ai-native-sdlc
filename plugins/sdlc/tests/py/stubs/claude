@@ -159,6 +159,31 @@ def fix():
     commit("fix %s" % slug)
 
 
+def weaken_test():
+    """An in-place edit of the existing test that keeps the number of cases and assertions (test integrity alone passes it)."""
+    with open("tests/test_base.py", encoding="utf-8") as fh:
+        t = fh.read()
+    with open("tests/test_base.py", "w", encoding="utf-8") as fh:
+        fh.write(t.replace("assert 1 + 1 == 2", "assert True"))
+
+
+def touch_file(path):
+    """Change a file the way a session loosening its own guardrails would: a JSON file gets a key, anything else a line."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if path.endswith(".json"):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = {}
+        data["_stub_touched"] = True
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    else:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("# touched by the stub\n")
+
+
 def on_sigint(signum, frame):
     sys.exit(130)
 
@@ -201,6 +226,17 @@ elif name == "limit_opus":
     result("You've hit your Opus limit · resets 5pm (Asia/Seoul)", is_error=True)
 elif name == "limit_sonnet":
     result("You've hit your Sonnet limit · resets 5pm (Asia/Seoul)", is_error=True)
+elif name == "drop":
+    # an item the session finds unnecessary: dropped, the text after the colon as the first line of Departures (without it
+    # the template's hint stays, as when a session forgets to replace it)
+    t = read_doc()
+    if param:
+        t = add_section(t, "Departures", param)
+    elif "## Departures" not in t:
+        t = add_section(t, "Departures", "<!-- Where the build departed from the plan, and why. -->")
+    write_doc(set_status(t, "dropped"))
+    commit("dropped %s" % slug)
+    result("SDLC_DROPPED %s" % slug)
 elif name == "needs_input":
     t = add_section(read_doc(), "Questions", "1. Which currency? (recommended: KRW)\n   - KRW\n   - USD")
     write_doc(set_status(t, "needs-input"))
@@ -252,6 +288,32 @@ elif name == "skip_test":
         with open("tests/test_base.py", "a") as fh:
             fh.write("\n@pytest.mark.skip\ndef test_later():\n    assert True\n")
     build(extra=skip)
+    result("SDLC_BUILT %s" % slug)
+elif name == "modify_test":
+    build(extra=weaken_test)
+    result("SDLC_BUILT %s" % slug)
+elif name == "rename_test":
+    build(extra=lambda: git("mv", "tests/test_base.py", "tests/test_renamed.py"))
+    result("SDLC_BUILT %s" % slug)
+elif name == "add_test":
+    def add():
+        fn = "test_%s" % slug.replace("-", "_")
+        with open(os.path.join("tests", fn + ".py"), "w") as fh:
+            fh.write("def %s():\n    assert 2 + 2 == 4\n" % fn)
+    build(extra=add)
+    result("SDLC_BUILT %s" % slug)
+elif name == "unlock_tests":
+    # what a build session that wants to edit existing tests would do: allow it in the doc, then edit
+    def unlock():
+        weaken_test()
+        write_doc(re.sub(r"(?m)^test_changes:.*$", "test_changes: allowed", read_doc(), count=1))
+    build(extra=unlock)
+    result("SDLC_BUILT %s" % slug)
+elif name == "touch":
+    build(extra=lambda: touch_file(param))
+    result("SDLC_BUILT %s" % slug)
+elif name == "remove":
+    build(extra=lambda: git("rm", "-q", param))
     result("SDLC_BUILT %s" % slug)
 elif name == "change_acceptance":
     def change():

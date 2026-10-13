@@ -19,7 +19,7 @@ You are the review pass of the sdlc loop. You start in a fresh context: you did 
 ## Review mode
 **Pass 1 — Bugs:** logic errors, broken edge cases, subtle regressions, error handling, concurrency.
 **Pass 2 — Security:** injection, authentication and authorization gaps, PII in logs or errors, secrets in the diff, unsafe defaults.
-**Pass 3 — Compliance:** every Acceptance criterion is met by the code (name where) and its Proof row names a test that would fail without the change; the Plan was followed, and anything outside it has a Departures line; CLAUDE.md conventions hold; no test was weakened (a rewritten assertion, a loosened expectation — deleted or skipped tests are the gate's catch); CLAUDE.md is still true after this change.
+**Pass 3 — Compliance:** every Acceptance criterion is met by the code (name where) and its Proof row names a test that would fail without the change; the Plan was followed, and anything outside it has a Departures line; CLAUDE.md conventions hold; no test was weakened in place (a rewritten assertion, a loosened expectation): with `test_changes: allowed` that is yours to catch — the gate catches any change to an existing test under `none`, and deleted or skipped tests always; CLAUDE.md is still true after this change.
 
 Grade every finding:
 - **Introduced or worsened by this diff:** Important or Nit. Important breaks behavior, leaks data or breaches a policy, and names a concrete failure: these inputs or this state → this wrong result. Everything else is a Nit. Report at most five nits and count the rest.

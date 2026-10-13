@@ -154,7 +154,10 @@ elif sub == "comment":
     find(db, args[2])["comments"].append(opt("--body"))
     save(db)
 elif sub == "close":
-    find(db, args[2])["state"] = "CLOSED"
+    pr = find(db, args[2])
+    pr["state"] = "CLOSED"
+    if opt("--comment") is not None:
+        pr["comments"].append(opt("--comment"))
     save(db)
 elif sub == "merge":
     pr = find(db, args[2])

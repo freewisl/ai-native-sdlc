@@ -3,11 +3,29 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
 
-from helpers import RepoCase
+from helpers import RepoCase, SDLC
+from sdlclib.enqueue import EnqueueError
+
+
+def clone_status(case):
+    """`status --json` in a fresh clone of origin: no engine state there, only what the repository itself says."""
+    clone = os.path.join(case.repo.tmp, "clone")
+    subprocess.run(["git", "clone", "-q", case.repo.origin, clone], check=True, env=case.repo.env(), capture_output=True)
+    r = subprocess.run([sys.executable, SDLC, "--root", clone, "status", "--json", "--no-fetch"], capture_output=True, text=True,
+                       env=case.repo.env())
+    case.assertEqual(r.returncode, 0, r.stderr)
+    return json.loads(r.stdout)
+
+
+def drop_events(case, decision):
+    with open(case.repo.path(".sdlc/logs/events.jsonl")) as fh:
+        return [e for e in map(json.loads, fh) if e["event"] == "loop.item" and e["decision"] == decision]
 
 
 class Solo(RepoCase):
@@ -71,6 +89,64 @@ class Solo(RepoCase):
         self.assertFalse(os.path.exists(self.repo.path(".sdlc/state/new/a-idea.md")))
         self.assertEqual(self.repo.engine().run(), 0)                                        # and the loop takes it from there
         self.assertEqual(self.repo.status_of("a-idea", "origin/main"), "done")
+
+    def clone_counts(self):
+        return clone_status(self)["counts"]
+
+    def test_drop_merges_a_queue_pr_closes_the_items_own_pr_and_a_fresh_clone_shows_it_dropped(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["new_dep"]})
+        self.assertEqual(self.repo.engine().run(), 0)                            # waits for a person, its PR is open
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+        r = self.repo.cli("drop", "a-first", "superseded", "by", "b")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("a-first dropped — merged", r.stdout)
+        prs = {p["head"]: p for p in self.repo.gh_db()["prs"]}
+        self.assertEqual(prs["sdlc/a-first"]["state"], "CLOSED")
+        queue = [p for p in prs.values() if p["head"].startswith("sdlc/queue-")]
+        self.assertEqual([(p["title"], p["state"]) for p in queue], [("sdlc: drop a-first", "MERGED")])
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "dropped")
+        self.assertIn("## Departures\nsuperseded by b\n", self.repo.origin_show("main", "work/a-first.md"))
+        self.assertEqual(self.repo.status_of("a-first", "main"), "dropped")                  # the pull brought it here
+        self.assertEqual(self.repo.git("status", "--porcelain"), "")
+        self.assertEqual(self.clone_counts(), {"dropped": 1})
+
+    def test_a_merge_of_the_queue_pr_that_does_not_happen_is_said_in_the_drops_words(self):
+        self.repo.add_items("a-first")
+        self.repo.base_env["STUB_GH_MERGE_FAIL"] = "1"                            # the CLI runs in a process of its own
+        r = self.repo.cli("drop", "a-first")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("could not be merged", r.stdout)
+        self.assertIn("merge it to record the drop", r.stdout)
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "ready")
+
+    def test_the_pr_body_says_when_the_design_allowed_existing_tests_to_change(self):
+        self.repo.add_items(("a-first", {"test_changes": "allowed"}), "b-second")
+        self.repo.scenario({"a-first:build": ["modify_test"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        prs = {p["head"]: p for p in self.repo.gh_db()["prs"]}
+        self.assertTrue(prs["sdlc/a-first"]["body"].startswith(
+            "> Existing tests were allowed to change in this item (test_changes: allowed).\n\n## Goal"), prs["sdlc/a-first"]["body"][:200])
+        self.assertNotIn("Existing tests were allowed", prs["sdlc/b-second"]["body"])
+        self.assertEqual([p["state"] for p in prs.values()], ["MERGED", "MERGED"])
+
+    def test_a_pr_that_changes_a_guard_file_is_flagged_for_a_person_with_the_file_named(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["touch:.claude/settings.json"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        pr = self.repo.gh_db()["prs"][0]
+        self.assertEqual(pr["state"], "OPEN")
+        self.assertIn("guard files changed, a person merges these — .claude/settings.json (added)", pr["comments"][0])
+        self.assertIn({"name": "sdlc:needs-human"}, pr["labels"])
+
+    def test_a_pr_that_edits_an_existing_test_is_flagged_for_a_person_with_the_file_named(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["modify_test"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        pr = self.repo.gh_db()["prs"][0]
+        self.assertEqual(pr["state"], "OPEN")
+        self.assertIn("existing tests changed, but the design said test_changes: none — tests/test_base.py (modified)",
+                      pr["comments"][0])
 
 
 class WhatAPersonDecides(RepoCase):
@@ -174,6 +250,125 @@ class GivenUpOn(RepoCase):
         self.assertEqual(self.repo.engine().run(), 0)
         self.assertNotIn("state", self.repo.items_state()["a-first"])
         self.assertEqual(self.counts(), {"blocked": 1})
+
+
+class SessionDrops(RepoCase):
+    """A session that finds an item unnecessary leaves the record `drop` would: the doc on origin/main says dropped (solo:
+    merged through a queue PR at once) and the item's own open PR is closed. The PR is there because the loop gave up on the
+    item once (`max_failures_per_slug: 1` makes one failure enough) and a person then asked for another try."""
+    remote = True
+    config = {"loop": {"max_failures_per_slug": 1}}
+
+    def given_up_then_retried(self, *more):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["gave_up", "drop:the behavior is already there"]})
+        self.assertEqual(self.repo.engine().run(), 1)                            # gave up: a draft PR, flagged for a person
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+        if more:
+            self.repo.add_items(*more)
+        self.assertEqual(self.repo.cli("retry", "a-first").returncode, 0)
+
+    def queue_prs(self):
+        return [p for p in self.repo.gh_db()["prs"] if p["head"].startswith("sdlc/queue-")]
+
+    def test_the_drop_is_merged_to_origin_main_the_items_pr_is_closed_and_the_loop_goes_on(self):
+        self.given_up_then_retried("b-second")
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([k for k, *_ in self.keys()],
+                         ["a-first:design", "a-first:build", "a-first:build", "b-second:design", "b-second:build"])
+        prs = {p["head"]: p for p in self.repo.gh_db()["prs"]}
+        self.assertEqual(prs["sdlc/a-first"]["state"], "CLOSED")
+        self.assertIn("sdlc: dropped — the behavior is already there", prs["sdlc/a-first"]["comments"][-1])
+        self.assertEqual([(p["title"], p["state"]) for p in self.queue_prs()], [("sdlc: drop a-first", "MERGED")])
+        self.assertEqual(prs["sdlc/b-second"]["state"], "MERGED")
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "dropped")
+        self.assertIn("## Departures\nthe behavior is already there\n", self.repo.origin_show("main", "work/a-first.md"))
+        self.assertEqual(self.repo.status_of("a-first", "main"), "dropped")                  # the loop's next pull brought it here
+        self.assertEqual(self.repo.git("status", "--porcelain"), "")
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"]), ("dropped", ["the behavior is already there"]))
+        self.assertEqual(clone_status(self)["counts"], {"dropped": 1, "done": 1})
+        with open(e.log_path) as fh:
+            self.assertIn("DROPPED a-first — the behavior is already there (merged https://github.test/o/r/pull/", fh.read())
+        (ev,) = drop_events(self, "dropped")
+        self.assertEqual((ev["detail"]["slug"], ev["detail"]["merged"]), ("a-first", True))
+        self.assertEqual(ev["detail"]["pr"], self.queue_prs()[0]["url"])
+
+    def test_the_record_is_made_from_the_doc_as_it_is_on_origin_now_not_as_this_clone_last_saw_it(self):
+        from sdlclib.config import Config
+        from sdlclib.enqueue import record_drop
+        from sdlclib.gitops import Git, GitHubForge
+        self.repo.add_items("a-first")
+        other = os.path.join(self.repo.tmp, "other")                             # someone edits the doc while the loop works
+        subprocess.run(["git", "clone", "-q", self.repo.origin, other], check=True, env=self.repo.env(), capture_output=True)
+        path = os.path.join(other, "work", "a-first.md")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text.replace("Do the thing.", "Do the newer thing."))
+        for args in (["add", "-A"], ["commit", "-q", "-m", "reword the goal"], ["push", "-q", "origin", "main"]):
+            subprocess.run(["git", "-C", other] + args, check=True, env=self.repo.env(), capture_output=True)
+        git = Git(self.repo.root)
+        res = record_drop(Config(self.repo.root), git, GitHubForge(git, "main"), "a-first", "gone", from_loop=True)
+        self.assertTrue(res["merged"], res)
+        doc = self.repo.origin_show("main", "work/a-first.md")
+        self.assertIn("status: dropped", doc)
+        self.assertIn("Do the newer thing.", doc)                                # their edit was not written over with a stale copy
+
+    def test_closing_acts_on_the_open_pr_of_the_item_only(self):
+        from sdlclib.gitops import Git, GitHubForge, LocalForge
+
+        def pr(n, state):
+            return {"number": n, "head": "sdlc/a-first", "headRefName": "sdlc/a-first", "base": "main", "title": "t", "body": "",
+                    "isDraft": False, "state": state, "url": "https://github.test/o/r/pull/%d" % n, "labels": [], "reviews": [],
+                    "reviewDecision": "", "author": {"login": "me"}, "comments": []}
+        self.repo.gh_db_write({"next": 3, "prs": [pr(1, "OPEN"), pr(2, "MERGED")], "calls": []})     # a branch name used twice
+        git = Git(self.repo.root)
+        forge = GitHubForge(git, "main")
+        self.assertTrue(forge.close("a-first", "sdlc: dropped — gone"))
+        prs = {p["number"]: p for p in self.repo.gh_db()["prs"]}
+        self.assertEqual((prs[1]["state"], prs[2]["state"]), ("CLOSED", "MERGED"))
+        self.assertEqual((prs[1]["comments"], prs[2]["comments"]), (["sdlc: dropped — gone"], []))
+        self.assertFalse(forge.close("a-first", "again"))                                          # nothing open any more
+        self.assertFalse(forge.close("no-such-item", "x"))
+        prs = {p["number"]: p for p in self.repo.gh_db()["prs"]}
+        self.assertEqual((prs[1]["comments"], prs[2]["state"], prs[2]["comments"]), (["sdlc: dropped — gone"], "MERGED", []))
+        self.assertFalse(LocalForge(git, "main").close("a-first", "x"))                            # a local branch has no PR
+
+    def test_a_drop_that_cannot_be_recorded_leaves_the_items_pr_open_and_is_announced(self):
+        self.given_up_then_retried()
+        e = self.repo.engine()
+        with mock.patch("sdlclib.engine.record_drop", side_effect=EnqueueError("push failed: the network is down")):
+            self.assertEqual(e.run(), 0)
+        prs = self.repo.gh_db()["prs"]
+        self.assertEqual([(p["head"], p["state"]) for p in prs], [("sdlc/a-first", "OPEN")])     # nothing says the drop is on main
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "ready")
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"][0]), ("dropped", "the behavior is already there"))
+        self.assertEqual(rec["reasons"][1], "not recorded on main: push failed: the network is down")
+        with open(e.log_path) as fh:
+            self.assertIn("DROPPED a-first — the behavior is already there (NOT recorded on main: push failed: the network is down",
+                          fh.read())
+        (ev,) = drop_events(self, "drop-not-recorded")
+        self.assertEqual(ev["detail"], {"slug": "a-first", "error": "push failed: the network is down"})
+        self.assertEqual(drop_events(self, "dropped"), [])
+
+    def test_a_drop_pr_that_does_not_merge_is_told_in_the_announcement_and_the_event(self):
+        self.given_up_then_retried()
+        os.environ["STUB_GH_MERGE_FAIL"] = "1"
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        queue = self.queue_prs()
+        self.assertEqual([(p["title"], p["state"]) for p in queue], [("sdlc: drop a-first", "OPEN")])
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "CLOSED")
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "ready")
+        with open(e.log_path) as fh:
+            log = fh.read()
+        self.assertIn("could not be merged", log)
+        self.assertIn("merge it to record the drop", log)
+        (ev,) = drop_events(self, "dropped")
+        self.assertEqual((ev["detail"]["merged"], ev["detail"]["pr"]), (False, queue[0]["url"]))
 
 
 class StatusFetches(RepoCase):
@@ -349,6 +544,91 @@ class Team(RepoCase):
         pr = self.repo.gh_db()["prs"][0]
         self.assertEqual((pr["title"], pr["state"]), ("sdlc: accept a-idea", "OPEN"))
         self.assertEqual(self.repo.status_of("a-idea", "main"), "proposed")
+
+    def test_drop_leaves_the_queue_pr_for_a_person_and_closes_the_design_pr(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)                            # the design PR, a draft, waits for approval
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+        r = self.repo.cli("drop", "a-first", "superseded")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("the items leave the queue when a person merges it", r.stdout)
+        design, queue = self.repo.gh_db()["prs"]
+        self.assertEqual(design["state"], "CLOSED")
+        self.assertEqual((queue["title"], queue["state"]), ("sdlc: drop a-first", "OPEN"))
+        self.assertIn("Merging this PR takes these items off the sdlc queue.", queue["body"])
+        self.assertIn("- a-first — a-first (dropped: superseded)", queue["body"])
+        self.assertNotIn("puts these items on", queue["body"])
+        self.repo.git("fetch", "-q")
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "ready")           # until a person merges it
+        self.human_merge(2)
+        self.repo.git("fetch", "-q")
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "dropped")
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "dropped")
+
+    def test_an_item_a_session_found_unnecessary_leaves_the_drop_pr_for_a_person_and_the_design_pr_is_closed(self):
+        self.repo.add_items("a-first", "b-second")
+        self.repo.scenario({"a-first:build": ["drop:the behavior is already there"]})
+        self.assertEqual(self.repo.engine().run(), 0)                            # both designs wait for approval as draft PRs
+        self.approve(1)
+        self.approve(2)
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "b-second:design", "a-first:build", "b-second:build"])
+        prs = {p["head"]: p for p in self.repo.gh_db()["prs"]}
+        self.assertEqual(prs["sdlc/a-first"]["state"], "CLOSED")
+        self.assertIn("sdlc: dropped — the behavior is already there", prs["sdlc/a-first"]["comments"][-1])
+        (queue,) = [p for h, p in prs.items() if h.startswith("sdlc/queue-")]
+        self.assertEqual((queue["title"], queue["state"]), ("sdlc: drop a-first", "OPEN"))
+        self.assertIn("Merging this PR takes these items off the sdlc queue.", queue["body"])
+        self.assertIn("- a-first — a-first (dropped: the behavior is already there)", queue["body"])
+        self.assertEqual(prs["sdlc/b-second"]["state"], "OPEN")                  # the loop went on: built, a person merges it
+        self.repo.git("fetch", "-q")
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "ready")           # until a person merges the drop
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "dropped")
+        with open(e.log_path) as fh:
+            self.assertIn("DROPPED a-first — the behavior is already there (PR %s — the items leave the queue when a person "
+                          "merges it)" % queue["url"], fh.read())
+        self.human_merge(queue["number"])
+        self.repo.git("fetch", "-q")
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "dropped")
+        self.assertIn("## Departures\nthe behavior is already there\n", self.repo.origin_show("main", "work/a-first.md"))
+        phases = {i["slug"]: i["phase"] for i in clone_status(self)["items"]}
+        self.assertEqual(phases["a-first"], "dropped")
+
+    def test_the_self_check_never_runs_in_team_mode_it_needs_merges_the_loop_made_itself(self):
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["loop"]["self_check"] = True
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.git("commit", "-qam", "self check on")
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)                             # the design PR waits for approval
+        self.approve(1)
+        e = self.repo.engine()
+        e.idle_max = 30
+        orig = e.sleep
+        calls = {"n": 0}
+
+        def sleep(seconds):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                self.human_merge(1)                                               # a person merges while the loop waits
+            return orig(0.01)
+        e.sleep = sleep
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.status_of("a-first", "origin/main"), "done")
+        self.assertNotIn("self-check", [k for k, *_ in self.keys()])
+        self.assertEqual(e.done["merged"], [])                                    # a person's merge is not counted as the loop's
+        self.assertFalse(e.self_check_due())
+        self.assertNotEqual(e.git.head(), e.from_sha)                             # main did move under the loop, and still no self-check
+
+    def test_the_self_check_is_solo_only_whatever_else_says_it_is_due(self):
+        e = self.repo.engine()
+        e.cfg.data["loop"]["self_check"] = True
+        e.done["merged"] = ["a-first"]                                            # whatever put a merge on record
+        e.from_sha = "0" * 40                                                     # and main is not where this run began
+        self.assertFalse(e.self_check_due())                                      # team mode: a person merges, nothing to review
+        e.team = False
+        self.assertTrue(e.self_check_due())                                       # the same state in solo mode is due
 
     def test_team_mode_without_a_remote_is_refused(self):
         self.repo.git("remote", "remove", "origin")

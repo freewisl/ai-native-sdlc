@@ -11,9 +11,9 @@ Work through it in this order:
 
 Never:
 - weaken, skip or delete a test to get green — fix the code;
-- edit the Acceptance criteria;
+- edit the Acceptance criteria or `test_changes`;
 - loosen a lint rule, raise a timeout or disable a check;
-- try to get around what the brief lists "for a person" (a new dependency, a risk path, test integrity, changed criteria). Fix the rest; those go to a person, who sees the reasons.
+- try to get around what the brief lists "for a person" (a new dependency, a risk path, a guard file, an existing test changed, deleted or weakened, changed criteria or `test_changes`). Fix the rest; those go to a person, who sees the reasons.
 
 If it cannot be fixed without breaking one of those, write what blocks it — the failing command, the cause, what would unblock it — in `## Departures`, commit that note, and print `SDLC_FIX_BLOCKED <one line>` instead of `SDLC_FIXED`. The item then goes to a person with your note.
 

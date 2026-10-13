@@ -80,6 +80,22 @@ class Config(unittest.TestCase):
         self.assertTrue(any("ci" in n and "monitor" in n for n in notes))
         self.assertEqual(C.migrate_v1({"roles": {"solo": False}})[0]["mode"], "team")
 
+    def test_migrate_v1_lists_as_dropped_only_what_is_not_carried_over(self):
+        deploy = {"production": {"patterns": ["ship it"], "approval_env": "OK_PROD"}}
+        new, notes = C.migrate_v1({"roles": {"solo": True}, "environments": deploy, "monitor": {}, "ci": {}})
+        self.assertEqual(new["protect"]["deploy_patterns"], ["ship it"])
+        self.assertEqual(new["mode"], "solo")
+        self.assertEqual(notes, ["dropped (not used by 1.0): monitor, ci"])              # environments and roles.solo live on
+        new, notes = C.migrate_v1({"roles": {"solo": False}, "environments": {"production": {"approval_env": "OK_PROD"}}})
+        self.assertEqual((new["protect"], new["mode"]), ({"deploy_approval_env": "OK_PROD"}, "team"))
+        self.assertEqual(notes, [])                                                       # nothing is left to be called dropped
+        new, notes = C.migrate_v1({"environments": {"production": {"patterns": ["ship it"]}}})
+        self.assertEqual(new["protect"], {"deploy_patterns": ["ship it"]})
+        self.assertEqual(notes, [])
+        new, notes = C.migrate_v1({"roles": {"autopilot": True}, "environments": {"production": {"autonomy": "gated"}},
+                                   "gate": {}})
+        self.assertEqual(notes, ["dropped (not used by 1.0): environments, gate, roles"])   # nothing of those was carried over
+
     def test_config_reads_defaults_and_legacy(self):
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, ".sdlc"))
@@ -91,6 +107,50 @@ class Config(unittest.TestCase):
         self.assertEqual(c.get("loop.max_turns"), 500)
         with self.assertRaises(C.NotInitialized):
             C.Config(tempfile.mkdtemp())
+
+
+class PullRequestNote(unittest.TestCase):
+    """The line that says an item was allowed to change existing tests: for the PR body and the merge commit."""
+
+    def doc(self, test_changes, **sections):
+        d = W.WorkDoc({"slug": "x", "title": "X", "status": "built", "test_changes": test_changes}, "")
+        d.set_section("Goal", "g")
+        for name, body in sections.items():
+            d.set_section(name, body)
+        return d
+
+    def note(self, test_changes="allowed", **sections):
+        from sdlclib.engine import tests_allowed_note
+        return tests_allowed_note(self.doc(test_changes, **sections))
+
+    def test_only_allowed_gets_a_note(self):
+        from sdlclib.engine import tests_allowed_note
+        self.assertEqual(self.note("none", Plan="test_changes: allowed — because"), "")
+        self.assertEqual(self.note(""), "")
+        self.assertEqual(tests_allowed_note(None), "")
+        self.assertEqual(self.note("allowed"), "Existing tests were allowed to change in this item (test_changes: allowed).")
+
+    def test_the_reason_is_the_first_line_in_plan_then_departures_then_proof_that_speaks_of_it(self):
+        head = "Existing tests were allowed to change in this item (test_changes: allowed) — "
+        self.assertEqual(self.note(Proof="existing tests in a.py change: new rule", Departures="test_changes: from departures",
+                                   Plan="1. step\n2. test_changes: allowed, a.py::t asserts the old shape"),
+                         head + "a.py::t asserts the old shape")
+        self.assertEqual(self.note(Proof="existing tests in a.py change: new rule", Departures="- `test_changes: allowed` — fixtures move"),
+                         head + "fixtures move")
+        self.assertEqual(self.note(Proof="| R | test | kind |\n|---|---|---|\n| R1 | a.py | unit |\n\n"
+                                         "**test_changes:** allowed: the cart total moved"), head + "the cart total moved")
+        self.assertEqual(self.note(Proof="Existing tests in tests/a.py assert the old shape."),
+                         head + "Existing tests in tests/a.py assert the old shape.")
+
+    def test_a_line_that_only_repeats_the_setting_and_hint_comments_are_no_reason(self):
+        self.assertEqual(self.note(Plan="1. step\ntest_changes: allowed"),
+                         "Existing tests were allowed to change in this item (test_changes: allowed).")
+        self.assertEqual(self.note(Plan="<!-- say which existing tests change and why (test_changes) -->"),
+                         "Existing tests were allowed to change in this item (test_changes: allowed).")
+
+    def test_a_long_reason_is_cut(self):
+        note = self.note(Plan="test_changes: allowed — " + "x" * 400)
+        self.assertEqual(len(note.split(" — ", 1)[1]), 200)
 
 
 class GateHeuristics(unittest.TestCase):
