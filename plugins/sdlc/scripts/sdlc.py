@@ -6,6 +6,7 @@ Run it from inside the repository (or pass --root). Standard library only, Pytho
   run [--detach] [--items a,b] [--max-items N] [--max-minutes M] [--dry-run]   work the queue until it is empty
   status [--json]                    loop, queue, what needs you, cost
   enqueue [--new] [FILE.md ...]      put work docs on the queue (--new: every new doc in work/)
+  accept SLUG ...                    accept proposed work docs: status ready on the default branch (team: through a PR)
   stop [--after-item]                stop the loop now (the session is resumable) or after the current item
   resume                             clear a pause and start the loop in the background
   answer SLUG TEXT                   answer an item's question; the loop continues it
@@ -21,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -51,6 +53,12 @@ def cmd_run(a: argparse.Namespace) -> int:
     return eng.run()
 
 
+SETTLE_SECONDS = 2.0      # a loop with nothing to do (empty queue, a pause) is gone this soon after it registered
+START_SECONDS = 20.0      # the longest a loop that has not registered yet (gh login check) is waited for
+DONE_LINE = re.compile(r"^== done +merged=(\d+) awaiting=(\d+) parked=(\d+) needs_human=(\d+) failed=(\d+) "
+                       r"stop=(.*?) \(\d+ min, \$[\d.]+\)\s*$", re.M)
+
+
 def detach(a: argparse.Namespace) -> int:
     pid = st.loop_pid(a.root)
     if pid:
@@ -66,18 +74,38 @@ def detach(a: argparse.Namespace) -> int:
     with open(log, "a", encoding="utf-8") as out:
         p = subprocess.Popen(cmd, cwd=a.root, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                              start_new_session=True)
-    for _ in range(30):                         # preflight problems surface within a few seconds
+    began, seen = time.time(), 0.0                  # `seen`: when the loop first showed up as running
+    while p.poll() is None:
         time.sleep(0.2)
-        if p.poll() is not None:
-            break
-        if st.loop_pid(a.root) == p.pid:
-            break
-    if p.poll() is not None and p.returncode != 0:
-        print(tail(read_text(log) or "", 10))
-        return p.returncode
+        now = time.time()
+        if not seen and st.loop_pid(a.root) == p.pid:
+            seen = now
+        if (seen and now - seen >= SETTLE_SECONDS) or now - began >= START_SECONDS:
+            break                                   # still there after that: it has work (or is waiting for someone)
+    if p.poll() is not None:
+        return ended_at_once(log, p.returncode)
+    if not seen:
+        print("the loop process is up (pid %d) but has not registered yet — log: %s" % (p.pid, os.path.relpath(log, a.root)))
+        return 0
     print("loop started in the background (pid %d) — log: %s" % (p.pid, os.path.relpath(log, a.root)))
     print("check on it: sdlc.py status · stop it: sdlc.py stop")
     return 0
+
+
+def ended_at_once(log: str, rc: int) -> int:
+    """The loop was gone before it could be called started: say why, in the loop's own words."""
+    text = read_text(log) or ""
+    last = None
+    for last in DONE_LINE.finditer(text):
+        pass
+    if rc == 0 and last and (last.group(6) == "queue empty" or last.group(6).startswith("nothing runnable")):
+        if not any(int(n) for n in last.groups()[:5]):
+            print("nothing to do: %s — no loop is running (sdlc.py status shows the queue)" % last.group(6))
+        else:                                       # a quick queue: it did its work before detach() looked
+            print("the loop has already finished — %s" % last.group(0).strip())
+        return 0
+    print(tail(text, 10))
+    return rc if rc > 0 else 1                      # killed by a signal (negative) or a clean exit that is not "nothing to do"
 
 
 def cmd_status(a: argparse.Namespace) -> int:
@@ -114,6 +142,31 @@ def cmd_enqueue(a: argparse.Namespace) -> int:
         eprint("not queued:\n" + str(e))
         return 1
     print("queued %d item(s): %s — %s" % (len(docs), ", ".join("%s (%s)" % (d.slug, d.status) for d in docs), res["how"]))
+    return 0
+
+
+def cmd_accept(a: argparse.Namespace) -> int:
+    from sdlclib.enqueue import EnqueueError, accepted, enqueue, prepare
+    cfg, git, forge = _forge_and_git(a.root)
+    if cfg.legacy:
+        eprint("this repository still has a version-1 sdlc layout — run /sdlc:init once to migrate it")
+        return 2
+    git.fetch()
+    base = git.base_ref(cfg.default_branch)
+    slugs = [os.path.basename(s)[:-3] if s.endswith(".md") else s for s in a.slugs]       # `work/x.md` and `x` both work
+    paths: list = []
+    try:
+        paths = accepted(cfg, git, base, slugs)
+        docs = prepare(cfg, git, base, paths)
+        res = enqueue(cfg, git, forge, docs, paths, verb="accept")
+    except EnqueueError as e:
+        eprint("not accepted:\n" + str(e))
+        return 1
+    finally:
+        for p in paths:                                  # scratch copies: what counts is committed (or in the inbox)
+            if os.path.isfile(p):
+                os.remove(p)
+    print("accepted %d item(s): %s — %s" % (len(docs), ", ".join(d.slug for d in docs), res["how"]))
     return 0
 
 
@@ -255,6 +308,23 @@ def cmd_init(a: argparse.Namespace) -> int:
     return initmod.main(a.root, a.rest)
 
 
+def split_init(argv):
+    """(arguments up to and including `init`, the arguments after it) — or (argv, None) for any other command.
+    argparse.REMAINDER drops a leading option (`init --check`, `init --dry-run`) as "unrecognized", so `init` gets its
+    arguments cut off here and parses them itself."""
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--root":
+            i += 2
+        elif argv[i].startswith("--root="):
+            i += 1
+        else:
+            break
+    if i < len(argv) and argv[i] == "init":
+        return argv[:i + 1], argv[i + 1:]
+    return argv, None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="sdlc.py", description=__doc__.split("\n")[1],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n", 2)[-1])
@@ -279,6 +349,10 @@ def main(argv=None) -> int:
     p.add_argument("--new", action="store_true")
     p.add_argument("files", nargs="*")
     p.set_defaults(fn=cmd_enqueue)
+
+    p = sub.add_parser("accept")
+    p.add_argument("slugs", nargs="+")
+    p.set_defaults(fn=cmd_accept)
 
     p = sub.add_parser("stop")
     p.add_argument("--after-item", action="store_true")
@@ -323,7 +397,10 @@ def main(argv=None) -> int:
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p.set_defaults(fn=cmd_init)
 
-    a = ap.parse_args(argv)
+    head, init_args = split_init(list(sys.argv[1:] if argv is None else argv))
+    a = ap.parse_args(head)
+    if init_args is not None:
+        a.rest = init_args
     if not getattr(a, "fn", None):
         ap.print_help()
         return 2

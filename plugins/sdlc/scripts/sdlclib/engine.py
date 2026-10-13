@@ -11,12 +11,13 @@ model, a session/weekly limit is slept out when it resets within `limit_wait_hou
 from __future__ import annotations
 
 import os
+import re
 import signal
 import time
 from typing import Dict, List, Optional, Tuple
 
 from . import state as st
-from .config import Config
+from .config import PHASES, Config
 from .enqueue import EnqueueError, drain_inbox, enqueue, prepare
 from .events import log_event
 from .gate import GateResult, run_gate
@@ -29,6 +30,11 @@ from .workdoc import WorkDoc, list_docs, problems
 FAMILIES = ("opus", "sonnet", "haiku", "fable")
 INFRA_HINTS = ("overloaded", "api error: 5", "internal server error", "service unavailable", "bad gateway",
                "gateway timeout", "econnreset", "etimedout", "socket hang up", "network error", "fetch failed")
+
+
+def filled(text: str) -> bool:
+    """A section with something in it: the template's HTML-comment hints and whitespace do not count."""
+    return bool(re.sub(r"<!--.*?-->", "", text or "", flags=re.S).strip())
 
 
 class StopRun(Exception):
@@ -60,7 +66,6 @@ class Engine:
         self.forge: Forge = make_forge(self.git, self.default, str(self.cfg.get("loop.forge", "auto")))
         self.team = not self.cfg.solo
         L = lambda k, d=None: self.cfg.get("loop." + k, d)
-        self.model, self.effort, self.fix_model = str(L("model", "") or ""), str(L("effort", "") or ""), str(L("fix_model", "") or "")
         self.session_minutes = float(L("session_max_minutes", 120) or 120)
         self.max_continuations = int(L("max_continuations", 3) or 0)
         self.cold_seconds = float(L("cold_resume_minutes", 55) or 55) * 60
@@ -129,12 +134,18 @@ class Engine:
             time.sleep(min(5.0, max(0.1, end - time.time())))
         return True
 
-    def model_for(self, phase: str) -> str:
-        m = self.fix_model if phase == "fix" and self.fix_model else self.model
-        f = family(m)
-        if self.blocked_family.get(f, 0) > epoch():
-            for alt in (self.model, self.fix_model, "sonnet", "opus"):
-                if alt and self.blocked_family.get(family(alt), 0) <= epoch():
+    def model_for(self, phase: str, slug: str = "") -> str:
+        """The model a session of this phase runs on. A build for an item that has failed before runs on
+        `loop.escalate_model`; a family that hit its usage limit gives way to another configured model of a different
+        family, else sonnet, else opus."""
+        m = self.cfg.model(phase)
+        esc = self.cfg.escalate_model
+        if phase == "build" and esc and slug and int(st.item(self.root, slug).get("failures", 0) or 0) > 0:
+            m = esc
+        now_ = epoch()
+        if self.blocked_family.get(family(m), 0) > now_:
+            for alt in [self.cfg.model(p) for p in PHASES] + [esc, "sonnet", "opus"]:
+                if alt and family(alt) != family(m) and self.blocked_family.get(family(alt), 0) <= now_:
                     return alt
         return m
 
@@ -160,7 +171,7 @@ class Engine:
             if not run(["gh", "auth", "status", "--hostname", host or "github.com"], cwd=self.root, timeout=30).ok:
                 raise StopRun("gh is not logged in to %s — run: gh auth login --hostname %s" % (host, host), 2)
         if not self.runner.available():
-            raise StopRun("claude executable not found (set CLAUDE_BIN or pass --claude-bin)", 2)
+            raise StopRun("claude executable not found (put claude on PATH, set SDLC_CLAUDE_BIN, or pass --claude-bin)", 2)
 
     # ------------------------------------------------------------------ the run
     def install_signals(self) -> None:
@@ -192,8 +203,9 @@ class Engine:
         st.write_pid(self.root)
         self.install_signals()
         self.set_status(state="starting", started=now_iso(), version=plugin_version())
-        self.say("== sdlc run  %s  default=%s  forge=%s  mode=%s  model=%s" % (self.root, self.default, self.forge.kind,
-                                                                               "team" if self.team else "solo", self.model))
+        self.say("== sdlc run  %s  default=%s  forge=%s  mode=%s  models=%s" % (
+            self.root, self.default, self.forge.kind, "team" if self.team else "solo",
+            "/".join("%s:%s" % (p, self.cfg.model(p) or "default") for p in ("design", "build", "fix"))))
         stop, code = "", 0
         try:
             resume_here = self.start_tree()
@@ -214,6 +226,8 @@ class Engine:
                     self.take_inbox()
                     items = self.scan()
                     self.poll_team(items)
+                    if self.poll_human(items):
+                        items = self.scan()                  # a finished item changes what its dependents wait for
                     order = runnable(items, self.only, skip=self.failed_now + [s for s in items if self.claims.owner(s)])
                     it = order[0] if order else None
                 if it is None:
@@ -296,6 +310,7 @@ class Engine:
     def finish_run(self, stop: str) -> None:
         mins = int((epoch() - self.started) // 60)
         d = self.done
+        self.return_to_default()
         self.say("== done  merged=%d awaiting=%d parked=%d needs_human=%d failed=%d stop=%s (%d min, $%.2f)" % (
             len(d["merged"]), len(d["awaiting"]), len(d["parked"]), len(d["needs-human"]), len(d["failed"]), stop, mins, self.cost))
         self.set_status(state="stopped", stop=stop, item="", phase="", ended=now_iso(), minutes=mins)
@@ -315,6 +330,21 @@ class Engine:
         return 0
 
     # ------------------------------------------------------------------ git moves
+    def return_to_default(self) -> None:
+        """A run that ends leaves the checkout on the default branch, not on the last item's branch — when that loses
+        nothing. A branch with uncommitted changes stays as it is (the next run continues it in place)."""
+        b = self.git.branch()
+        if not b.startswith("sdlc/"):
+            return
+        dirty = self.git.dirty()
+        if dirty:
+            self.say("LEFT    still on %s: uncommitted changes (%s) — look at them, then `git switch %s`" % (
+                b, dirty[0].strip(), self.default))
+        elif self.git.ok("checkout", "-q", self.default) or self.git.ok("checkout", "-q", "--detach", self.base()):
+            self.say("BACK    on %s again" % self.default)
+        else:
+            self.say("LEFT    still on %s: could not check out %s" % (b, self.default))
+
     def start_tree(self) -> str:
         """A clean tree, or the uncommitted work of this loop's own stopped item (continued in place first)."""
         dirty = self.git.dirty()
@@ -356,6 +386,26 @@ class Engine:
             r = self.git("checkout", "-q", "-b", b, self.base())
         if not r.ok:
             raise StopRun("cannot check out %s: %s" % (b, r.text()[-200:]), 2)
+        self.adopt_doc(slug)
+
+    def adopt_doc(self, slug: str) -> None:
+        """A branch made before the work doc existed (by 0.x, or by hand) gets the default branch's doc. It comes in by
+        merging the default branch: a copy committed on the branch would be an add on both sides and conflict at the gate
+        as soon as the session edits it. A merge that conflicts is undone and the doc alone is copied over instead."""
+        if os.path.exists(self.doc_path(slug)):
+            return
+        rel = os.path.relpath(self.doc_path(slug), self.root)
+        base = self.base()
+        if self.git.show(base, rel) is None:
+            return
+        msg = "sdlc(%s): work doc from %s" % (slug, self.default)
+        r = self.git("-c", "core.hooksPath=" + os.devnull, "merge", "--no-edit", "-m", msg, base)
+        if r.ok and os.path.exists(self.doc_path(slug)):
+            return
+        if not r.ok:
+            self.git("merge", "--abort")
+        if self.git.ok("checkout", base, "--", rel):
+            self.git("commit", "-q", "--no-verify", "-m", msg, "--", rel)
 
     def commit_all(self, slug: str, message: str) -> bool:
         """Commit whatever a session left uncommitted on the item branch (never on the default branch)."""
@@ -395,6 +445,7 @@ class Engine:
             if it.phase == "merge" and not it.branch:
                 return self.fail(slug, "status done on no branch — nothing to merge", count=False)
             self.checkout_item(slug)
+            ran = ""                      # the phase of the last session this call ran: the one that can ask a question
             for _ in range(12):
                 if self.stopping:
                     raise StopRun(self.stopping)
@@ -404,7 +455,7 @@ class Engine:
                     if rec.get("answers"):
                         self.apply_answers(slug, rec)
                         continue
-                    return self.park(slug, rec.get("parked_phase") or "design")
+                    return self.park(slug, ran or rec.get("parked_phase") or "design")
                 if s in ("proposed", "dropped"):
                     if s == "dropped":
                         d = self.doc(slug)
@@ -413,10 +464,12 @@ class Engine:
                         self.say("DROPPED %s — %s" % (slug, why[0] if why else "the session judged it unnecessary"))
                     return Outcome.SKIPPED
                 if s in ("ready", ""):
+                    ran = "design"
                     out = self.session(slug, "design")
                 elif s == "planned":
                     if self.team and not rec.get("approved"):
                         return self.ask_design_approval(slug)
+                    ran = "build"
                     out = self.session(slug, "build")
                 elif s == "built":
                     out = self.gate_phase(slug)
@@ -456,13 +509,13 @@ class Engine:
         if stop and stop.get("phase") == phase:
             last_fp = str(stop.get("fp") or "")
             cont_reason = str(stop.get("why") or "stopped")
-            if epoch() - float(stop.get("at") or 0) < self.cold_seconds and stop.get("model") == self.model_for(phase):
+            if epoch() - float(stop.get("at") or 0) < self.cold_seconds and stop.get("model") == self.model_for(phase, slug):
                 resume_sid = str(stop.get("sid") or "")
         continuations = 0
         infra_retries = 0
         limit_hits = 0
         while True:
-            model = self.model_for(phase)
+            model = self.model_for(phase, slug)
             if resume_sid:
                 prompt = ("Continue where you stopped (%s): finish the %s phase as /sdlc:go --item %s --%s describes, "
                           "then print the marker." % (cont_reason, phase, slug, phase))
@@ -473,7 +526,7 @@ class Engine:
             self.say("%-7s %s — %s%s (model %s)" % (phase.upper()[:7], slug, "resuming " if resume_sid else "",
                                                      "session" if not cont_reason or resume_sid else "fresh session after a stop", model))
             st.set_active(self.root, slug)
-            res = self.runner.run(prompt, log, self.session_minutes, model, self.effort, resume_sid)
+            res = self.runner.run(prompt, log, self.session_minutes, model, self.cfg.effort(phase), resume_sid)
             st.set_active(self.root, None)
             self.ensure_branch(slug)
             self.account(slug, phase, res, bool(resume_sid))
@@ -486,6 +539,9 @@ class Engine:
             if res.api_error and res.api_error.startswith(("401", "403")):
                 raise StopRun("claude reported an authentication error (%s)" % res.api_error, 2)
             if res.status == "ok":
+                if phase == "design" and self.design_unfinished(slug):
+                    self.reopen_design(slug, before_status)
+                    return self.fail(slug, "design left Plan/Proof empty")
                 return self.fail(slug, "the %s session ended without finishing it: %s" % (phase, tail(res.text, 3)[:300]))
             if res.status == "error":
                 if self.is_infra(res) and infra_retries < 2:
@@ -496,21 +552,21 @@ class Engine:
                     resume_sid = res.sid if res.turns else ""
                     continue
                 if self.is_infra(res):
-                    self.remember_stop(slug, phase, res, "service error")
+                    self.remember_stop(slug, phase, res, "service error", model=model)
                     return Outcome.INFRA
                 return self.fail(slug, "the %s session failed: %s" % (phase, res.api_error or tail(res.text, 2)[:200]))
             # stopped: max_turns · timeout · limited · interrupted
             why = {"max_turns": "turn cap", "timeout": "time cap (%d min)" % self.session_minutes, "limited": res.limit_text,
                    "interrupted": "stopped by request"}.get(res.status, res.status)
             fp = self.git.diff_hash()
-            self.remember_stop(slug, phase, res, why, fp)
+            self.remember_stop(slug, phase, res, why, fp, model)
             if res.status == "interrupted" or self.stopping:
                 raise StopRun(self.stopping or "interrupted")
             if res.status == "limited":
                 limit_hits += 1
                 if limit_hits > 3:
                     raise StopRun("usage limit hit %d times in a row (%s)" % (limit_hits, res.limit_text))
-                self.handle_limit(res, model)        # waits, switches model, or raises StopRun
+                self.handle_limit(res, model, phase, slug)        # waits, switches model, or raises StopRun
             else:
                 if fp == last_fp:
                     st.update(self.root, slug, stop=None)
@@ -519,7 +575,7 @@ class Engine:
                 if continuations > self.max_continuations:
                     return self.fail(slug, "still unfinished after %d continuations (%s)" % (self.max_continuations, why))
             last_fp, cont_reason = fp, why
-            fresh = (epoch() - res.ended) >= self.cold_seconds or self.model_for(phase) != model
+            fresh = (epoch() - res.ended) >= self.cold_seconds or self.model_for(phase, slug) != model
             resume_sid = "" if fresh else res.sid
             self.say("STOPPED %s — %s; continuing (%s)" % (slug, why, "fresh session" if fresh else "warm resume"))
 
@@ -528,10 +584,28 @@ class Engine:
         return bool(res.api_error and res.api_error[:1] == "5") or any(h.lower() in txt for h in INFRA_HINTS) or \
             (not res.text and not res.turns)
 
+    def design_unfinished(self, slug: str) -> bool:
+        """The doc says planned (or built) but has no Plan or no Proof — a status flip is not a design."""
+        d = self.doc(slug)
+        return d is not None and d.status in ("planned", "built") and not (filled(d.section("Plan")) and filled(d.section("Proof")))
+
+    def reopen_design(self, slug: str, status: str) -> None:
+        """Put the doc back to where the design session found it, so the next attempt designs again instead of building
+        on an empty plan."""
+        d = self.doc(slug)
+        if d is None:
+            return
+        d.status = status if status in ("ready", "proposed") else "ready"
+        d.save()
+        self.git("add", "--", os.path.relpath(self.doc_path(slug), self.root))
+        self.git("commit", "-q", "--no-verify", "-m", "sdlc(%s): design left Plan/Proof empty — back to %s" % (slug, d.status))
+
     def advanced(self, slug: str, phase: str, before_status: str, before_head: str) -> bool:
         s = self.doc_status(slug)
         if phase == "design":
-            return s in ("planned", "built", "needs-input", "dropped") and s != before_status
+            if s in ("planned", "built"):
+                return s != before_status and not self.design_unfinished(slug)
+            return s in ("needs-input", "dropped") and s != before_status
         if phase == "build":
             return s in ("built", "needs-input", "dropped") and s != before_status
         if phase == "fix":
@@ -551,17 +625,17 @@ class Engine:
             "log": os.path.relpath(res.log, self.root), "limit": res.limit_kind, "api_error": res.api_error})
         self.set_status()
 
-    def remember_stop(self, slug: str, phase: str, res: SessionResult, why: str, fp: str = "") -> None:
+    def remember_stop(self, slug: str, phase: str, res: SessionResult, why: str, fp: str = "", model: str = "") -> None:
         st.update(self.root, slug, stop={"sid": res.sid, "phase": phase, "at": res.ended or epoch(), "why": why,
-                                          "fp": fp or self.git.diff_hash(), "model": self.model_for(phase)})
+                                          "fp": fp or self.git.diff_hash(), "model": model or self.model_for(phase, slug)})
 
-    def handle_limit(self, res: SessionResult, model: str) -> None:
+    def handle_limit(self, res: SessionResult, model: str, phase: str = "build", slug: str = "") -> None:
         kind = res.limit_kind
         reset = res.limit_reset or 0.0
         self.event("loop.limit", "wait", res.limit_text, {"kind": kind, "reset": reset, "model": model})
         if kind in FAMILIES:
             self.blocked_family[kind] = reset or (epoch() + 5 * 3600)
-            alt = self.model_for("build")
+            alt = self.model_for(phase, slug)
             if family(alt) != kind:
                 self.say("LIMIT   %s — switching to %s" % (res.limit_text, alt))
                 return
@@ -653,6 +727,29 @@ class Engine:
                     st.update(self.root, it.slug, state="closed")
                     it.phase, it.wait_kind = "closed", ""
                     self.say("CLOSED  %s — PR closed by a person" % it.slug)
+
+    def poll_human(self, items: Dict[str, Item]) -> bool:
+        """Items that wait for a person are out of the loop's hands: when the person merges the PR (locally: the
+        branch) the item is done, when they close the PR it is closed. Without this they stay `needs-human` until
+        `retry`. True when an item moved."""
+        moved = False
+        for it in items.values():
+            gh = self.forge.kind == "github"
+            if it.phase == "needs-human" or (it.phase == "blocked" and gh):
+                if gh and not it.rec.get("pr"):
+                    continue                           # nothing was published for it, so there is no PR to have moved
+                s = self.forge.state(it.slug)
+                if s == "merged":
+                    st.update(self.root, it.slug, state="merged", reasons=None)
+                    self.say("MERGED  %s — merged by a person" % it.slug)
+                    self.event("loop.item", "merged-by-person", "", {"slug": it.slug})
+                    moved = True
+                elif s == "closed" and gh:
+                    st.update(self.root, it.slug, state="closed", reasons=None)
+                    self.say("CLOSED  %s — PR closed by a person" % it.slug)
+                    self.event("loop.item", "closed-by-person", "", {"slug": it.slug})
+                    moved = True
+        return moved
 
     # ------------------------------------------------------------------ gate, ship
     def gate_phase(self, slug: str) -> str:
@@ -778,8 +875,8 @@ class Engine:
         self.set_status(state="running", item="", phase="self-check", phase_started=now_iso())
         before = set(self.git.out("ls-files", "--others", "--exclude-standard").splitlines())
         log = os.path.join(self.root, ".sdlc", "logs", "sessions", "%s-self-check.jsonl" % stamp())
-        res = self.runner.run("/sdlc:go --self-check %s" % rng, log, min(self.session_minutes, 60), self.model_for("design"),
-                              self.effort)
+        res = self.runner.run("/sdlc:go --self-check %s" % rng, log, min(self.session_minutes, 60),
+                              self.model_for("self_check"), self.cfg.effort("self_check"))
         self.cost += res.cost_delta
         self.event("loop.session", res.status, "self-check", {"slug": "", "phase": "self-check", "sid": res.sid,
                                                               "cost_usd": res.cost_delta, "turns": res.turns,

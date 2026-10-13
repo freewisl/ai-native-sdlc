@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-"""Stand-in for `gh` in the engine tests: pull requests in a JSON file ($STUB_GH_DB) against the repository's origin,
-which is a local bare repo. `pr merge` really squash-merges into origin. $STUB_GH_MERGE_FAIL=1 makes merges fail."""
+"""Stand-in for `gh` in the tests: pull requests in a JSON file ($STUB_GH_DB) against the repository's origin, which is a
+local bare repo. `pr merge` really squash-merges into origin. $STUB_GH_MERGE_FAIL=1 makes merges fail.
+
+For init and github-setup.sh: `auth status` succeeds unless the host is in $STUB_GH_LOGGED_OUT (comma list) and no
+`auth login` for it has happened yet ($STUB_GH_LOGIN_FAIL makes the login fail); `repo view`
+and `api repos/…` answer from the environment — $STUB_GH_COLLAB (a count, or `err`), $STUB_GH_PRIVATE (1/0),
+$STUB_GH_RULESET_ID (an existing ruleset), $STUB_GH_RULESET_FAIL (the ruleset call is refused; `codeowner`: only a body that
+asks for code-owner review), $STUB_GH_PATCH_FAIL (the repository settings call is refused), $STUB_GH_NO_REPO (`repo view`
+finds no repository). Every call is kept in the db under "calls" (and the GH_HOST it ran with under "hosts"); the bodies sent
+with `--input -` are kept under "inputs" as {"args": […], "stdin": "…"}."""
 import json
 import os
 import subprocess
@@ -45,12 +53,65 @@ def find(db, n):
 
 db = load()
 db.setdefault("calls", []).append(args)
+db.setdefault("hosts", []).append(os.environ.get("GH_HOST", ""))
 save(db)
 
 if args[:2] == ["auth", "status"]:
+    host = opt("--hostname", "github.com")
+    sys.exit(1 if host in os.environ.get("STUB_GH_LOGGED_OUT", "").split(",") and host not in db.get("logged_in", []) else 0)
+if args[:2] == ["auth", "login"]:                       # the device flow: a code to type in, then logged in (or not)
+    sys.stdout.write("! First copy your one-time code: ABCD-1234\n- Press Enter to open the browser...\n")
+    sys.stdout.flush()
+    if os.environ.get("STUB_GH_LOGIN_FAIL"):
+        sys.stdout.write("error: the code expired\n")
+        sys.exit(1)
+    db["logged_in"] = db.get("logged_in", []) + [opt("-h", "github.com")]
+    save(db)
     sys.exit(0)
 if args[:2] == ["label", "create"]:
     sys.exit(0)
+if args[:2] == ["repo", "view"]:
+    if os.environ.get("STUB_GH_NO_REPO"):
+        sys.stderr.write("no git remotes found\n")
+        sys.exit(1)
+    if "--jq" in args:                                  # gh repo view --json nameWithOwner --jq .nameWithOwner
+        print("acme/widgets")
+    else:
+        print(json.dumps({"isPrivate": os.environ.get("STUB_GH_PRIVATE", "1") == "1", "defaultBranchRef": {"name": "main"},
+                          "owner": {"login": "acme"}, "visibility": "PRIVATE"}))
+    sys.exit(0)
+if args[:1] == ["api"]:
+    path = next((a for a in args[1:] if a.startswith("repos/")), "")
+    method = opt("-X", "GET")
+    body = ""
+    if "--input" in args:
+        body = sys.stdin.read()
+        db.setdefault("inputs", []).append({"args": args, "stdin": body})
+        save(db)
+    if path.endswith("/collaborators?per_page=100"):
+        count = os.environ.get("STUB_GH_COLLAB", "1")
+        if count == "err":
+            sys.stderr.write('{"message": "Forbidden"}\n')
+            sys.exit(1)
+        print(count)
+        sys.exit(0)
+    if path.endswith("/rulesets") and method == "GET":
+        if os.environ.get("STUB_GH_RULESET_ID"):
+            print(os.environ["STUB_GH_RULESET_ID"])
+        sys.exit(0)
+    if "/rulesets" in path:                             # POST (create) or PUT (update)
+        fail = os.environ.get("STUB_GH_RULESET_FAIL", "")
+        if fail == "codeowner":
+            fail = "x" if '"require_code_owner_review": true' in body else ""
+        if fail:
+            sys.stderr.write('{"message": "Upgrade to GitHub Pro or make this repository public to enable this feature.", "status": "403"}\n')
+            sys.exit(1)
+        print(json.dumps({"id": 1}))
+        sys.exit(0)
+    if method == "PATCH":                               # repository settings
+        sys.exit(1 if os.environ.get("STUB_GH_PATCH_FAIL") else 0)
+    sys.stderr.write("stub gh: unsupported api %s\n" % args)
+    sys.exit(1)
 if args[:1] != ["pr"]:
     sys.stderr.write("stub gh: unsupported %s\n" % args)
     sys.exit(1)

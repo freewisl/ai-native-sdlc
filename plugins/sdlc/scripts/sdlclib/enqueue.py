@@ -41,7 +41,7 @@ def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = ""
         if d.status not in NEW_STATUSES:
             errs.append("status '%s' — a new item is ready, proposed or needs-input" % d.status)
         committed = git.show(base, "%s/%s.md" % (work, d.slug))
-        if committed is not None and committed.strip() != (read_text(p) or "").strip():
+        if committed is not None and committed.strip() != (read_text(p) or "").strip() and not _accepts(committed, d):
             errs.append("work/%s.md is already on %s — pick another slug" % (d.slug, base))
         if "slug" not in d.meta:
             d.meta["slug"] = d.slug
@@ -67,6 +67,41 @@ def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = ""
     if errors:
         raise EnqueueError("\n".join(errors))
     return docs
+
+
+def _accepts(committed: str, d: WorkDoc) -> bool:
+    """A person accepting a proposal: the doc on the default branch is `proposed`, this one is it, now `ready`. Edits are
+    allowed — nothing has worked on a proposal yet."""
+    return d.status == "ready" and WorkDoc.parse(committed).status == "proposed"
+
+
+def accepted(cfg: Config, git: Git, base: str, slugs: List[str]) -> List[str]:
+    """Stage a `ready` copy of each proposed doc, as it is on the default branch, for `prepare` + `enqueue`. Returns the
+    staged files (under .sdlc/state/new/, local scratch). Nothing is staged unless every slug can be accepted."""
+    work = cfg.rel("work")
+    errors: List[str] = []
+    docs: List[WorkDoc] = []
+    for slug in dict.fromkeys(slugs):
+        path = os.path.join(git.root, ".sdlc", "state", "new", slug + ".md")
+        text = git.show(base, "%s/%s.md" % (work, slug))
+        if text is None:
+            errors.append("%s: no work doc on %s" % (slug, base))
+            continue
+        d = WorkDoc.parse(text, path)
+        if d.status != "proposed":
+            errors.append("%s: status is %s — only a proposed doc is accepted" % (slug, d.status))
+            continue
+        if git("status", "--porcelain", "--", "%s/%s.md" % (work, slug)).out.strip():
+            errors.append("%s: %s/%s.md has uncommitted changes here — commit or discard them, or set status: ready in "
+                          "it and `enqueue` that copy" % (slug, work, slug))
+            continue
+        d.status = "ready"
+        docs.append(d)
+    if errors:
+        raise EnqueueError("\n".join(errors))
+    for d in docs:
+        d.save(d.path)
+    return [d.path for d in docs]
 
 
 def _cycle(graph: Dict[str, List[str]]) -> Optional[List[str]]:
@@ -110,19 +145,19 @@ def _commit_docs(git: Git, where: str, work: str, docs: List[WorkDoc], message: 
     return r.ok, (r.text() if not r.ok else git.out("rev-parse", "HEAD", cwd=where))
 
 
-def message_for(docs: List[WorkDoc]) -> str:
-    head = "sdlc: queue %s" % docs[0].slug if len(docs) == 1 else "sdlc: queue %d work items" % len(docs)
+def message_for(docs: List[WorkDoc], verb: str = "queue") -> str:
+    head = "sdlc: %s %s" % (verb, docs[0].slug) if len(docs) == 1 else "sdlc: %s %d work items" % (verb, len(docs))
     return head + "\n\n" + "\n".join("- %s — %s (%s)" % (d.slug, d.title, d.status) for d in docs)
 
 
 def enqueue(cfg: Config, git: Git, forge: Forge, docs: List[WorkDoc], originals: List[str],
-            from_loop: bool = False) -> Dict[str, object]:
+            from_loop: bool = False, verb: str = "queue") -> Dict[str, object]:
     """Commit docs to the default branch. Returns {queued, how, pr, merged}. Originals (the files the docs came from) are
     removed from the working tree once their content is safely committed elsewhere."""
     work = cfg.rel("work")
     default = cfg.default_branch
     result: Dict[str, object] = {"queued": [d.slug for d in docs], "how": "", "pr": "", "merged": False}
-    msg = message_for(docs)
+    msg = message_for(docs, verb)
     if forge.kind == "local":
         here_loop = loop_pid(git.root) and read_status(git.root).get("root") == git.root
         if here_loop and not from_loop:

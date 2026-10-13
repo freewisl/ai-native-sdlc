@@ -23,8 +23,7 @@ CONFIG = {
     "version": 2,
     "mode": "solo",
     "commands": {"build": "true", "test": "test ! -f FAIL", "lint": ""},
-    "loop": {"model": "opus", "effort": "high", "fix_model": "sonnet", "session_max_minutes": 1, "poll_minutes": 0.01,
-             "idle_hours": 0.0005, "self_check": False},
+    "loop": {"session_max_minutes": 1, "poll_minutes": 0.01, "idle_hours": 0.0005, "self_check": False},
 }
 
 
@@ -69,7 +68,7 @@ class Repo:
         e.update(BASE_ENV)
         e.update(self.env_paths)
         e["PATH"] = STUBS + os.pathsep + e.get("PATH", "")
-        e["CLAUDE_BIN"] = os.path.join(STUBS, "claude")
+        e["SDLC_CLAUDE_BIN"] = e["CLAUDE_BIN"] = os.path.join(STUBS, "claude")     # both: no run here may reach a real claude
         e.pop("CLAUDECODE", None)
         return e
 

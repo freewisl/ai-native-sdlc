@@ -122,7 +122,9 @@ class Runner:
     def __init__(self, root: str, claude_bin: str = "", plugin_dir: str = "", costs_path: str = "",
                  max_turns: int = 500, allowed_tools: str = "", budget_usd: float = 0.0):
         self.root = root
-        self.claude = claude_bin or os.environ.get("CLAUDE_BIN") or shutil.which("claude") or ""
+        # --claude-bin, then SDLC_CLAUDE_BIN, then the CLAUDE_BIN other tools read, then claude on PATH
+        self.claude = claude_bin or os.environ.get("SDLC_CLAUDE_BIN") or os.environ.get("CLAUDE_BIN") or \
+            shutil.which("claude") or ""
         self.plugin_dir = plugin_dir or os.environ.get("SDLC_PLUGIN_DIR", "")
         self.costs_path = costs_path or os.path.join(root, ".sdlc", "state", "session-costs.json")
         self.max_turns = max_turns

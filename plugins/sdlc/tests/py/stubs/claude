@@ -18,6 +18,9 @@ args = sys.argv[1:]
 if args[:1] == ["--help"]:
     print("Usage: claude [options] [command] [prompt]\n  --permission-prompts <mode>\n  --max-budget-usd <amount>\n  --plugin-dir <path>")
     sys.exit(0)
+if args[:1] == ["--version"]:
+    print("9.9.9 (Claude Code stub)")
+    sys.exit(0)
 
 
 def opt(name, default=""):
@@ -78,7 +81,7 @@ calls = os.environ.get("STUB_CLAUDE_CALLS")
 if calls:
     with open(calls, "a") as fh:
         fh.write(json.dumps({"key": key, "action": action, "sid": sid, "resumed": resumed, "model": model,
-                             "prompt": prompt, "claudecode": os.environ.get("CLAUDECODE"), "cwd": os.getcwd(),
+                             "effort": opt("--effort") or "", "prompt": prompt, "claudecode": os.environ.get("CLAUDECODE"), "cwd": os.getcwd(),
                              "branch": git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip()}) + "\n")
 
 name, _, param = action.partition(":")
@@ -196,11 +199,24 @@ elif name == "limit_session":
     result("You've hit your session limit · resets 3pm (Asia/Seoul)", is_error=True)
 elif name == "limit_opus":
     result("You've hit your Opus limit · resets 5pm (Asia/Seoul)", is_error=True)
+elif name == "limit_sonnet":
+    result("You've hit your Sonnet limit · resets 5pm (Asia/Seoul)", is_error=True)
 elif name == "needs_input":
     t = add_section(read_doc(), "Questions", "1. Which currency? (recommended: KRW)\n   - KRW\n   - USD")
     write_doc(set_status(t, "needs-input"))
     commit("question %s" % slug)
     result("SDLC_NEEDS_INPUT %s" % slug)
+elif name == "design_empty":
+    # the doc says planned, but Plan/Proof are missing (default), only hint comments (:comment) or Proof is missing (:plan)
+    t = read_doc()
+    if param == "comment":
+        t = add_section(t, "Plan", "<!-- Filled by the design session: numbered steps. -->")
+        t = add_section(t, "Proof", "<!-- | R | test or command | kind | -->")
+    elif param == "plan":
+        t = add_section(t, "Plan", "1. Write src/%s.txt." % slug)
+    write_doc(set_status(t, "planned"))
+    commit("design %s (empty)" % slug)
+    result("done SDLC_PLANNED %s" % slug)
 elif name == "error":
     result("something broke", subtype="error_during_execution", is_error=True)
 elif name == "infra":

@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Tuple
 from .util import read_json
 
 CONFIG_REL = os.path.join(".sdlc", "config.json")
+PHASES = ("design", "build", "fix", "self_check")      # the sessions the loop starts; each has a model and an effort
+LEGACY_LOOP_DEFAULTS = {"model": "opus", "fix_model": "sonnet", "effort": "high"}   # what 0.x ran when the file said nothing
 
 DEPLOY_PATTERNS = [
     "(deploy|release|rollout|promote)[^|;&]*(prod|production|live)",
@@ -54,9 +56,11 @@ DEFAULTS: Dict[str, Any] = {
     "claude_md": {"max_lines": 120},
     "loop": {
         "enabled": True,
-        "model": "opus",
-        "effort": "high",
-        "fix_model": "sonnet",
+        # per phase: design and self-check on the strongest model, build and fix on a cheaper one (a string "" passes
+        # no --model / --effort). The 0.x keys loop.model, loop.fix_model and loop.effort still count — see Config.
+        "models": {"design": "opus", "build": "sonnet", "fix": "sonnet", "self_check": "opus"},
+        "efforts": {"design": "high", "build": "high", "fix": "medium", "self_check": "high"},
+        "escalate_model": "opus",                # a build for an item that has failed before runs on this one ("" = never)
         "session_max_minutes": 120,
         "max_turns": 500,
         "max_continuations": 3,                  # a session stopped by a cap is continued at once (warm cache), this many times
@@ -81,8 +85,17 @@ DEFAULTS: Dict[str, Any] = {
 }
 
 
+OBJECT_SECTIONS = ("commands", "protect", "paths", "loop")   # a file that writes one of these as anything else is a mistake
+
+
 class NotInitialized(Exception):
     pass
+
+
+def section(raw: Any, key: str) -> Dict[str, Any]:
+    """`raw[key]` when it is an object; `{}` for a missing, null or mistyped section (`"commands": "make"`)."""
+    v = raw.get(key) if isinstance(raw, dict) else None
+    return v if isinstance(v, dict) else {}
 
 
 def deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,15 +112,15 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     """Map a 0.x config onto version 2. Returns (new config, notes). Keys that no longer exist are dropped."""
     notes: List[str] = []
     new: Dict[str, Any] = {"version": 2, "language": raw.get("language", "en")}
-    roles = raw.get("roles") or {}
+    roles = section(raw, "roles")
     new["mode"] = "solo" if roles.get("solo") else "team"
-    new["commands"] = {k: v for k, v in (raw.get("commands") or {}).items() if k in DEFAULTS["commands"] and v}
-    v = raw.get("verify") or {}
+    new["commands"] = {k: v for k, v in section(raw, "commands").items() if k in DEFAULTS["commands"] and v}
+    v = section(raw, "verify")
     new["verify"] = {k: v[k] for k in DEFAULTS["verify"] if k in v}
-    p = raw.get("protect") or {}
+    p = section(raw, "protect")
     prot = {k: p[k] for k in ("frozen_paths_file", "generated_paths", "protect_tests", "test_paths", "block_direct_push",
                               "default_branch") if k in p}
-    prod = ((raw.get("environments") or {}).get("production") or {})
+    prod = section(section(raw, "environments"), "production")
     if prod.get("patterns"):
         prot["deploy_patterns"] = prod["patterns"]
     if prod.get("approval_env"):
@@ -121,21 +134,44 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             new[k] = {kk: vv for kk, vv in raw[k].items() if kk in DEFAULTS[k]}
     if "auto_commit" in raw:
         new["auto_commit"] = raw["auto_commit"]
-    lp = raw.get("loop") or {}
-    loop = {k: lp[k] for k in ("model", "effort", "fix_model", "max_turns", "max_failures_per_slug", "fix_rounds",
-                              "self_check", "allowed_tools", "item_note", "pause_file") if k in lp}
+    lp = section(raw, "loop")
+    loop = {k: lp[k] for k in ("max_turns", "max_failures_per_slug", "fix_rounds", "self_check", "allowed_tools",
+                              "item_note", "pause_file") if k in lp}
+    for k, old_default in LEGACY_LOOP_DEFAULTS.items():   # a 0.x default is not a choice: 1.0 picks the model per phase
+        if k in lp and lp[k] != old_default:
+            loop[k] = lp[k]
+            notes.append("loop.%s %r kept (it differs from the 0.x default) — loop.models / loop.efforts set it per phase" %
+                         (k, lp[k]))
     if "item_max_minutes" in lp:
         loop["session_max_minutes"] = lp["item_max_minutes"]
     if lp.get("enabled") is False:
-        loop["enabled"] = False
+        if roles.get("solo"):
+            loop["enabled"] = False
+        else:   # 0.x ran the loop in solo repositories only; false was the team default, not a choice
+            notes.append("loop.enabled=false not carried over: 1.0 runs the loop in team repositories too, with people "
+                         "approving designs and merges (set it again to switch the loop off)")
     if lp.get("max_items") or lp.get("max_minutes"):
         notes.append("loop.max_items / loop.max_minutes dropped: a run now goes until the queue is empty (set them again to cap it)")
     new["loop"] = loop
-    dropped = [k for k in ("source_of_truth", "environments", "gate", "policies", "evals", "monitor", "ci", "plan", "paths")
+    rv = section(raw, "paths").get("review")
+    if rv and rv != DEFAULTS["paths"]["review"]:
+        new["paths"] = {"review": rv}
+    if roles.get("solo") and roles.get("auto_merge") is False:
+        notes.append("roles.auto_merge=false: in 1.0 solo mode the loop merges what passes the gate — use mode team to "
+                     "merge by hand")
+    dropped = [k for k in ("source_of_truth", "environments", "gate", "policies", "evals", "monitor", "ci", "plan", "roles")
                if k in raw]
     if dropped:
-        notes.append("dropped (features removed in 1.0): " + ", ".join(dropped))
+        notes.append("dropped (not used by 1.0): " + ", ".join(dropped))
     return new, notes
+
+
+def config_version(raw: Any) -> int:
+    """The `version` of a config file; 1 (0.x) when it is missing or not a number."""
+    try:
+        return int(float((raw or {}).get("version", 1) or 1))
+    except (AttributeError, TypeError, ValueError):
+        return 1
 
 
 class Config:
@@ -146,11 +182,46 @@ class Config:
         if not isinstance(raw, dict):
             raise NotInitialized("no .sdlc/config.json in %s — run /sdlc:init first" % root)
         self.raw = raw
-        self.legacy = int(raw.get("version", 1) or 1) < 2
-        self.legacy_paths = dict(raw.get("paths") or {}) if self.legacy else {}
+        self.legacy = config_version(raw) < 2
+        self.legacy_paths = dict(section(raw, "paths")) if self.legacy else {}
         if self.legacy:
             raw, _ = migrate_v1(raw)
         self.data = deep_merge(DEFAULTS, raw)
+        for k, d in DEFAULTS.items():                            # `"commands": null`, `"loop": "off"` and the like: the defaults stand
+            if isinstance(d, dict) and not isinstance(self.data.get(k), dict):
+                self.data[k] = copy.deepcopy(d)
+        self._phase_settings(section(raw, "loop"))
+
+    def _phase_settings(self, loop: Dict[str, Any]) -> None:
+        """loop.models / loop.efforts hold one value per phase. The 0.x keys still count where the file does not name
+        the phase: loop.model → design, build and self_check; loop.fix_model → fix; loop.effort → every phase."""
+        for table, legacy in (("models", lambda p: "fix_model" if p == "fix" else "model"), ("efforts", lambda p: "effort")):
+            own = loop.get(table)
+            if isinstance(own, str):                    # one value for every phase
+                own = {p: own for p in PHASES}
+            own = own if isinstance(own, dict) else {}
+            values = dict(DEFAULTS["loop"][table])
+            for p in PHASES:
+                old = loop.get(legacy(p))
+                if isinstance(old, str) and (old.strip() or table == "efforts"):   # effort "" meant: pass none
+                    values[p] = old.strip()
+                if own.get(p) is not None:
+                    values[p] = str(own[p]).strip()
+            self.data["loop"][table] = values
+        for k in LEGACY_LOOP_DEFAULTS:
+            self.data["loop"].pop(k, None)
+
+    def model(self, phase: str) -> str:
+        """The model a session of this phase runs on ("" = pass no --model)."""
+        return str((self.get("loop.models") or {}).get(phase) or "")
+
+    def effort(self, phase: str) -> str:
+        """The --effort of a session of this phase ("" = pass none)."""
+        return str((self.get("loop.efforts") or {}).get(phase) or "")
+
+    @property
+    def escalate_model(self) -> str:
+        return str(self.get("loop.escalate_model", "") or "")
 
     def get(self, dotted: str, default: Any = None) -> Any:
         cur: Any = self.data

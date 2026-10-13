@@ -111,15 +111,20 @@ def _section(text: Optional[str], name: str) -> str:
 
 
 def acceptance_changed(cfg: Config, git: Git, slug: str, base: str, head: str) -> Optional[str]:
-    """Acceptance criteria at the design commit (first commit on the branch where the doc is planned) vs head."""
+    """Acceptance criteria at the design commit vs head. The design commit is the first commit on the branch where the
+    doc is planned — or, for an item that was planned before the branch was cut (a migrated one), the doc as the branch
+    started from it."""
     rel = "%s/%s.md" % (cfg.rel("work"), slug)
-    shas = git.out("log", "--format=%H", "--reverse", "%s..%s" % (base, head), "--", rel).split()
     design = None
-    for sha in shas:
-        text = git.show(sha, rel)
-        if text and WorkDoc.parse(text).status in ("planned", "built", "done"):
-            design = text
-            break
+    start = git.show(git.out("merge-base", base, head) or base, rel)
+    if start and WorkDoc.parse(start).status in ("planned", "built", "done"):
+        design = start
+    else:
+        for sha in git.out("log", "--format=%H", "--reverse", "%s..%s" % (base, head), "--", rel).split():
+            text = git.show(sha, rel)
+            if text and WorkDoc.parse(text).status in ("planned", "built", "done"):
+                design = text
+                break
     if design is None:
         return None
     before, after = _section(design, "Acceptance criteria"), _section(git.show(head, rel), "Acceptance criteria")

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from helpers import RepoCase, Repo, SCRIPTS, STUBS, BASE_ENV
 
@@ -190,6 +191,30 @@ class Sessions(unittest.TestCase):
         self.assertIsNone(r.token("SDLC_BUILT"))
 
 
+class ClaudeLookup(unittest.TestCase):
+    """Which claude a session runs: --claude-bin, SDLC_CLAUDE_BIN, CLAUDE_BIN, then claude on PATH."""
+
+    def lookup(self, claude_bin="", **env):
+        base = {k: v for k, v in os.environ.items() if k not in ("SDLC_CLAUDE_BIN", "CLAUDE_BIN")}
+        base["PATH"] = STUBS + os.pathsep + base.get("PATH", "")
+        base.update(env)
+        with mock.patch.dict(os.environ, base, clear=True):
+            return S.Runner(tempfile.gettempdir(), claude_bin=claude_bin).claude
+
+    def test_the_order_is_flag_then_sdlc_claude_bin_then_claude_bin_then_path(self):
+        self.assertEqual(self.lookup("/flag/claude", SDLC_CLAUDE_BIN="/sdlc/claude", CLAUDE_BIN="/plain/claude"), "/flag/claude")
+        self.assertEqual(self.lookup(SDLC_CLAUDE_BIN="/sdlc/claude", CLAUDE_BIN="/plain/claude"), "/sdlc/claude")
+        self.assertEqual(self.lookup(CLAUDE_BIN="/plain/claude"), "/plain/claude")
+        self.assertEqual(self.lookup(SDLC_CLAUDE_BIN="", CLAUDE_BIN="/plain/claude"), "/plain/claude")   # empty counts as unset
+        self.assertEqual(self.lookup(), os.path.join(STUBS, "claude"))                                   # PATH: the stub comes first
+
+    def test_a_runner_without_any_claude_is_not_available(self):
+        with mock.patch.dict(os.environ, {"PATH": "/nonexistent-dir"}, clear=True):
+            rn = S.Runner(tempfile.gettempdir())
+        self.assertEqual((rn.claude, rn.available()), ("", False))
+        self.assertFalse(S.Runner(tempfile.gettempdir(), claude_bin="/nonexistent/claude").available())
+
+
 class RunnerCase(RepoCase):
     def runner(self):
         return S.Runner(self.repo.root, claude_bin=os.path.join(STUBS, "claude"), max_turns=7, allowed_tools="Read,Bash")
@@ -268,6 +293,60 @@ class EnqueueChecks(RepoCase):
         self.assertIsNotNone(self.repo.show("main", "work/new-one.md"))
         self.assertEqual(os.listdir(self.repo.path(".sdlc/state/inbox")), [])
         st.clear_pid(self.repo.root)
+
+
+class DetachOutcome(unittest.TestCase):
+    """What `run --detach` says about a loop that was gone before it could be called started."""
+
+    @staticmethod
+    def done(stop, merged=0, failed=0):
+        return "== done  merged=%d awaiting=0 parked=0 needs_human=0 failed=%d stop=%s (0 min, $0.00)\n" % (merged, failed, stop)
+
+    def outcome(self, text, rc):
+        import contextlib
+        import io
+        import sdlc
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "loop.out")
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = sdlc.ended_at_once(log, rc)
+        return code, buf.getvalue()
+
+    def test_an_empty_queue_and_a_queue_that_waits_for_people_are_nothing_to_do(self):
+        code, out = self.outcome("== sdlc run /x\n" + self.done("queue empty"), 0)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to do: queue empty", out)
+        code, out = self.outcome(self.done("nothing runnable — 3 item(s) wait for you"), 0)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to do: nothing runnable — 3 item(s) wait for you", out)
+
+    def test_a_quick_queue_that_did_its_work_before_detach_looked_is_finished_not_nothing_to_do(self):
+        code, out = self.outcome(self.done("queue empty", merged=2), 0)
+        self.assertEqual(code, 0)
+        self.assertIn("the loop has already finished — == done  merged=2", out)
+        self.assertNotIn("nothing to do", out)
+
+    def test_anything_else_shows_the_tail_and_fails(self):
+        paused = "STOP    paused (.sdlc/state/pause exists) — `sdlc.py resume` removes it\n"
+        code, out = self.outcome(paused, 0)
+        self.assertEqual((code, out.strip()), (1, paused.strip()))              # a clean exit that is not "nothing to do"
+        code, out = self.outcome("ERROR   the working tree has uncommitted changes\n", 2)
+        self.assertEqual(code, 2)                                                # the loop's own code survives
+        self.assertIn("uncommitted changes", out)
+        code, out = self.outcome(self.done("stopped by SIGTERM"), 0)
+        self.assertEqual(code, 1)
+        self.assertIn("stop=stopped by SIGTERM", out)
+        code, out = self.outcome(self.done("3 failures in a row", failed=3), 1)
+        self.assertEqual(code, 1)
+        self.assertIn("failed=3", out)
+        self.assertEqual(self.outcome("", -15)[0], 1)                            # killed by a signal: not a negative exit code
+
+    def test_the_last_done_line_decides(self):
+        code, out = self.outcome(self.done("queue empty", merged=1) + self.done("queue empty"), 0)
+        self.assertIn("nothing to do", out)
 
 
 class StatusAndCli(RepoCase):

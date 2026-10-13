@@ -94,6 +94,8 @@ def phase_of(it: Item, team: bool, max_failures: int) -> str:
     st = str(rec.get("state") or "")
     if st in ("dropped", "closed"):
         return st
+    if st == "merged":                      # a person merged what waited for them (the doc on the default branch may still say built)
+        return "done"
     d = it.doc.status if it.doc else ""
     if d in ("done", "dropped"):
         return d
@@ -183,7 +185,7 @@ def _dependencies(items: Dict[str, Item]) -> None:
 
 def _human_reason(it: Item) -> str:
     if it.phase == "proposed":
-        return "proposed — approve to queue it (status: ready)"
+        return "proposed — `sdlc.py accept %s` queues it" % it.slug
     if it.phase == "needs-input":
         return "has a question for you"
     if it.phase == "blocked":
