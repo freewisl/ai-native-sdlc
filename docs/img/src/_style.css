@@ -1,13 +1,13 @@
 :root{--paper:#F3F6EE;--paper-2:#E7EDE0;--ink:#1E2A22;--soft:#5A6A5E;--line:#CBD5C6;--accent:#2B4FCF;--accent-ink:#fff;--sun:#F2BE3C;--mint:#8FCBB0;--stop:#C8452B;--ok:#2E8B57}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--paper);color:var(--ink);font-family:"Gowun Dodum","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-size:18px;line-height:1.45}
-body{width:1200px;overflow:hidden;padding:36px 44px}
+body{width:1200px;overflow:hidden;padding:36px 44px;word-break:keep-all;overflow-wrap:break-word}
 h1,h2,h3,.jua{font-family:"Jua","Apple SD Gothic Neo","Noto Sans KR",sans-serif;font-weight:400;margin:0;letter-spacing:-.01em}
 h1{font-size:34px;line-height:1.15}
 h2{font-size:24px}
 h3{font-size:20px}
 p{margin:0}
-code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.86em;background:var(--paper-2);padding:1px 7px;border-radius:5px}
+code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.86em;background:var(--paper-2);padding:1px 7px;border-radius:5px;word-break:normal}
 .tag{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
 .soft{color:var(--soft)}
 .card{background:var(--paper-2);border-radius:18px;padding:16px 18px}
@@ -21,3 +21,26 @@ svg text{font-family:"Jua","Apple SD Gothic Neo",sans-serif;fill:var(--ink)}
 .legend{display:flex;gap:18px;align-items:center;font-size:14px;color:var(--soft);margin-top:14px}
 .legend i{display:inline-block;width:18px;height:18px;border-radius:5px;vertical-align:-4px;margin-right:6px}
 .foot{margin-top:18px;font-size:13px;color:var(--soft);text-align:right}
+
+/* header shared by every picture: tag + title on the left, a short note on the right */
+.top{display:flex;justify-content:space-between;align-items:end;gap:24px}
+.top .note{font-size:15px;color:var(--soft);max-width:560px;text-align:right}
+
+/* model pills: which model runs a step (opus = judgment, sonnet = hands, haiku = lookups, sh = no model at all) */
+.m{display:inline-block;font-family:"Jua",sans-serif;font-size:12.5px;line-height:1;padding:3px 9px 4px;border-radius:999px;white-space:nowrap;vertical-align:1px;letter-spacing:0}
+.m.opus{background:var(--accent);color:#fff}
+.m.sonnet{background:var(--mint);color:var(--ink)}
+.m.haiku{background:var(--sun);color:var(--ink)}
+.m.sh{background:var(--ink);color:var(--paper)}
+
+/* work-doc status chips */
+.sc{display:inline-block;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;line-height:1;padding:4px 10px;border-radius:999px;border:2px solid var(--ink);background:#fff;white-space:nowrap;word-break:normal}
+.sc.ready{background:#FFF2C8;border-color:#C9A227}
+.sc.planned{background:#DDEFE6;border-color:var(--ok)}
+.sc.built{background:#DCE3FA;border-color:var(--accent)}
+.sc.done{background:var(--ok);border-color:var(--ok);color:#fff}
+.sc.proposed{background:#fff;border-style:dashed;border-color:var(--soft);color:var(--soft)}
+
+/* speech bubble: what to say instead of typing the command */
+.say{display:inline-block;position:relative;background:#fff;border:2px solid var(--ink);border-radius:14px;padding:3px 12px 4px;font-size:15px;line-height:1.3;margin-left:8px}
+.say:before{content:"";position:absolute;left:-7px;top:50%;width:11px;height:11px;margin-top:-6px;background:#fff;border-left:2px solid var(--ink);border-bottom:2px solid var(--ink);transform:rotate(45deg)}

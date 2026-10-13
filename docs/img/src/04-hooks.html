@@ -1,44 +1,104 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>훅 7종</title>
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>훅</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
 <style>
-body{height:640px}
-.time{display:grid;grid-template-columns:1fr 1.6fr 1.6fr 1fr;gap:14px;margin-top:26px;position:relative}
-.time:before{content:"";position:absolute;left:24px;right:24px;top:30px;height:4px;background:var(--line);border-radius:2px}
-.mo{display:grid;gap:10px;position:relative;align-content:start}
-.mo .dot{width:64px;height:64px;border-radius:50%;background:var(--paper-2);border:3px solid var(--ink);display:grid;place-items:center;justify-self:center;position:relative;z-index:1}
-.mo .dot span{font-family:"Jua",sans-serif;font-size:15px;text-align:center;line-height:1.1}
-.mo h3{text-align:center;font-size:18px}
-.locks{display:grid;gap:8px}
-.lock{background:var(--paper-2);border-radius:14px;padding:10px 12px;display:grid;grid-template-columns:40px 1fr;gap:10px;align-items:center}
-.lock svg{width:40px;height:40px}
-.lock b{font-family:"Jua",sans-serif;font-weight:400;font-size:15px;display:block}
-.lock span{font-size:12.5px;color:var(--soft);line-height:1.3}
-.lock.block{border:2px solid var(--stop)}
-.lock.soft{border:2px solid var(--line)}
+body{height:894px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:24px}
+.pn{background:var(--paper-2);border-radius:22px;padding:18px 20px 20px}
+.pn .hd{display:flex;align-items:center;gap:12px}
+.pn .hd .when{width:50px;height:50px;border-radius:50%;background:#fff;border:3px solid var(--ink);display:grid;place-items:center;font-family:"Jua",sans-serif;font-size:13px;line-height:1.05;text-align:center;flex:none}
+.pn h2{font-size:23px;line-height:1.15}
+.pn .sub{font-size:13.5px;color:var(--soft);margin-top:1px}
+.pn .hd code{background:rgba(255,255,255,.75)}
+.locks{display:grid;gap:13px;margin-top:18px}
+.lk{background:#fff;border:2px solid var(--stop);border-radius:14px;padding:10px 14px 11px 12px;display:grid;grid-template-columns:44px 1fr;gap:12px;align-items:center;position:relative}
+.lk svg{width:44px;height:44px}
+.lk b{font-family:"Jua",sans-serif;font-weight:400;font-size:17px;display:block;line-height:1.25}
+.lk span{font-size:14px;color:var(--soft);line-height:1.42;display:block}
+.lk code{font-size:12.5px;padding:1px 5px;background:var(--paper-2)}
+.lk .no{position:absolute;left:-10px;top:-10px;width:25px;height:25px;border-radius:50%;background:var(--ink);color:#fff;font-family:"Jua",sans-serif;font-size:14px;display:grid;place-items:center}
+.closed{margin-top:16px;display:grid;grid-template-columns:50px 1fr;gap:14px;align-items:center;background:#FBE3E0;border:2px solid var(--stop);border-radius:16px;padding:10px 18px}
+.closed svg{width:46px;height:46px}
+.closed b{font-family:"Jua",sans-serif;font-weight:400;font-size:18px;color:var(--stop)}
+.closed span{font-size:15px}
+.back{margin-top:14px;display:grid;grid-template-columns:50px 1fr;gap:14px;align-items:center;background:var(--ink);color:var(--paper);border-radius:16px;padding:12px 18px}
+.back svg{width:46px;height:46px}
+.back b{font-family:"Jua",sans-serif;font-weight:400;font-size:18px;color:var(--sun);display:block}
+.back span{font-size:14.5px;color:#D8E2DA;line-height:1.45;display:block}
+.back code{background:rgba(255,255,255,.14);color:#fff;font-size:12.5px;padding:1px 6px}
+.others{margin-top:14px;display:grid;grid-template-columns:150px repeat(4,1fr);gap:12px;align-items:stretch}
+.others .lab{font-family:"Jua",sans-serif;font-size:17px;line-height:1.25;display:grid;align-content:center}
+.others .lab small{font-family:"Gowun Dodum",sans-serif;font-size:13px;color:var(--soft);display:block;margin-top:2px}
+.mini{border:2px solid var(--line);border-radius:14px;padding:9px 12px;display:grid;grid-template-columns:30px 1fr;gap:10px;align-items:center}
+.mini svg{width:30px;height:30px}
+.mini code{font-size:12.5px}
+.mini span{font-size:13px;color:var(--soft);line-height:1.35;display:block}
 </style></head><body>
-<div style="display:flex;justify-content:space-between;align-items:end">
+<div class="top">
   <div><span class="tag">훅 7종 · 플러그인이 자동 등록</span><h1>말해도 안 들으면, 딸깍</h1></div>
-  <p class="soft" style="font-size:15px;max-width:560px;text-align:right">규칙표(CLAUDE.md)는 권고, 훅은 손이 닿는 순간 막는 결정론.<br>막을 때마다 <b>이유</b>와 <b>여는 방법</b>을 말하고 시각을 남깁니다.</p>
+  <p class="note">CLAUDE.md 는 권고, 훅은 손이 닿는 순간 막는 결정론.<br>막을 때마다 <b>이유</b>와 <b>푸는 법</b>을 말하고 기록을 남깁니다.</p>
 </div>
-<div class="time">
-  <div class="mo"><div class="dot"><span>세션<br>시작</span></div><h3>SessionStart</h3>
-    <div class="locks"><div class="lock soft"><svg viewBox="0 0 40 40"><path d="M8 30 q0 -16 12 -16 q12 0 12 16 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="2.5"/><circle cx="20" cy="33" r="3" fill="var(--ink)"/></svg><div><b>귓속말</b><span>활성 plan · 대기 주문서 건수 · 규칙 3줄 주입</span></div></div></div></div>
-  <div class="mo"><div class="dot"><span>편집</span></div><h3>Edit / Write</h3>
+
+<div class="cols">
+  <!-- guard-edit -->
+  <div class="pn">
+    <div class="hd">
+      <div class="when">편집<br>직전</div>
+      <div><h2>Edit · Write <code>guard-edit</code></h2><div class="sub">위에서부터 차례로 — 처음 걸리는 규칙에서 막음</div></div>
+    </div>
     <div class="locks">
-      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg><div><b>만지면 안 되는 서랍</b><span>frozen · 생성 코드 · 티켓 필요 경로 편집 차단</span></div></div>
-      <div class="lock block"><svg viewBox="0 0 40 40"><path d="M8 30 l14 -14" stroke="var(--ink)" stroke-width="3.5" stroke-linecap="round"/><ellipse cx="26" cy="12" rx="6" ry="4.5" transform="rotate(-30 26 12)" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><rect x="22" y="24" width="12" height="9" rx="2" fill="var(--stop)"/></svg><div><b>숟가락 잠금</b><span>고치는 동안 테스트 파일 편집 금지 · plan 필수 옵션</span></div></div>
-      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="8" y="8" width="24" height="24" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="15">🔑</text></svg><div><b>열쇠는 주머니에</b><span>비밀번호·토큰이 파일에 들어가면 차단</span></div></div>
-      <div class="lock soft"><svg viewBox="0 0 40 40"><path d="M10 28 l8 -12 l6 6 l6 -10" fill="none" stroke="var(--accent)" stroke-width="3"/></svg><div><b>덤</b><span>편집 직후 포매터 · 파일 린트 자동</span></div></div>
-    </div></div>
-  <div class="mo"><div class="dot"><span>명령</span></div><h3>Bash</h3>
+      <div class="lk"><i class="no">1</i>
+        <svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg>
+        <div><b>만지면 안 되는 서랍</b><span><code>frozen</code> · <code>generated</code> 경로는 편집 금지 — 원본을 고치고 다시 생성</span></div></div>
+      <div class="lk"><i class="no">2</i>
+        <svg viewBox="0 0 40 40"><path d="M8 30 l14 -14" stroke="var(--ink)" stroke-width="3.5" stroke-linecap="round"/><ellipse cx="26" cy="12" rx="6" ry="4.5" transform="rotate(-30 26 12)" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><rect x="22" y="24" width="12" height="9" rx="2" fill="var(--stop)"/><path d="M25 24 v-3 q0 -4 3 -4 q3 0 3 4 v3" fill="none" stroke="var(--ink)" stroke-width="2"/></svg>
+        <div><b>숟가락 잠금 — 기존 테스트</b><span>sdlc 작업 중(활성 작업 문서가 있을 때) <code>merge-base</code> 에 이미 있던 테스트 파일은 편집 금지, 새 테스트는 자유.<br>작업 문서의 <code>test_changes: allowed</code> 로 풀림</span></div></div>
+      <div class="lk"><i class="no">3</i>
+        <svg viewBox="0 0 40 40"><rect x="7" y="7" width="26" height="26" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><g font-size="8"><text x="11" y="17">1.</text><text x="11" y="25">2.</text><text x="11" y="33">3.</text></g><g stroke="var(--ink)" stroke-width="2"><line x1="19" y1="15" x2="29" y2="15"/><line x1="19" y1="23" x2="29" y2="23"/><line x1="19" y1="31" x2="26" y2="31"/></g></svg>
+        <div><b>설계 먼저</b><span>작업 문서가 <code>ready</code>·<code>proposed</code> 인 동안은 <code>work/</code>·<code>.sdlc/</code> 만 편집</span></div></div>
+      <div class="lk"><i class="no">4</i>
+        <svg viewBox="0 0 40 40"><circle cx="13" cy="20" r="7" fill="var(--sun)" stroke="var(--ink)" stroke-width="2.5"/><circle cx="13" cy="20" r="2.2" fill="var(--ink)"/><path d="M20 20 h16 M30 20 v6 M35 20 v5" stroke="var(--ink)" stroke-width="3" stroke-linecap="round" fill="none"/></svg>
+        <div><b>열쇠는 주머니에</b><span>새 내용에 비밀번호 · 토큰이 있으면 차단 — 환경 변수로 읽기</span></div></div>
+    </div>
+  </div>
+
+  <!-- guard-bash -->
+  <div class="pn">
+    <div class="hd">
+      <div class="when">명령<br>직전</div>
+      <div><h2>Bash <code>guard-bash</code></h2><div class="sub">하나라도 걸리면 막음</div></div>
+    </div>
     <div class="locks">
-      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="7" y="13" width="26" height="18" rx="4" fill="var(--paper)" stroke="var(--ink)" stroke-width="2"/><rect x="14" y="7" width="12" height="10" rx="6" fill="none" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="8">PROD</text></svg><div><b>홀로 나가는 문</b><span>운영 배포 명령은 승인 변수 없이는 차단 · staging 은 확인</span></div></div>
-      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="8" y="12" width="24" height="18" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M8 21 h24" stroke="var(--ink)" stroke-width="2"/><text x="20" y="19" text-anchor="middle" font-size="7">main</text><path d="M15 28 l10 -6 M15 22 l10 6" stroke="var(--stop)" stroke-width="2.5" stroke-linecap="round"/></svg><div><b>정문은 잠겨 있어요</b><span>기본 브랜치 직접 push 차단 — 브랜치 + PR 로만</span></div></div>
-      <div class="lock block"><svg viewBox="0 0 40 40"><rect x="8" y="8" width="24" height="24" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="15">🔑</text></svg><div><b>커밋에도 열쇠 금지</b><span><code>git commit</code> 스테이지 diff 비밀 스캔</span></div></div>
-      <div class="lock soft"><svg viewBox="0 0 40 40"><path d="M10 22 l6 6 l14 -16" fill="none" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round"/></svg><div><b>기록</b><span>verify 명령 결과를 세션 상태에 남김</span></div></div>
-    </div></div>
-  <div class="mo"><div class="dot"><span>끝내려<br>할 때</span></div><h3>Stop</h3>
-    <div class="locks"><div class="lock block"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="14" fill="var(--sun)" stroke="var(--ink)" stroke-width="2.5"/><path d="M20 10 v10 l7 4" fill="none" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/></svg><div><b>"다 했어요" 전에 맛보기</b><span>편집 후 성공한 검증이 없으면 멈춤 (옵션)</span></div></div></div></div>
+      <div class="lk">
+        <svg viewBox="0 0 40 40"><rect x="5" y="8" width="30" height="22" rx="4" fill="var(--ink)"/><path d="M10 15 l5 4 l-5 4" fill="none" stroke="var(--mint)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><line x1="18" y1="24" x2="26" y2="24" stroke="var(--sun)" stroke-width="2.5" stroke-linecap="round"/><rect x="24" y="23" width="13" height="11" rx="2.5" fill="var(--stop)" stroke="#fff" stroke-width="1.5"/><path d="M27.5 23 v-3 q0 -4 3 -4 q3 0 3 4 v3" fill="none" stroke="var(--ink)" stroke-width="2"/></svg>
+        <div><b>셸로 고치거나 지워도 막음</b><span>잠긴 테스트와 설계 전 코드에 <code>rm</code>, <code>mv</code>, <code>cp</code>, <code>sed -i</code>, <code>tee</code>, 리다이렉션, <code>git rm/checkout/restore</code></span></div></div>
+      <div class="lk">
+        <svg viewBox="0 0 40 40"><rect x="8" y="12" width="24" height="18" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M8 21 h24" stroke="var(--ink)" stroke-width="2"/><text x="20" y="19" text-anchor="middle" font-size="7">main</text><path d="M15 28 l10 -6 M15 22 l10 6" stroke="var(--stop)" stroke-width="2.5" stroke-linecap="round"/></svg>
+        <div><b>정문은 잠겨 있어요</b><span>기본 브랜치로 직접 push 차단 — 브랜치 + PR 로만</span></div></div>
+      <div class="lk">
+        <svg viewBox="0 0 40 40"><rect x="7" y="13" width="26" height="18" rx="4" fill="var(--paper)" stroke="var(--ink)" stroke-width="2"/><rect x="14" y="7" width="12" height="10" rx="6" fill="none" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="8">PROD</text></svg>
+        <div><b>홀로 나가는 문</b><span>운영 배포 명령은 <code>RELEASE_APPROVAL</code> 없이는 차단</span></div></div>
+      <div class="lk">
+        <svg viewBox="0 0 40 40"><circle cx="13" cy="20" r="7" fill="var(--sun)" stroke="var(--ink)" stroke-width="2.5"/><circle cx="13" cy="20" r="2.2" fill="var(--ink)"/><path d="M20 20 h16 M30 20 v6 M35 20 v5" stroke="var(--ink)" stroke-width="3" stroke-linecap="round" fill="none"/></svg>
+        <div><b>커밋에도 열쇠 금지</b><span><code>git commit</code> 이 가져갈 변경을 비밀 스캔<br>같은 줄의 <code>git add</code>·<code>-a</code> 까지</span></div></div>
+    </div>
+  </div>
 </div>
-<div class="legend"><span><i style="background:var(--paper-2);border:2px solid var(--stop)"></i>막을 수 있음 — 차단 메시지: 무엇을 · 왜 · 어떻게 풀지</span><span><i style="background:var(--paper-2);border:2px solid var(--line)"></i>기록·도움만</span><span>· 모든 결정은 <code>.sdlc/logs/events.jsonl</code></span></div>
+
+<div class="closed">
+  <svg viewBox="0 0 46 46"><rect x="8" y="5" width="30" height="38" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="3"/><circle cx="31" cy="25" r="2.6" fill="var(--ink)"/><rect x="2" y="21" width="14" height="11" rx="2.5" fill="var(--stop)" stroke="var(--ink)" stroke-width="2"/><path d="M5 21 v-3 q0 -4 4 -4 q4 0 4 4 v3" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg>
+  <div style="display:flex;align-items:center;gap:12px"><div><b>둘 다 fail closed</b> <span>— 가드가 죽거나 시간 초과면 "통과" 가 아니라 "차단" 입니다</span></div><code style="margin-left:auto;background:#fff;font-size:13px">onFailure: block · Claude Code 2.1.295+</code></div>
+</div>
+
+<div class="back">
+  <svg viewBox="0 0 64 64"><rect x="6" y="12" width="52" height="40" rx="7" fill="#2C3A31" stroke="#E9EFE8" stroke-width="3"/><path d="M16 26 l8 6 l-8 6" fill="none" stroke="var(--mint)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><line x1="30" y1="40" x2="44" y2="40" stroke="var(--sun)" stroke-width="4" stroke-linecap="round"/></svg>
+  <div><b>마지막 안전망 — 게이트의 테스트 무결성 검사</b><span>훅 잠금은 sdlc 작업 중의 조기 경고이고 셸 해석은 최선일 뿐입니다 (변수 간접 참조 · <code>find -exec</code> · <code>xargs</code> · <code>python -c</code> · <code>patch</code> 는 못 봄).<br>강제는 게이트입니다 — <code>base...head</code> 를 비교해 기존 테스트 변경을 사람에게 넘깁니다.</span></div>
+</div>
+
+<div class="others">
+  <div class="lab">그 밖의 훅<small>기록과 도움</small></div>
+  <div class="mini"><svg viewBox="0 0 30 30"><path d="M6 22 l9 -9 l3 3 l-9 9 h-3z" fill="var(--sun)" stroke="var(--ink)" stroke-width="2" stroke-linejoin="round"/><path d="M18 8 l3 -3 l4 4 l-3 3z" fill="var(--mint)" stroke="var(--ink)" stroke-width="2" stroke-linejoin="round"/></svg><div><code>post-edit</code><span>편집 직후 포매터</span></div></div>
+  <div class="mini"><svg viewBox="0 0 30 30"><path d="M6 16 l6 6 l12 -14" fill="none" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div><code>post-bash</code><span>검증 명령 결과 기록</span></div></div>
+  <div class="mini"><svg viewBox="0 0 30 30"><circle cx="15" cy="15" r="11" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><path d="M15 8 v7 l5 3" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round"/></svg><div><code>stop-verify</code><span>끝내기 전 검증 확인</span></div></div>
+  <div class="mini"><svg viewBox="0 0 30 30"><path d="M5 22 q0 -12 10 -12 q10 0 10 12z" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><circle cx="15" cy="25" r="2" fill="var(--ink)"/></svg><div><code>session-start/end</code><span>규칙 요약 주입 · 기록</span></div></div>
+</div>
 </body></html>

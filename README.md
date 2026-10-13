@@ -1,90 +1,70 @@
 # ai-native-sdlc — Claude Code 플러그인 마켓플레이스
 
-Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook)(Louis Claxton, 2026-08-21; acknowledgments Jim Blackhurst, Will Steuk, Jamal Arif)을
-어느 저장소에나 설치할 수 있는 **Claude Code 플러그인**으로 옮긴 마켓플레이스입니다.
-플레이북의 요지는 한 문장입니다. 코드 작성은 더 이상 병목이 아니므로, 그 앞뒤의 계획·검토·배포 단계도
-같은 속도로 돌아가야 하고, 그 방법은 **모든 단계가 커밋되는 아티팩트로 끝나는 루프**(intent → spec → plan → diff+tests → PR+review → incident)를 만들되
-사람은 판단이 필요한 지점에만 서 있는 것입니다.
+이 마켓플레이스에는 플러그인이 하나 있습니다. `sdlc` 는 말로 시키면 변경 하나가 작업 문서 한 장으로 구현·리뷰를 거쳐 머지까지 가게 하고, 여러 건은 백그라운드 루프가 큐로 처리하게 합니다. 합격은 세션의 보고가 아니라 셸 머지 게이트가 정합니다.
+Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook)(Louis Claxton, 2026-08-21; acknowledgments Jim Blackhurst, Will Steuk, Jamal Arif)에서 루프 발상을 따왔습니다. 원문의 저작권은 Anthropic 에 있습니다.
 
-쓰는 쪽에서 보이는 것은 두 명령입니다. 저장소마다 `/sdlc:init` 한 번, 변경마다 `/sdlc:go "요청 한 문장"` 한 줄. 훅 가드레일·AI 리뷰·evals·배포 게이트는 그 밑에서 플레이북대로 자동으로 걸립니다.
-
-<p align="center"><img src="docs/img/01-two-commands.png" alt="두 명령이 전부: /sdlc:init 한 번, /sdlc:go 한 줄, 사람이 답하는 곳 넷" width="1000"></p>
-
-<p align="center"><a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html"><img src="docs/img/06-archify-architecture.png" alt="Archify 구성도: 개발자 → 스킬 19 → 작업 브랜치(코드·아티팩트) → Pull Request → Actions 7; 훅 7과 관리형 설정이 강제 층, .sdlc/config.json 이 유일한 설정" width="1000"></a><br><sub>Archify 로 그린 구성도 — <a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html">클릭하면 확대·검색·경로 추적이 되는 인터랙티브 판</a> (뷰어 UI 는 영어)</sub></p>
-
-<p align="center"><img src="docs/img/05-architecture.png" alt="구성: 개발자 기기의 플러그인(스킬 19·에이전트 5·훅 7·스크립트) → 프로젝트 저장소(config.json 단일 설정·CLAUDE.md·아티팩트 체인) → GitHub(PR·룰셋, 선택으로 Actions), 아래 관리형 설정 층" width="1000"></p>
-
-이 마켓플레이스에는 플러그인이 하나 있습니다.
+<p align="center"><img src="docs/img/01-usage.png" alt="말로 시키면 됩니다: init 은 저장소마다 한 번, go 는 한 건을 이 세션에서, run 은 여러 건을 백그라운드로, status 는 언제든. 사람이 답하는 곳은 질문, 사람 확인이 필요한 PR, 팀 저장소의 설계 승인과 머지" width="1000"></p>
 
 | 플러그인 | 설명 | 설명서 |
 |---|---|---|
-| `sdlc` | `/sdlc:init` 한 번으로 새 프로젝트든 기존 프로젝트든 비파괴로 채택하고(GitHub 원격·1인 저장소 자동 감지, 룰셋·auto-merge 설정; Claude 는 기본으로 로컬에서만 실행), 변경마다 `/sdlc:go "요청 한 문장"` 이 intent → spec → plan → 구현 → 검증 → 리뷰 → PR 을 한 세션에서 끝냅니다. 스킬 19종(`/sdlc:run` 무인 루프 포함)·에이전트 5종·훅 7종·CI 템플릿 7종·기업 관리형 설정 템플릿 | [plugins/sdlc/README.md](plugins/sdlc/README.md) |
+| `sdlc` | 말로 시키면 변경 하나가 작업 문서 한 장으로 구현·리뷰를 거쳐 머지까지 갑니다. 스킬은 init·go·run·status 네 개. 합격은 세션의 보고가 아니라 셸 머지 게이트가 정하고, 여러 건은 백그라운드 루프가 큐로 처리하며, 사람은 판단이 필요한 곳에서만 답합니다. 훅 7종이 보호 경로·테스트 잠금·비밀·기본 브랜치 직접 push 를 막습니다. | [plugins/sdlc/README.md](plugins/sdlc/README.md) |
 
-## 설치 (3줄)
+## 설치
 
 ```bash
-claude plugin marketplace add freewisl/ai-native-sdlc   # 이 저장소(github.com). 로컬 체크아웃으로 시험할 때는 경로를 대신 넣습니다
+claude plugin marketplace add freewisl/ai-native-sdlc
 claude plugin install sdlc@ai-native-sdlc
-# 아무 저장소에서 claude 를 열고:  /sdlc:init   →   /sdlc:go "요청 한 줄"   (1인 저장소는 이것만으로 머지까지)
+# 아무 저장소에서 claude 를 열고:  /sdlc:init   →   /sdlc:go "요청 한 줄"   또는   /sdlc:run "목표"
 ```
 
-`/sdlc:init` 이 GitHub 원격·협업자 수를 감지해 CODEOWNERS·룰셋·auto-merge 까지 설정하고 채택 커밋을 PR 로 올립니다. Claude 는 기본으로 이 컴퓨터에서만 돌고
-(`ci.mode: local`) CI 시크릿도 만들지 않습니다 — Actions 에서도 돌리려면 `--ci github`. 사람이 하는 것은 계정당 한 번의 GitHub 로그인 승인뿐입니다.
-설치 후에는 어느 프로젝트에서든 `/sdlc:` 로 시작하는 스킬을 쓸 수 있고, 훅은 자동으로 등록됩니다.
+저장소마다 `/sdlc:init` 을 한 번 실행합니다. 0.x 를 쓰던 저장소도 같습니다([0.x 에서 올리기](plugins/sdlc/README.md#0x-에서-올리기)).
 
-## 설치 없이 로컬에서 시험
+## 설치 없이 시험
 
 ```bash
 claude --plugin-dir /path/to/ai-native-sdlc/plugins/sdlc
 ```
 
-플러그인 루트를 직접 지정하면 마켓플레이스에 등록하지 않고도 그 세션에서 스킬·훅·에이전트를 모두 사용할 수 있습니다.
-플러그인을 고치면서 바로 확인할 때 쓰는 방법입니다. 매니페스트 검증은 다음과 같이 합니다.
+플러그인을 고치면서 그 세션에서 바로 확인할 때만 쓰는 방법입니다. 다른 저장소는 이 체크아웃이 아니라 위에서 설치한 릴리스본을 씁니다. 고친 것을 거기에 반영하려면 아래 릴리스 절차로 올립니다.
+
+## 검증
 
 ```bash
 claude plugin validate plugins/sdlc --strict
-claude plugin validate . --strict          # 마켓플레이스(.claude-plugin/marketplace.json) 검증
+claude plugin validate . --strict          # 마켓플레이스(.claude-plugin/marketplace.json)
+bash plugins/sdlc/tests/run.sh             # 훅 매트릭스 · 구조·비밀 스캔 검사 · 엔진 단위 테스트
 ```
-
-## 팀·기업 배포
-
-- **팀**: 프로젝트의 `.claude/settings.json` 에 `extraKnownMarketplaces` 와 `enabledPlugins` 를 넣으면 저장소를 여는 모든 팀원에게 설치가 안내됩니다.
-- **기업**: 관리형 설정의 `strictKnownMarketplaces` 로 승인된 마켓플레이스만 허용하고, `disableSideloadFlags` 로 `--plugin-dir` 같은 우회를 막습니다.
-
-자세한 절차는 [플러그인 README 의 설치 절](plugins/sdlc/README.md#설치)과 [docs/ENTERPRISE.md](docs/ENTERPRISE.md) 를 보십시오.
 
 ## 문서
 
 | 문서 | 내용 |
 |---|---|
-| [plugins/sdlc/README.md](plugins/sdlc/README.md) | 플러그인 사용 설명서: 설치, 빠른 시작, 플레이 대응표, 스킬·훅 표, 설정 레퍼런스, CI 템플릿, 측정, FAQ |
-| [docs/ENTERPRISE.md](docs/ENTERPRISE.md) | 규제 기업용 3계층(permissions / sandbox / managed) 배포 가이드, OTel, Managed MCP, Bedrock·Vertex·Foundry |
-| [docs/PLAYBOOK-MAPPING.md](docs/PLAYBOOK-MAPPING.md) | 블로그 요구사항(R-ID) → 플러그인 구성요소 대응표(감사 산출물) |
-| [그림으로 보는 플레이북 6단계](https://freewisl.github.io/ai-native-sdlc/eli5.html) | 다섯 살 버전 설명 — GitHub Pages 로 렌더링(원본 `docs/eli5.html`) |
-| [그림으로 보는 이 플러그인](https://freewisl.github.io/ai-native-sdlc/eli5-plugin.html) | 상자를 열면 무엇이 생기고 두 마디로 어떻게 쓰는지(원본 `docs/eli5-plugin.html`) |
-| [인터랙티브 구성도 (Archify)](https://freewisl.github.io/ai-native-sdlc/archify-architecture.html) | 확대·검색·경로 추적이 되는 구성도. 원본 `docs/img/archify/sdlc-architecture.json`, 산출 `docs/archify-architecture.html` |
-| [docs/img/](docs/img/) | README 그림 6장(PNG)과 원본(`src/*.html`, `archify/*.json`) — 다시 뽑는 법은 `docs/img/README.md` |
+| [plugins/sdlc/README.md](plugins/sdlc/README.md) | 플러그인 사용 설명서: 설치·업데이트, 빠른 시작, 루프, 머지 게이트, 훅, 설정, 0.x 에서 올리기 |
+| [그림으로 보는 플레이북](https://freewisl.github.io/ai-native-sdlc/eli5.html) | 플레이북을 쉬운 말로 풀어 쓴 페이지 (원본 `docs/eli5.html`) |
+| [docs/redesign-1.0.md](docs/redesign-1.0.md) | 1.0 설계 기록: 사용법이 너무 복잡하다는 지적에서 스킬 19개를 4개로, 단계 파일을 작업 문서 한 장으로 줄인 과정 |
 | [plugins/sdlc/CHANGELOG.md](plugins/sdlc/CHANGELOG.md) | 변경 이력 |
 
 ## 저장소 구성
 
-```
+```text
 .claude-plugin/marketplace.json   마켓플레이스 매니페스트 (name: ai-native-sdlc)
 plugins/sdlc/                     플러그인 루트 — skills/ agents/ hooks/ scripts/ templates/ evals/ tests/
-docs/                             ENTERPRISE.md · PLAYBOOK-MAPPING.md · eli5*.html · archify-architecture.html (GitHub Pages) · img/ (README 그림 원본)
-_workspace/                       요구사항 매트릭스·설계서·감사 보고·최종 검토와 반영 기록(작업 문서)
+docs/                             redesign-1.0.md · eli5.html · img/ (README 그림과 원본)
+_workspace/                       0.x 개발 때의 작업 노트 (요구사항·설계·감사 기록)
 ```
 
-라이선스: MIT (`plugins/sdlc/LICENSE`). 원문 플레이북의 저작권은 Anthropic 에 있으며, 이 플러그인은 그 절차를 도구로 옮긴 것입니다.
+## 릴리스
 
-## 갱신(릴리스) 절차
+설치본은 마켓플레이스에서 복사한 스냅숏(`~/.claude/plugins/cache/ai-native-sdlc/sdlc/<버전>/`)이라 소스를 고쳐도 자동 반영되지 않습니다. 고친 뒤에는:
 
-설치본은 마켓플레이스에서 **복사된 스냅숏**(`~/.claude/plugins/cache/ai-native-sdlc/sdlc/<version>/`)이라 소스를 고쳐도 자동 반영되지 않습니다. 바꾼 뒤에는:
+1. `plugins/sdlc/.claude-plugin/plugin.json` 의 `version` 과 `.claude-plugin/marketplace.json` 의 `metadata.version` 을 함께 올리고 `plugins/sdlc/CHANGELOG.md` 에 항목을 더합니다. 버전이 같으면 update 가 "already latest"라고 합니다.
+2. `bash plugins/sdlc/tests/run.sh` 와 위의 `claude plugin validate` 두 줄을 통과시킵니다.
+3. push 합니다.
+4. 플러그인을 쓰는 곳마다(기기, 팀원, 루프를 돌리는 서버) 업데이트합니다.
 
 ```bash
-# 1) 버전 올리기 — plugins/sdlc/.claude-plugin/plugin.json 과 .claude-plugin/marketplace.json 의 version (같은 버전이면 update 가 "already latest")
-# 2) 사용자 쪽
 claude plugin marketplace update ai-native-sdlc
-claude plugin update sdlc@ai-native-sdlc      # → "Restart to apply changes"; 열려 있는 세션은 /reload-plugins 또는 재시작
+claude plugin update sdlc@ai-native-sdlc      # 열려 있는 세션은 /reload-plugins 또는 재시작
 ```
-`bash plugins/sdlc/tests/run.sh` 와 `claude plugin validate plugins/sdlc --strict` 를 통과한 뒤 올리십시오.
+
+라이선스: MIT ([plugins/sdlc/LICENSE](plugins/sdlc/LICENSE)).

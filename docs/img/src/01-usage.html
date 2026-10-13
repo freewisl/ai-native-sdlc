@@ -1,0 +1,113 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>쓰는 법</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
+<style>
+body{height:966px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+.panel{background:var(--paper-2);border-radius:22px;padding:20px 24px 22px;display:grid;gap:12px;align-content:start}
+.panel .head{display:flex;align-items:center;gap:16px}
+.panel .head svg{width:62px;height:62px;flex:none}
+.panel .head h2{font-size:23px}
+.panel code{background:rgba(255,255,255,.75)}
+.say-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 0;font-size:14px;color:var(--soft)}
+.say-row .say{margin-left:14px}
+.say-row .say + .say{margin-left:16px}
+.items{display:grid;gap:8px;font-size:15px;line-height:1.4}
+.items div{display:grid;grid-template-columns:26px 1fr;gap:10px;align-items:start}
+.items i{width:26px;height:26px;border-radius:7px;background:var(--sun);display:grid;place-items:center;font-family:"Jua",sans-serif;font-style:normal;font-size:14px;color:var(--ink)}
+.chain{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;position:relative;margin-top:2px}
+.chain:before{content:"";position:absolute;left:8%;right:8%;top:25px;height:4px;background:var(--line);border-radius:2px}
+.step{display:grid;justify-items:center;gap:4px;text-align:center;font-size:14px;line-height:1.25;position:relative}
+.step svg{width:52px;height:52px;background:var(--paper-2);border-radius:50%;padding:3px}
+.step b{font-family:"Jua",sans-serif;font-weight:400;font-size:15px}
+.fine{font-size:13.5px;color:var(--soft)}
+.human{margin-top:18px;padding:14px 20px 16px;display:grid;grid-template-columns:230px 1fr;gap:22px;align-items:center}
+.human .lead b{font-size:22px;display:block;margin-bottom:2px}
+.human .lead span{font-size:14px;color:#7A5A00}
+.human .cols{display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:18px}
+.human .cols div{font-size:14.5px;line-height:1.4;border-left:3px solid #C9A227;padding-left:12px}
+.human .cols b{font-size:16px;display:block}
+</style></head><body>
+<div class="top">
+  <div><span class="tag">sdlc 플러그인 · 쓰는 법</span><h1>말로 시키면 됩니다</h1></div>
+  <p class="note">명령은 넷뿐이고, 슬래시 명령으로 불러도 평소 말투로 시켜도<br>같은 스킬이 켜집니다. 사람은 답이 필요한 곳에서만 답합니다.</p>
+</div>
+
+<div class="grid">
+  <!-- init -->
+  <div class="panel">
+    <div class="head">
+      <svg viewBox="0 0 64 64"><rect x="8" y="26" width="48" height="28" rx="6" fill="var(--accent)" stroke="var(--ink)" stroke-width="3"/><path d="M10 26 l6 -12 h32 l6 12z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><text x="32" y="46" text-anchor="middle" font-size="12" fill="#fff" style="fill:#fff">1회</text></svg>
+      <div><div class="tag">저장소마다 한 번</div><h2><code>/sdlc:init</code></h2></div>
+    </div>
+    <div class="say-row">또는 말로<span class="say">sdlc 붙여줘</span><span class="say">점검해줘</span></div>
+    <div class="items">
+      <div><i>감</i><span><b>감지</b> — build · test · lint 명령을 찾아 <code>.sdlc/config.json</code> 에 기록</span></div>
+      <div><i>문</i><span><b>문서</b> — CLAUDE.md 절 · REVIEW.md · work/README.md<br>있는 글은 건드리지 않음</span></div>
+      <div><i>이</i><span><b>이전</b> — 0.x 저장소면 예전 intent·spec·plan 을 작업 문서로</span></div>
+      <div><i>G</i><span><b>GitHub</b> — 원격이면 룰셋 · auto-merge 설정을 제안</span></div>
+      <div><i>점</i><span><b>점검</b> — <code>--check</code> 로 빠진 것과 고치는 법을 알려줌</span></div>
+    </div>
+  </div>
+
+  <!-- go -->
+  <div class="panel">
+    <div class="head">
+      <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="var(--line)" stroke-width="5"/><path d="M32 8 a24 24 0 0 1 24 24" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/><path d="M52 26 l4 6 l6 -4" fill="none" stroke="var(--accent)" stroke-width="4"/><text x="32" y="38" text-anchor="middle" font-size="16">go</text></svg>
+      <div><div class="tag">한 건 · 이 세션에서</div><h2><code>/sdlc:go "요청"</code></h2></div>
+    </div>
+    <div class="say-row">또는 말로<span class="say">X 해줘</span></div>
+    <div class="chain">
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="14" y="8" width="36" height="48" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="3"/><circle cx="32" cy="8" r="4" fill="var(--stop)"/><g stroke="var(--ink)" stroke-width="3" stroke-linecap="round"><line x1="22" y1="24" x2="42" y2="24"/><line x1="22" y1="34" x2="38" y2="34"/><line x1="22" y1="44" x2="42" y2="44"/></g></svg><b>작업 문서</b></div>
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="10" y="12" width="44" height="40" rx="6" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g font-size="11"><text x="16" y="26">1.</text><text x="16" y="38">2.</text><text x="16" y="50">3.</text></g><g stroke="var(--ink)" stroke-width="3"><line x1="28" y1="23" x2="48" y2="23"/><line x1="28" y1="35" x2="48" y2="35"/><line x1="28" y1="47" x2="42" y2="47"/></g></svg><b>설계</b></div>
+      <div class="step"><svg viewBox="0 0 64 64"><path d="M14 40 q0 -18 18 -18 q18 0 18 18 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><rect x="10" y="40" width="44" height="8" rx="3" fill="var(--ink)"/><path d="M26 22 q6 -10 12 0" fill="none" stroke="var(--ink)" stroke-width="3"/></svg><b>구현</b></div>
+      <div class="step"><svg viewBox="0 0 64 64"><circle cx="24" cy="26" r="12" fill="#fff" stroke="var(--ink)" stroke-width="3"/><path d="M33 35 l14 14" stroke="var(--ink)" stroke-width="5" stroke-linecap="round"/><path d="M18 26 l4 4 l8 -8" fill="none" stroke="var(--ok)" stroke-width="3"/></svg><b>리뷰</b></div>
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="6" y="12" width="52" height="40" rx="7" fill="var(--ink)" stroke="var(--ink)" stroke-width="3"/><path d="M16 26 l8 6 l-8 6" fill="none" stroke="var(--mint)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><line x1="30" y1="40" x2="44" y2="40" stroke="var(--sun)" stroke-width="4" stroke-linecap="round"/></svg><b>셸 게이트</b></div>
+      <div class="step"><svg viewBox="0 0 64 64"><rect x="10" y="14" width="44" height="36" rx="8" fill="#fff" stroke="var(--ink)" stroke-width="3"/><g stroke="var(--ink)" stroke-width="3"><line x1="20" y1="26" x2="44" y2="26"/><line x1="20" y1="36" x2="36" y2="36"/></g><circle cx="44" cy="42" r="8" fill="var(--ok)"/><path d="M40 42 l3 3 l6 -6" fill="none" stroke="#fff" stroke-width="3"/></svg><b>PR · 머지</b></div>
+    </div>
+    <div class="items">
+      <div><i>✓</i><span>합격은 세션의 보고가 아니라 <b>셸이 직접 다시 돌려</b> 정합니다</span></div>
+      <div><i>기</i><span>기록은 <code>work/&lt;slug&gt;.md</code> 한 파일, 작업은 브랜치 <code>sdlc/&lt;slug&gt;</code> 에서</span></div>
+      <div><i>팀</i><span>팀 저장소는 설계를 보여주고 OK 를 받은 뒤 진행, 머지는 사람</span></div>
+    </div>
+  </div>
+
+  <!-- run -->
+  <div class="panel">
+    <div class="head">
+      <svg viewBox="0 0 64 64"><path d="M50 24 A20 20 0 1 0 52 36" fill="none" stroke="var(--accent)" stroke-width="6" stroke-linecap="round"/><path d="M53 9 v16 h-16" fill="none" stroke="var(--accent)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M27 23 l15 9 l-15 9z" fill="var(--sun)" stroke="var(--ink)" stroke-width="3" stroke-linejoin="round"/></svg>
+      <div><div class="tag">여러 건 · 백그라운드</div><h2><code>/sdlc:run "목표"</code></h2></div>
+    </div>
+    <div class="say-row">또는 말로<span class="say">X 만들어, 알아서 채우고 돌려</span><span class="say">큐에 넣어</span><span style="margin-left:8px;font-size:13px">← 큐에만</span></div>
+    <div class="items">
+      <div><i>1</i><span>목표를 <b>PR 하나 크기의 작업 문서 여러 개</b>로 나눠 큐에 넣고</span></div>
+      <div><i>2</i><span><b>백그라운드 루프</b>를 시작<br>항목마다 새 세션으로 설계 → 구현 → 게이트 → 머지</span></div>
+      <div><i>3</i><span>답이 필요한 항목은 <b>보류</b>하고 다음 항목으로 — 자리를 비워도 됩니다</span></div>
+    </div>
+  </div>
+
+  <!-- status -->
+  <div class="panel">
+    <div class="head">
+      <svg viewBox="0 0 64 64"><rect x="8" y="10" width="48" height="44" rx="7" fill="#fff" stroke="var(--ink)" stroke-width="3"/><rect x="16" y="34" width="8" height="12" fill="var(--mint)" stroke="var(--ink)" stroke-width="2"/><rect x="28" y="26" width="8" height="20" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><rect x="40" y="18" width="8" height="28" fill="var(--accent)" stroke="var(--ink)" stroke-width="2"/></svg>
+      <div><div class="tag">언제든</div><h2><code>/sdlc:status</code></h2></div>
+    </div>
+    <div class="say-row">또는 말로<span class="say">어디까지 됐어?</span></div>
+    <div class="items">
+      <div><i>진</i><span><b>진행</b> — 루프가 지금 어느 항목·단계인지, 큐 현황</span></div>
+      <div><i>나</i><span><b>나에게 필요한 것</b> — 질문 · 사람 몫 PR · 막힌 항목, 답하는 방법과 함께</span></div>
+      <div><i>$</i><span><b>비용</b> — 오늘 · 7일 · 항목당 중앙값</span></div>
+    </div>
+    <div class="say-row">루프는 말로<span class="say">멈춰</span><span class="say">이어서 돌려</span><span style="margin-left:10px;font-size:13px">← 그 자리에서 이어 감</span></div>
+  </div>
+</div>
+
+<div class="human">
+  <div class="lead"><b>사람이 답하는 곳</b><span>나머지는 묻지 않습니다.</span></div>
+  <div class="cols">
+    <div><b>질문</b>객관식, 추천 답이 맨 앞</div>
+    <div><b>사람 확인이 필요한 PR</b>인수 조건 변경 · 새 의존성<br>위험 경로 · 가드 파일 · 기존 테스트 변경</div>
+    <div><b>팀 저장소</b>설계 승인과 머지</div>
+  </div>
+</div>
+<p class="foot">github.com/freewisl/ai-native-sdlc · sdlc 1.0</p>
+</body></html>

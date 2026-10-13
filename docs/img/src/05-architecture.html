@@ -1,55 +1,101 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>구성</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
 <style>
-body{height:900px}
-.cols{display:grid;grid-template-columns:1fr 54px 1fr 54px 1fr;gap:0;margin-top:22px;align-items:stretch}
-.col{background:var(--paper-2);border-radius:22px;padding:18px 18px 14px;display:grid;gap:10px;align-content:start}
-.col .head{display:grid;gap:2px;margin-bottom:4px}
-.col .head small{font-size:12.5px;color:var(--soft)}
-.box{background:#fff;border-radius:14px;padding:10px 12px;display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:center;border:2px solid transparent}
-.box svg{width:34px;height:34px}
-.box b{font-family:"Jua",sans-serif;font-weight:400;font-size:15.5px;display:block}
-.box span{font-size:12.5px;color:var(--soft);line-height:1.3}
+body{height:824px}
+.cols{display:grid;grid-template-columns:1.2fr 46px 1.02fr 46px 1.04fr 46px .94fr;gap:0;margin-top:22px;align-items:stretch}
+.col{background:var(--paper-2);border-radius:22px;padding:16px 14px 16px;display:grid;gap:10px;grid-template-rows:min-content;grid-auto-rows:auto;align-content:stretch}
+.col .head{display:grid;gap:3px;margin-bottom:2px;padding:0 4px;min-height:66px;align-content:start}
+.col .head h3{font-size:19px;line-height:1.2}
+.col .head small{font-size:12.5px;color:var(--soft);line-height:1.4}
+.col code{background:rgba(255,255,255,.75)}
+.box{background:#fff;border-radius:14px;padding:9px 11px 10px;align-content:center;display:grid;grid-template-columns:26px 1fr;column-gap:9px;row-gap:4px;align-items:center;border:2px solid transparent}
+.box svg{width:26px;height:26px}
+.box b{font-family:"Jua",sans-serif;font-weight:400;font-size:16px;line-height:1.25}
+.box > span,.box > .d{grid-column:1 / -1;font-size:13.5px;color:var(--soft);line-height:1.4;display:block}
+.box code{font-size:12px;padding:1px 4px;background:var(--paper-2)}
 .box.advise{border-color:var(--mint)}
 .box.force{border-color:var(--stop)}
 .box.core{border-color:var(--accent)}
-.gap{display:grid;align-content:center;justify-items:center;gap:6px;color:var(--accent)}
-.gap .ar{font-family:"Jua",sans-serif;font-size:30px;line-height:1}
-.gap small{font-size:11.5px;color:var(--soft);text-align:center;line-height:1.25;writing-mode:vertical-rl;text-orientation:upright;letter-spacing:-.05em}
-.band{margin-top:14px;background:#E6EAF9;border:2px solid var(--accent);border-radius:16px;padding:10px 16px;display:flex;gap:16px;align-items:center;font-size:14px}
-.band b{font-family:"Jua",sans-serif;font-weight:400;color:var(--accent);font-size:16px;white-space:nowrap}
-.band span{color:var(--soft)}
+.box.dev{border-color:var(--sun);background:#FFF8E0}
+.box .m{font-size:11.5px;padding:2px 7px 3px;margin:0 2px}
+.nb{white-space:nowrap}
+.box > .ag{display:grid;gap:3px}
+.gap{display:grid;align-content:center;justify-items:center;gap:30px;color:var(--accent)}
+.gap .ln{display:grid;justify-items:center;gap:6px}
+.gap svg{width:38px;height:16px}
+.gap small{font-size:12.5px;color:var(--soft);writing-mode:vertical-rl;letter-spacing:.02em;line-height:1.2}
+.models{margin-top:16px;background:#E6EAF9;border:2px solid var(--accent);border-radius:16px;padding:11px 18px;display:flex;gap:10px 18px;align-items:center;flex-wrap:wrap;font-size:15px}
+.models b{font-family:"Jua",sans-serif;font-weight:400;color:var(--accent);font-size:17px;white-space:nowrap}
+.models .it{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.models .sep{color:var(--soft)}
+.models .up{color:var(--stop);font-size:14px}
+.legend{margin-top:14px}
 </style></head><body>
-<div style="display:flex;justify-content:space-between;align-items:end">
-  <div><span class="tag">구성 · 세 층</span><h1>어디에 무엇이 있고, 무엇이 무엇을 읽는가</h1></div>
-  <p class="soft" style="font-size:15px;max-width:560px;text-align:right">플러그인은 기기에, 설정과 아티팩트는 프로젝트 저장소에,<br>게이트의 마지막 줄은 GitHub 에 있습니다.</p>
+<div class="top">
+  <div><span class="tag">구성 · 네 층</span><h1>어디에 무엇이 있고, 누가 누구를 부르는가</h1></div>
+  <p class="note">플러그인은 기기에, 엔진은 플러그인 안에, 기록은 저장소에,<br>마지막 줄은 GitHub(원격이 없으면 로컬 머지)에 있습니다.</p>
 </div>
+
 <div class="cols">
+  <!-- A: the developer's machine -->
   <div class="col">
-    <div class="head"><h3>Claude Code · 개발자 기기</h3><small>플러그인 <code>sdlc@ai-native-sdlc</code> — 마켓플레이스에서 설치, 모든 프로젝트에 공통</small></div>
-    <div class="box advise"><svg viewBox="0 0 40 40"><rect x="8" y="6" width="24" height="28" rx="4" fill="var(--mint)" stroke="var(--ink)" stroke-width="2"/><path d="M14 16 h12 M14 22 h12 M14 28 h8" stroke="var(--ink)" stroke-width="2"/></svg><div><b>스킬 19 — 권고</b><span>init · go · run 과 단계 스킬(intent…release). 절차와 말을 정함</span></div></div>
-    <div class="box advise"><svg viewBox="0 0 40 40"><circle cx="20" cy="15" r="8" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><path d="M8 36 q12 -14 24 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="2"/></svg><div><b>에이전트 5 — 새 문맥</b><span>verifier · reviewer · diagnoser · researcher · simplifier. 보고만, 승인 없음</span></div></div>
-    <div class="box force"><svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg><div><b>훅 7 — 결정론 강제</b><span>Edit · Bash · Stop 을 가로채 막거나 기록. 세션마다 자동</span></div></div>
-    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="8" width="28" height="24" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M11 15 l5 4 l-5 4 M18 23 h10" stroke="var(--ink)" stroke-width="2" fill="none"/></svg><div><b>스크립트</b><span>init · doctor · github-setup · run-loop · run-evals · monitor · metrics</span></div></div>
+    <div class="head"><h3>Claude Code · 개발자 기기</h3><small>플러그인 <code>sdlc@ai-native-sdlc</code><br>마켓플레이스에서 설치 — 프로젝트 공통</small></div>
+    <div class="box dev"><svg viewBox="0 0 64 64"><circle cx="32" cy="22" r="11" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M10 56 q0 -20 22 -20 q22 0 22 20z" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/></svg><b>개발자</b><span><code>/sdlc:go</code> <code>/sdlc:run</code><br>또는 말로 시킴</span></div>
+    <div class="box advise"><svg viewBox="0 0 40 40"><rect x="8" y="6" width="24" height="28" rx="4" fill="var(--mint)" stroke="var(--ink)" stroke-width="2"/><path d="M14 16 h12 M14 22 h12 M14 28 h8" stroke="var(--ink)" stroke-width="2"/></svg><b>스킬 4 — 권고</b><span>init · go · run · status<br>절차와 말을 정하고 엔진을 부름</span></div>
+    <div class="box advise"><svg viewBox="0 0 40 40"><circle cx="20" cy="15" r="8" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><path d="M8 36 q12 -14 24 0" fill="var(--mint)" stroke="var(--ink)" stroke-width="2"/></svg><b>에이전트 5 — 새 문맥</b><span class="ag"><span>reviewer <span class="m opus">opus</span></span><span>builder · verifier <span class="m sonnet">sonnet</span></span><span>simplifier <span class="m sonnet">sonnet</span></span><span>researcher <span class="m haiku">haiku</span></span></span></div>
+    <div class="box force"><svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg><b>훅 7 — 결정론 강제</b><span>편집 · 명령 · 종료를 가로채<br>막거나 기록. 세션마다 자동</span></div>
   </div>
-  <div class="gap"><div class="ar">→</div><small>설정을 읽고 아티팩트·코드를 쓴다</small></div>
-  <div class="col">
-    <div class="head"><h3>프로젝트 저장소</h3><small><code>/sdlc:init</code> 이 만든 것 — 전부 git 에 커밋, 프로젝트별 값은 여기만</small></div>
-    <div class="box core"><svg viewBox="0 0 40 40"><rect x="8" y="6" width="24" height="28" rx="4" fill="#fff" stroke="var(--accent)" stroke-width="2.5"/><text x="20" y="25" text-anchor="middle" font-size="9" fill="var(--accent)">{ }</text></svg><div><b>.sdlc/config.json — 유일한 설정</b><span>명령 · 보호 경로 · 환경 티어 · roles · ci.auth · loop. 훅·스킬·스크립트가 모두 이것을 읽음</span></div></div>
-    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="8" width="28" height="24" rx="3" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M11 15 h18 M11 21 h18 M11 27 h10" stroke="var(--ink)" stroke-width="2"/></svg><div><b>CLAUDE.md · REVIEW.md · APPROVALS.md</b><span>규칙표 5섹션 · 리뷰 3패스 규칙 · 승인 게이트 등록부</span></div></div>
-    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="10" width="12" height="16" rx="2" fill="var(--sun)" stroke="var(--ink)" stroke-width="1.5"/><rect x="14" y="13" width="12" height="16" rx="2" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="22" y="16" width="12" height="16" rx="2" fill="#fff" stroke="var(--ink)" stroke-width="1.5"/></svg><div><b>intent/ · spec/ · plan/</b><span>아티팩트 체인 = 감사 추적(누가 무엇을 요청·승인했나). <code>intent/triage/</code> 는 대기열</span></div></div>
-    <div class="box"><svg viewBox="0 0 40 40"><rect x="7" y="20" width="7" height="12" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="16" y="12" width="7" height="20" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="25" y="16" width="7" height="16" fill="var(--stop)" stroke="var(--ink)" stroke-width="1.5"/></svg><div><b>evals/ · bands.json · LESSONS.md</b><span>설정 회귀 테스트 · 감시 밴드 · 교훈 노트</span></div></div>
-    <div class="box"><svg viewBox="0 0 40 40"><rect x="7" y="8" width="26" height="24" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M12 20 l5 5 l11 -11" fill="none" stroke="var(--ok)" stroke-width="2.5"/></svg><div><b>.claude/settings.json · CODEOWNERS</b><span>안전한 명령의 사전 허용(훅은 넣지 않음) · 코드 오너 자리</span></div></div>
+
+  <div class="gap">
+    <div class="ln"><svg viewBox="0 0 40 16"><path d="M2 8 H32" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round"/><path d="M27 2 L37 8 L27 14" fill="none" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg><small>스킬이 부른다</small></div>
+    <div class="ln"><svg viewBox="0 0 40 16"><path d="M38 8 H8" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round"/><path d="M13 2 L3 8 L13 14" fill="none" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg><small>claude -p 세션</small></div>
   </div>
-  <div class="gap"><div class="ar">→</div><small>브랜치 push · PR · 체크</small></div>
+
+  <!-- B: the engine -->
   <div class="col">
-    <div class="head"><h3>GitHub</h3><small>기본 브랜치로 가는 유일한 길은 PR — 훅과 룰셋이 양쪽에서 지킴</small></div>
-    <div class="box force"><svg viewBox="0 0 40 40"><circle cx="12" cy="10" r="4" fill="var(--ink)"/><circle cx="12" cy="30" r="4" fill="var(--ink)"/><circle cx="28" cy="20" r="4" fill="var(--ok)"/><path d="M12 14 v12 M12 14 q0 6 16 6" fill="none" stroke="var(--ink)" stroke-width="2"/></svg><div><b>브랜치 sdlc/&lt;slug&gt; → PR → 머지</b><span>룰셋: PR 필수 · 필수 체크 <code>evals</code> · force-push 금지 · auto-merge 허용</span></div></div>
-    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="8" width="28" height="24" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><circle cx="14" cy="20" r="3" fill="var(--ok)"/><circle cx="20" cy="20" r="3" fill="var(--sun)"/><circle cx="26" cy="20" r="3" fill="var(--accent)"/></svg><div><b>Actions 7 — 선택</b><span><code>ci.mode github</code> 일 때만. 기본은 로컬(감시·스캔·evals 는 이 컴퓨터의 cron)</span></div></div>
-    <div class="box"><svg viewBox="0 0 40 40"><rect x="8" y="8" width="24" height="24" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="15">🔑</text></svg><div><b>시크릿 — 선택</b><span>CI 모드에서만. 조직 저장소에는 개인 구독 토큰 대신 조직 API 키</span></div></div>
-    <div class="box advise"><svg viewBox="0 0 40 40"><circle cx="14" cy="16" r="7" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M19 21 l9 9" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/></svg><div><b>리뷰 코멘트 · 체크 결과</b><span>go 가 초록이 될 때까지 되돌아와 처리. PR 승인은 사람(코드 오너)만</span></div></div>
+    <div class="head"><h3>엔진 <code style="font-size:.76em">scripts/sdlc.py</code></h3><small>Python 표준 라이브러리만, 3.9+<br>플러그인 안에 들어 있음</small></div>
+    <div class="box core"><svg viewBox="0 0 40 40"><path d="M7 16 h26 l-4 17 h-18 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><rect x="12" y="6" width="9" height="12" rx="1.5" fill="#fff" stroke="var(--ink)" stroke-width="1.5"/><rect x="19" y="5" width="9" height="13" rx="1.5" fill="#fff" stroke="var(--ink)" stroke-width="1.5"/></svg><b>큐</b><span><code>work/*.md</code> 를 읽어<br>순서와 의존성을 정함</span></div>
+    <div class="box core"><svg viewBox="0 0 40 40"><rect x="5" y="7" width="30" height="26" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M11 15 l5 4 l-5 4 M19 24 h10" stroke="var(--ink)" stroke-width="2" fill="none" stroke-linecap="round"/></svg><b><code style="font-size:.85em">claude -p</code> 세션</b><span>설계 · 구현 · 수정 · <span class="nb">자기 점검</span>을<br>항목마다 새로 띄움</span></div>
+    <div class="box force"><svg viewBox="0 0 40 40"><rect x="4" y="8" width="32" height="24" rx="4.5" fill="var(--ink)"/><path d="M10 16 l6 4.5 l-6 4.5" fill="none" stroke="var(--mint)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><line x1="19" y1="26" x2="28" y2="26" stroke="var(--sun)" stroke-width="3" stroke-linecap="round"/></svg><b>셸 게이트</b><span>토큰 0 — 7가지를 직접 확인</span></div>
+    <div class="box core"><svg viewBox="0 0 40 40"><path d="M7 20 h14" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round"/><path d="M17 12 l8 8 l-8 8" fill="none" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="31" cy="20" r="4.5" fill="var(--ok)"/></svg><b>머지</b><span>머지하고, 머지됐는지까지 확인</span></div>
+    <div class="box core"><svg viewBox="0 0 40 40"><rect x="5" y="7" width="30" height="26" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><rect x="10" y="22" width="5" height="7" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="18" y="16" width="5" height="13" fill="var(--sun)" stroke="var(--ink)" stroke-width="1.5"/><rect x="26" y="12" width="5" height="17" fill="var(--accent)" stroke="var(--ink)" stroke-width="1.5"/></svg><b>상태</b><span><code>status</code> · 비용 · 멈춤과 이어서</span></div>
+  </div>
+
+  <div class="gap">
+    <div class="ln"><svg viewBox="0 0 40 16"><path d="M6 8 H34" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round"/><path d="M11 2 L1 8 L11 14" fill="none" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M29 2 L39 8 L29 14" fill="none" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg><small>읽고 쓰고 커밋</small></div>
+  </div>
+
+  <!-- C: the project repository -->
+  <div class="col">
+    <div class="head"><h3>프로젝트 저장소</h3><small><code>/sdlc:init</code> 이 만든 것<br>상태만 빼고 전부 git 에 커밋</small></div>
+    <div class="box core"><svg viewBox="0 0 40 40"><rect x="8" y="6" width="24" height="28" rx="4" fill="#fff" stroke="var(--accent)" stroke-width="2.5"/><text x="20" y="25" text-anchor="middle" font-size="9" fill="var(--accent)" style="fill:#2B4FCF">{ }</text></svg><b>.sdlc/config.json v2</b><span>유일한 설정<br>명령 · 경로 규칙 · mode · loop<br>훅 · 스킬 · 엔진이 모두 읽음</span></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="9" y="5" width="22" height="30" rx="3.5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><circle cx="20" cy="5" r="2.6" fill="var(--stop)"/><path d="M14 15 h12 M14 21 h12 M14 27 h8" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/></svg><b>work/&lt;slug&gt;.md</b><span>작업 문서 한 장<br>목표 · 인수 조건 · 계획<br>증명 · 리뷰까지 기록</span></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="8" width="28" height="24" rx="3" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M11 15 h18 M11 21 h18 M11 27 h10" stroke="var(--ink)" stroke-width="2"/></svg><b>규칙표 · 리뷰 규칙</b><span><code>CLAUDE.md</code> · <code>REVIEW.md</code><br>리뷰는 3패스</span></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="9" width="28" height="22" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2" stroke-dasharray="4 3"/><path d="M12 16 h16 M12 22 h10" stroke="var(--soft)" stroke-width="2" stroke-linecap="round"/></svg><b>.sdlc/state/</b><span>저장소가 말 못 하는 것만<br>실패 · 대기 · 답 · 비용<br>로컬 전용 — 커밋하지 않음</span></div>
+  </div>
+
+  <div class="gap">
+    <div class="ln"><svg viewBox="0 0 40 16"><path d="M2 8 H32" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round"/><path d="M27 2 L37 8 L27 14" fill="none" stroke="#2B4FCF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg><small>push · PR · 머지</small></div>
+  </div>
+
+  <!-- D: GitHub or local -->
+  <div class="col">
+    <div class="head"><h3>GitHub · 또는 로컬</h3><small>기본 브랜치로 가는 길은 PR<br>훅과 룰셋이 양쪽에서 지킴</small></div>
+    <div class="box force"><svg viewBox="0 0 40 40"><circle cx="12" cy="10" r="4" fill="var(--ink)"/><circle cx="12" cy="30" r="4" fill="var(--ink)"/><circle cx="28" cy="20" r="4" fill="var(--ok)"/><path d="M12 14 v12 M12 14 q0 6 16 6" fill="none" stroke="var(--ink)" stroke-width="2"/></svg><b>브랜치 → PR → 머지</b><span><code>sdlc/&lt;slug&gt;</code> 브랜치<br>squash 머지, 머지 뒤 삭제</span></div>
+    <div class="box force"><svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg><b>룰셋 · auto-merge</b><span>PR 필수 · force-push 금지<br><code>init</code> 이 설정을 제안</span></div>
+    <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="12" width="28" height="20" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M6 20 h28" stroke="var(--ink)" stroke-width="2"/><text x="20" y="18" text-anchor="middle" font-size="7">local</text></svg><b>원격이 없으면</b><span>로컬 squash 머지<br>같은 게이트를 거침</span></div>
+    <div class="box dev"><svg viewBox="0 0 64 64"><circle cx="32" cy="22" r="11" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M10 56 q0 -20 22 -20 q22 0 22 20z" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/></svg><b>팀 저장소</b><span>설계 PR 승인과 머지는<br>사람 몫</span></div>
   </div>
 </div>
-<div class="band"><b>관리형 설정 · 기업 · 선택</b><span><code>allowManagedHooksOnly</code> · <code>strictKnownMarketplaces</code> · sandbox — 개인이 끌 수 없는 층. 파일 위치·MDM·관리자 콘솔은 docs/ENTERPRISE.md</span></div>
-<div class="legend"><span><i style="background:#fff;border:2px solid var(--mint)"></i>권고(스킬·에이전트)</span><span><i style="background:#fff;border:2px solid var(--stop)"></i>강제(훅·룰셋)</span><span><i style="background:#E6EAF9;border:2px solid var(--accent)"></i>우회 불가(관리형) · 단일 설정</span><span>· 마켓플레이스: github.com/freewisl/ai-native-sdlc</span></div>
+
+<div class="models">
+  <b>단계별 모델</b>
+  <span class="it">설계 <span class="m opus">opus</span></span>
+  <span class="it">구현 <span class="m sonnet">sonnet</span></span>
+  <span class="it">수정 <span class="m sonnet">sonnet</span></span>
+  <span class="it">자기 점검 <span class="m opus">opus</span></span>
+  <span class="sep">|</span>
+  <span class="up">다시 실패한 항목의 구현은 <span class="m opus">opus</span> 로 승격</span>
+</div>
+<div class="legend"><span><i style="background:#fff;border:2px solid var(--mint)"></i>권고(스킬 · 에이전트)</span><span><i style="background:#fff;border:2px solid var(--stop)"></i>강제(훅 · 게이트 · 룰셋)</span><span><i style="background:#fff;border:2px solid var(--accent)"></i>엔진 · 단일 설정</span><span>· 마켓플레이스: github.com/freewisl/ai-native-sdlc</span></div>
 </body></html>

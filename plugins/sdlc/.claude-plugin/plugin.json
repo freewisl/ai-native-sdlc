@@ -1,21 +1,18 @@
 {
   "name": "sdlc",
-  "version": "0.8.3",
-  "description": "/sdlc:init 한 번으로 새 프로젝트든 기존 프로젝트든 비파괴로 채택하고(GitHub 원격·1인 저장소 자동 감지, 룰셋·auto-merge 설정; Claude 는 기본으로 로컬에서만 실행), 변경마다 /sdlc:go \"요청 한 문장\" 이 intent→spec→plan→구현→검증→리뷰→PR 을 한 세션에서 끝냅니다. 정지는 정책 충돌·검증 3회 실패·머지·production 배포만. 스킬 19종(/sdlc:run 무인 루프: 백로그를 끝까지, 머지된 결과 자기 점검)·에이전트 5종·훅 7종(보호 경로·테스트 잠금·비밀·기본 브랜치 직접 푸시·production 게이트·완료 전 검증)·CI 템플릿·기업 관리형 설정 템플릿.",
+  "version": "1.0.0",
+  "description": "말로 시키면 변경 하나가 작업 문서 한 장으로 구현·리뷰를 거쳐 머지까지 갑니다. 스킬은 init·go·run·status 네 개. 합격은 세션의 보고가 아니라 셸 머지 게이트가 정하고, 여러 건은 백그라운드 루프가 큐로 처리하며, 사람은 판단이 필요한 곳에서만 답합니다. 훅 7종이 보호 경로·테스트 잠금·비밀·기본 브랜치 직접 push 를 막습니다.",
   "author": {
     "name": "freewisl"
   },
   "license": "MIT",
   "keywords": [
     "sdlc",
+    "workflow",
     "playbook",
-    "governance",
     "hooks",
-    "evals",
     "code-review",
-    "deployment",
-    "monitoring",
-    "enterprise",
-    "workflow"
+    "merge-gate",
+    "background-loop"
   ]
 }

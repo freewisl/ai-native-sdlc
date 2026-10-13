@@ -62,7 +62,7 @@ source: user           # user | goal:<id> | self-check
 - **Build session:** writes code and tests, verifies, reviews (reviewer + validate), records the tally in `## Review`, commits the doc as `built`. It does not push or open the PR.
 - **Gate (engine):** passes → the engine commits `done` on the branch, pushes, opens/updates the PR and merges it (team: marks it ready, a person merges). The merge commit carries `done`.
 - **Needs input:** a session sets `needs-input` and writes `## Questions`; the item is parked (not a failure). `sdlc.py answer` stores the answer; the engine writes it into the doc and continues.
-- **Dropped:** a session may set `dropped` (reason in Departures) when the item turns out unnecessary.
+- **Dropped:** a session may set `dropped` (reason in Departures) when the item turns out unnecessary. The engine then records it the way `drop` does — `status: dropped` with the reason on the default branch (team: a PR a person merges) — and closes the item's PR, so other clones leave the item alone too. When the record fails, the local state still says dropped and the run's output says how to record it.
 
 The repository is the source of truth. A slug is done when its PR merged, or when the doc says `done` on the default branch. The engine merges only `done` docs, so a doc that reaches the default branch as `built` was merged by a person (a needs-human PR they accepted) and counts as done too. The loop also notices a person merging or closing a needs-human PR on its own, so the item leaves the "needs you" list without a `retry`.
 
@@ -79,6 +79,7 @@ The CLI subcommands are:
 - `resume` — clear the pause, start detached
 - `accept <slug>…` — a `proposed` doc becomes `ready` on the default branch, the same way `enqueue` commits (solo: directly or a queue PR merged at once; team: the PR waits; a running loop takes it from the inbox)
 - `answer <slug> <text>`, `retry <slug>`, `drop <slug> [reason]`, `rate <slug> good|fix|reject [note]`
+  (`drop` records `status: dropped`, with the reason under Departures, on the default branch the way `accept` does, and closes the item's PR; the repository stays the source of truth)
 - `gate <slug>`, `ship <slug>` — the end of an interactive `/sdlc:go`: the same gate and merge the loop uses
 
 Engine state (`.sdlc/state/items.json`) holds only what the repository cannot say: failures, waits and their reasons, pending answers, the last stopped session, cost. Claims live in the git common dir.
@@ -122,16 +123,16 @@ Engine state (`.sdlc/state/items.json`) holds only what the repository cannot sa
 Every check below runs before any merge, by both `go` and `run`:
 1. In the loop's checkout on `sdlc/<slug>` with the default branch merged in uncommitted (aborted afterwards — installed dependencies and caches are the session's), run the build, test and lint commands. A conflict is fixable: a fix session merges and resolves.
 2. The review tally line in the work doc's `## Review` says `important=0`.
-3. Test integrity: no existing test file is deleted, no test cases are removed, and no skip/only/xfail/@Disabled is added.
-4. The Acceptance criteria are unchanged since the design commit. Any change goes to a person, even one explained in Departures; the Departures line tells that person why.
+3. Test integrity. With `test_changes: none` (the default) no existing test file changes at all — an in-place weakening (`assert x == 1` → `assert True`) keeps every count, so counting is not enough. With `test_changes: allowed` no existing test file is deleted, no test cases are removed, and no skip/only/xfail/@Disabled is added; the merge (PR body, or the local squash commit) says that existing tests were allowed to change.
+4. The Acceptance criteria and `test_changes` are unchanged since the design commit. Any change goes to a person, even one explained in Departures; the Departures line tells that person why. (A build or fix session cannot unlock the tests for itself.)
 5. No new dependency in the manifests. A new dependency sends the PR to a human (`gate.new_dependencies: human|allow`).
-6. No changed file matches `risk.human` globs. A match sends the PR to a human.
+6. No changed file matches `risk.human` globs, and no guard file changed: `.sdlc/config.json`, the frozen-paths file, `.claude/settings.json`, `.claude/settings.local.json`, the gate's checks directory. Either sends the PR to a human — a session must not loosen its own guardrails and merge that unattended.
 7. `checks/*` executables pass.
 
 Fixable failures (1, 2, 7) get a fix session on `loop.models.fix`, up to `fix_rounds`, then count as a failure. Failures for a person (3–6) send the item to "needs a person": PR comment + `sdlc:needs-human` label, item state `needs-human`, and the loop moves on. A pass leads to a merge, and the engine verifies that the merge happened. Repositories without a remote squash-merge locally (in a linked worktree: where the default branch is checked out), and the same gate applies.
 
 **Self-check**
-- After merges, the engine reviews the merged diff.
+- After merges the engine did itself (so solo mode; in team mode a person merged and reviewed), the engine reviews the merged diff.
 - Only validated Important findings that touch changed lines become new items, at most 3 per pass, deduplicated against existing items.
 - Pre-existing problems become `proposed` items, even in solo mode.
 
@@ -161,17 +162,19 @@ The status view shows:
 
 - **guard-edit**
   - Frozen and generated paths stay blocked.
-  - Test lock: new test files are always allowed; existing test files stay locked unless the active work doc says `test_changes: allowed` or the bug-fix unlock is set.
+  - Test lock, during sdlc work only (an active doc applies — the same condition as design-first): new test files are always allowed; existing test files stay locked unless the doc says `test_changes: allowed`, or a person started Claude Code with `SDLC_ALLOW_TEST_EDIT=1`. Outside sdlc work the plugin does not lock tests: there is no gate behind the lock there, and the agent could switch it off in `.sdlc/config.json` anyway. The 0.x unlock file `.sdlc/state/allow-test-edit` is gone — an agent could create it itself.
   - Secret scan.
   - The approved-plan requirement now reads the active work doc.
 - **guard-bash**
   - Blocks direct pushes to the default branch.
-  - Blocks commands that modify or delete existing test files (`rm`, `mv`, `sed -i`, `git rm`/`checkout`/`restore`, redirection) while they are locked.
+  - Blocks commands that modify or delete existing test files (`rm`, `mv`, `sed -i`, `git rm`/`checkout`/`restore`, redirection) while they are locked, and, while the active doc is `ready`/`proposed`, commands that write project files outside the work dir and `.sdlc/` (design-first).
   - Production deploy patterns need `RELEASE_APPROVAL`. This is now one tier; the staging and dev tiers and the rollback exemption are gone.
-  - Secret scan on commit.
-- **Existing test** means a test file that is present at `merge-base HEAD origin/<default>` (else the local default branch). Tests this branch added stay editable, which keeps test-first work possible. This is the same base the gate uses. Without git, a commit or a default branch, any test file on disk counts as existing.
+  - Secret scan on commit: the staged diff, or — when the same command line runs `git add` first, or the commit takes `-a` — everything the commit could take (`git diff HEAD` plus untracked, non-ignored files).
+- **Test files** are one set for the hooks and the gate (`gate.py`'s patterns; the hook suite checks they match). **Existing test** means a test file that is present at `merge-base HEAD origin/<default>` (else the local default branch). Tests this branch added stay editable, which keeps test-first work possible. This is the same base the gate uses. Without git, a commit or a default branch, any test file on disk counts as existing. A 0.x repository's `spec/` history counts as tests (the RSpec `spec/` rule); it does not change in normal work, and a change that must edit it says `test_changes: allowed`.
+- **Globs** mean one thing everywhere in the config — the frozen-paths file, `generated_paths`, `test_paths`, `risk.human` — the engine's `glob_match`: `dir/` is a prefix, `*` and `?` stay inside one path segment, `**` spans any depth, a pattern without `/` matches the file name at any depth, any other pattern is anchored at the repository root. The hook suite checks the hooks' matcher against the engine's. (0.x hooks let `*` cross `/`; an entry that relied on that needs `**`.)
 - **The active doc** (`.sdlc/state/active-work`) applies only while the branch is `sdlc/<slug>`. Design-first: while that doc is `ready` or `proposed`, edits are allowed only in the work dir, `.sdlc/` and outside the project.
 - **guard-bash parses commands on a best-effort basis.** It cannot see variable indirection, brace expansion, `find -exec`/`xargs`, `python -c`, `patch`/`git apply` or snapshot updates. The gate's test-integrity check (base...head) is the backstop.
+- **The hooks warn early; the gate enforces.** An agent can switch the test lock and design-first off by deleting `.sdlc/state/active-work` or leaving the branch. Nothing it does that way survives the gate: checks 3, 4 and 6 compare the branch with its base and send such a change to a person.
 - The guards use `onFailure: block` (fail-closed: a guard that crashes or times out blocks the tool call). The validator accepts any key, so this rests on the runtime schema of claude 2.1.296, which supports `continue`|`block`. Checked live on 2.1.296 (2026-10-13): a guard that exits 1 and a guard that times out both block the call ("blocking because onFailure is \"block\""), and every guard rule denied in a real session.
 - post-edit, post-bash, stop-verify, session-start and session-end are kept. Their context text is updated.
 
@@ -199,6 +202,6 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
 - [x] P3 skills: init, go (+ references), run (fill + start + stop/resume), status; agents (reviewer validate mode); delete the old skills and diagnoser
 - [x] P4 hooks adapted (work doc, test lock add-only + bash bypass, one deploy tier) + bash hook tests updated
 - [x] P5 templates (work.md, CLAUDE.sections, REVIEW.md, config v2), delete old templates and scripts
-- [ ] P6 README (≈150 lines, ko), CHANGELOG 1.0.0, marketplace/plugin manifests, docs images
+- [x] P6 README (ko), CHANGELOG 1.0.0, marketplace/plugin manifests, docs images
 - [ ] P7 full test run + `claude plugin validate --strict`; end-to-end trial on a scratch repo without a remote (real claude, a small app); fix what it finds
 - [ ] P8 hand-off to the user: migration notes per repo (pilot, solar-next, …), merge to main, push and update only on the user's go-ahead
