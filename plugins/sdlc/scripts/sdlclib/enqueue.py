@@ -17,7 +17,7 @@ import tempfile
 from typing import Dict, List, Optional, Tuple
 
 from .config import Config
-from .gitops import Forge, Git
+from .gitops import Forge, Git, dirty_summary
 from .state import INBOX_REL, loop_pid, read_status
 from .util import now_iso, read_text, stamp, write_text
 from .workdoc import WorkDoc, problems
@@ -213,6 +213,10 @@ def _all_dropped(docs: List[WorkDoc]) -> bool:
     return bool(docs) and all(d.status == "dropped" for d in docs)
 
 
+def _all_proposed(docs: List[WorkDoc]) -> bool:
+    return bool(docs) and all(d.status == "proposed" for d in docs)
+
+
 def _state_of(d: WorkDoc) -> str:
     if d.status != "dropped":
         return d.status
@@ -221,8 +225,8 @@ def _state_of(d: WorkDoc) -> str:
 
 
 def message_for(docs: List[WorkDoc], verb: str = "queue") -> str:
-    if verb == "queue" and _all_dropped(docs):
-        verb = "drop"
+    if verb == "queue":                  # docs that leave the queue or wait for a person to accept them do not join it
+        verb = "drop" if _all_dropped(docs) else "propose" if _all_proposed(docs) else verb
     head = "sdlc: %s %s" % (verb, docs[0].slug) if len(docs) == 1 else "sdlc: %s %d work items" % (verb, len(docs))
     return head + "\n\n" + "\n".join("- %s — %s (%s)" % (d.slug, d.title, _state_of(d)) for d in docs)
 
@@ -251,8 +255,10 @@ def enqueue(cfg: Config, git: Git, forge: Forge, docs: List[WorkDoc], originals:
             return result
         where = git.worktree_of(default)
         if where:
-            if git("status", "--porcelain", cwd=where).out.strip():
-                raise EnqueueError("%s is checked out in %s with uncommitted changes — commit them first" % (default, where))
+            dirty = git.dirty(cwd=where)
+            if dirty:
+                raise EnqueueError("%s is checked out in %s with uncommitted changes (%s) — commit them first" % (
+                    default, where, dirty_summary(dirty)))
             ok, info = _commit_docs(git, where, work, docs, msg)
         else:
             tmp = tempfile.mkdtemp(prefix="sdlc-queue-")
@@ -287,9 +293,13 @@ def enqueue(cfg: Config, git: Git, forge: Forge, docs: List[WorkDoc], originals:
         git("worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
     title = msg.split("\n", 1)[0]
-    leaving = _all_dropped(docs)
-    body = msg.split("\n", 1)[1].strip() + ("\n\nMerging this PR %s." % (
-        "takes these items off the sdlc queue" if leaving else "puts these items on the sdlc queue") if not cfg.solo else "")
+    leaving, proposing = _all_dropped(docs), _all_proposed(docs)
+    body = msg.split("\n", 1)[1].strip()
+    if not cfg.solo:
+        body += "\n\nMerging this PR %s." % (
+            "takes these items off the sdlc queue" if leaving else
+            "records these items as proposals — they join the sdlc queue only when a person accepts them (`sdlc.py accept <slug>`)"
+            if proposing else "puts these items on the sdlc queue")
     ok, url = forge.publish(qslug, title, body)
     if not ok:
         git("branch", "-D", branch)
@@ -300,10 +310,12 @@ def enqueue(cfg: Config, git: Git, forge: Forge, docs: List[WorkDoc], originals:
         ok, info = forge.merge(qslug, title)
         result["merged"] = ok
         result["how"] = "merged %s" % url if ok else "PR %s could not be merged (%s) — merge it to %s" % (
-            url, info, "record the drop" if leaving else "queue the items")
+            url, info, "record the drop" if leaving else "record the proposals" if proposing else "queue the items")
     else:
-        result["how"] = "PR %s — the %s when a person merges it" % (
-            url, "items leave the queue" if leaving else "items join the queue")
+        result["how"] = "PR %s — the %s" % (
+            url, "items leave the queue when a person merges it" if leaving else
+            "items are recorded as proposals when a person merges it, and join the queue once accepted" if proposing else
+            "items join the queue when a person merges it")
     git("branch", "-D", branch)
     if result["merged"] and git.branch() == default and not git.dirty() and not loop_pid(git.root):
         git("pull", "-q", "--ff-only", timeout=120)

@@ -120,6 +120,14 @@ class Solo(RepoCase):
         self.assertIn("merge it to record the drop", r.stdout)
         self.assertEqual(self.repo.status_of("a-first", "origin/main"), "ready")
 
+    def test_a_merge_of_the_queue_pr_that_does_not_happen_is_said_in_the_proposals_words(self):
+        p = self.repo.write("work/an-idea.md", self.repo.doc_text("an-idea", status="proposed"))
+        self.repo.base_env["STUB_GH_MERGE_FAIL"] = "1"
+        r = self.repo.cli("enqueue", p)
+        self.assertIn("could not be merged", r.stdout + r.stderr)
+        self.assertIn("merge it to record the proposals", r.stdout + r.stderr)
+        self.assertNotIn("queue the items", r.stdout + r.stderr)
+
     def test_the_pr_body_says_when_the_design_allowed_existing_tests_to_change(self):
         self.repo.add_items(("a-first", {"test_changes": "allowed"}), "b-second")
         self.repo.scenario({"a-first:build": ["modify_test"]})
@@ -169,6 +177,20 @@ class WhatAPersonDecides(RepoCase):
         self.assertEqual(self.repo.items_state()["a-first"]["state"], "needs-human")
         self.assertEqual(self.counts(), {"needs-human": 1, "design": 1})
 
+    def test_with_a_remote_the_line_names_the_pr_and_no_merge_command(self):
+        self.waiting()
+        entry = json.loads(self.repo.cli("status", "--json").stdout)["needs_you"][0]
+        self.assertEqual((entry["slug"], entry["kind"]), ("a-first", "human"))
+        self.assertTrue(entry["pr"])
+        self.assertNotIn("accept", entry)
+        self.assertNotIn("git merge", self.repo.cli("status").stdout)
+
+    def test_a_merged_branch_is_left_to_github_to_remove(self):
+        self.repo.add_items("a-first")
+        self.repo.git("branch", "sdlc/a-first")                                            # at main's tip: merged by any measure
+        self.repo.engine().drop_merged_branch("a-first")
+        self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))
+
     def test_a_pr_a_person_merged_makes_the_item_done_and_releases_its_dependents(self):
         self.waiting()
         self.gh("pr", "merge", "1", "--squash", "--delete-branch")
@@ -178,6 +200,7 @@ class WhatAPersonDecides(RepoCase):
         self.assertEqual(self.repo.status_of("b-second", "origin/main"), "done")
         self.assertEqual(self.counts(), {"done": 2})
         self.assertEqual([k for k, *_ in self.keys()].count("a-first:build"), 1)
+        self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))                  # the branch of a PR is GitHub's to clean up
 
     def test_a_pr_a_person_merged_is_done_with_no_engine_state(self):
         """The squash left the built doc on origin/main: that alone says a person merged it."""
@@ -534,6 +557,36 @@ class Team(RepoCase):
         self.assertIn("when a person merges it", r.stdout)
         self.assertIsNone(self.repo.status_of("new-thing", "origin/main"))
         self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+
+    def test_a_queue_pr_of_ready_items_says_merging_it_puts_them_on_the_queue(self):
+        p = self.repo.write("work/new-thing.md", self.repo.doc_text("new-thing"))
+        r = self.repo.cli("enqueue", p)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("the items join the queue when a person merges it", r.stdout)
+        self.assertTrue(self.repo.gh_db()["prs"][0]["body"].endswith("\n\nMerging this PR puts these items on the sdlc queue."))
+
+    def test_a_queue_pr_of_proposals_says_they_wait_to_be_accepted(self):
+        p = self.repo.write("work/an-idea.md", self.repo.doc_text("an-idea", status="proposed"))
+        r = self.repo.cli("enqueue", p)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("the items are recorded as proposals when a person merges it, and join the queue once accepted", r.stdout)
+        self.assertNotIn("items join the queue", r.stdout)
+        pr = self.repo.gh_db()["prs"][0]
+        self.assertEqual(pr["title"], "sdlc: propose an-idea")
+        self.assertIn("- an-idea — an-idea (proposed)", pr["body"])
+        self.assertTrue(pr["body"].endswith("\n\nMerging this PR records these items as proposals — they join the sdlc queue only "
+                                            "when a person accepts them (`sdlc.py accept <slug>`)."), pr["body"])
+        self.assertNotIn("puts these items on", pr["body"])
+
+    def test_a_queue_pr_of_proposals_and_ready_items_keeps_the_queue_wording(self):
+        a = self.repo.write("work/an-idea.md", self.repo.doc_text("an-idea", status="proposed"))
+        b = self.repo.write("work/new-thing.md", self.repo.doc_text("new-thing"))
+        r = self.repo.cli("enqueue", a, b)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        pr = self.repo.gh_db()["prs"][0]
+        self.assertEqual(pr["title"], "sdlc: queue 2 work items")
+        self.assertTrue(pr["body"].endswith("Merging this PR puts these items on the sdlc queue."), pr["body"])
+        self.assertIn("the items join the queue when a person merges it", r.stdout)
 
     def test_accept_leaves_the_queue_pr_for_a_person_to_merge(self):
         self.repo.add_items(("a-idea", {"status": "proposed"}))

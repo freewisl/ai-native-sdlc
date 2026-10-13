@@ -265,3 +265,12 @@ class Config:
                 seen.add(cmd)
                 out.append((str(name), cmd))
         return out
+
+    def with_filled_commands(self, fills: Dict[str, str]) -> "Config":
+        """A copy in which the commands in `fills` have a value where this config has none — what a branch that records them
+        in its own `.sdlc/config.json` adds. A command that already has a value keeps it."""
+        have = self.data.get("commands") or {}
+        add = {n: v for n, v in fills.items() if not str(have.get(n) or "").strip()}
+        other = copy.copy(self)
+        other.data = dict(self.data, commands=dict(have, **add))
+        return other

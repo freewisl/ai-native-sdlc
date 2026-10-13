@@ -7,7 +7,7 @@ A loop session cannot ask anyone. When it cannot go on without a person it parks
 - the request or a criterion is ambiguous in a way that changes what gets built;
 - criteria contradict each other, or one cannot be tested as written;
 - the change needs an existing test edited and the doc says `test_changes: none` — a person has to allow it;
-- it needs a new dependency, or a path the gate hands to a person (`risk.human`, and always the guard files: `.sdlc/config.json`, the frozen-paths file, `.claude/settings.json`, `.claude/settings.local.json`, `checks/`) or that is frozen;
+- it needs a new dependency, or a path the gate hands to a person (`risk.human`, and the guard files: `.sdlc/config.json`, the frozen-paths file, `.claude/settings.json`, `.claude/settings.local.json`, `checks/` — filling a still-empty `commands.<name>` in the config is not held) or that is frozen;
 - it has security, data or product consequences nobody wrote down.
 
 Do not ask what the repository answers (read it), or an implementation choice you can make and record in `## Departures`.

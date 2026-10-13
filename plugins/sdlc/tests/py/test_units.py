@@ -142,6 +142,25 @@ class PullRequestNote(unittest.TestCase):
         self.assertEqual(self.note(Proof="Existing tests in tests/a.py assert the old shape."),
                          head + "Existing tests in tests/a.py assert the old shape.")
 
+    def test_a_reason_that_starts_with_a_code_span_keeps_its_backtick(self):
+        head = "Existing tests were allowed to change in this item (test_changes: allowed) — "
+        reason = "`tests/test_smoke.py::test_empty_stdin_exits_zero` 는 빈 입력에서 stdout 이 `\"\"` 이길 기대한다."
+        self.assertEqual(self.note(Proof="test_changes: " + reason), head + reason)
+        self.assertEqual(self.note(Proof="- test_changes: allowed — " + reason), head + reason)
+        self.assertEqual(self.note(Proof="1. `test_changes`: " + reason), head + reason)
+        self.assertEqual(self.note(Proof="**test_changes**: " + reason), head + reason)
+
+    def test_markup_around_the_setting_is_closed_with_it(self):
+        head = "Existing tests were allowed to change in this item (test_changes: allowed) — "
+        for line in ("`test_changes: allowed` — why", "**test_changes:** allowed — why", "**test_changes**: **allowed** — why",
+                     "`test_changes` allowed: why", "test_changes = allowed; why", "* test_changes: allowed - why"):
+            self.assertEqual(self.note(Plan=line), head + "why", line)
+
+    def test_a_mention_that_is_not_the_setting_spelled_out_is_the_reason_as_written(self):
+        head = "Existing tests were allowed to change in this item (test_changes: allowed) — "
+        self.assertEqual(self.note(Plan="we need test_changes: allowed here"), head + "we need test_changes: allowed here")
+        self.assertEqual(self.note(Plan="test_changes allowed because fixtures move"), head + "test_changes allowed because fixtures move")
+
     def test_a_line_that_only_repeats_the_setting_and_hint_comments_are_no_reason(self):
         self.assertEqual(self.note(Plan="1. step\ntest_changes: allowed"),
                          "Existing tests were allowed to change in this item (test_changes: allowed).")
@@ -199,6 +218,154 @@ class GateHeuristics(unittest.TestCase):
                 self.assertEqual(G.is_test_path(cfg, p), want, p)
         finally:
             r.cleanup()
+
+
+class CommandsFill(unittest.TestCase):
+    """`only_fills_commands`: the one change to .sdlc/config.json the gate does not hand to a person."""
+
+    def fills(self, old, new):
+        return G.only_fills_commands(json.dumps(old) if not isinstance(old, str) else old,
+                                     json.dumps(new) if not isinstance(new, str) else new)
+
+    def test_unset_is_missing_null_or_an_empty_string(self):
+        for before in ({}, {"test": None}, {"test": ""}):
+            self.assertTrue(self.fills({"commands": before}, {"commands": {"test": "pytest"}}), before)
+        self.assertTrue(self.fills({}, {"commands": {"test": "pytest"}}))               # no commands section at all
+
+    def test_anything_else_in_the_commands_is_a_change(self):
+        self.assertFalse(self.fills({"commands": {"test": "pytest"}}, {"commands": {"test": "pytest -x"}}))
+        self.assertFalse(self.fills({"commands": {"test": "pytest"}}, {"commands": {}}))
+        self.assertFalse(self.fills({"commands": {"test": "pytest"}}, {"commands": {"test": ""}}))
+        self.assertFalse(self.fills({"commands": {}}, {"commands": {"test": " "}}))
+        self.assertFalse(self.fills({"commands": {}}, {"commands": {"test": 1}}))
+        self.assertFalse(self.fills({"commands": {}}, {"commands": {"test": ["pytest"]}}))
+        self.assertFalse(self.fills({"commands": {}}, {"commands": "pytest"}))
+        self.assertFalse(self.fills({"commands": "pytest"}, {"commands": {"test": "pytest"}}))
+
+    def test_nothing_but_the_commands_may_differ(self):
+        self.assertFalse(self.fills({"mode": "solo", "commands": {}}, {"mode": "team", "commands": {"test": "pytest"}}))
+        self.assertFalse(self.fills({"commands": {}}, {"commands": {"test": "pytest"}, "protect": {}}))
+        self.assertFalse(self.fills({"protect": {"protect_tests": False}}, {"protect": {"protect_tests": 0}}))   # `false` is not `0`
+        self.assertFalse(self.fills({"protect": {"protect_tests": True}}, {"protect": {"protect_tests": 1}}))
+        self.assertTrue(self.fills({"a": 1, "b": {"c": [1, 2]}}, {"b": {"c": [1, 2]}, "a": 1}))                  # order is not a change
+
+    def test_a_file_that_is_not_a_json_object_is_never_a_fill(self):
+        self.assertFalse(self.fills("{}", "{nope"))
+        self.assertFalse(self.fills("{}", "[]"))
+        self.assertFalse(self.fills("{}", "null"))
+        self.assertFalse(G.only_fills_commands(None, "{}"))
+        self.assertFalse(G.only_fills_commands("{}", None))
+
+    def test_any_name_may_be_filled(self):
+        """Not only the three the gate runs: a command nothing refers to does nothing, and filling `format` or `lint_file`
+        adds a check."""
+        for name in ("build", "test", "lint", "run", "format", "lint_file", "typecheck", "lint.js"):
+            self.assertTrue(self.fills({"commands": {}}, {"commands": {name: "make " + name}}), name)
+            self.assertTrue(self.fills({"commands": {name: ""}}, {"commands": {name: "make " + name}}), name)
+
+
+class FixBrief(RepoCase):
+    """What the fix session is told: the failures, and — when the gate ran commands the branch recorded itself — that
+    those may not be made unable to fail."""
+
+    def brief(self, **fields):
+        res = G.GateResult()
+        res.fixable, res.outputs = ["`make test` failed (exit 2)"], {"test": "2 failed"}
+        for name, value in fields.items():
+            setattr(res, name, value)
+        return self.repo.engine().fix_brief(res)
+
+    def test_a_gate_without_filled_commands_says_nothing_about_them(self):
+        text = self.brief()
+        self.assertIn("`make test` failed (exit 2)", text)
+        self.assertNotIn("this branch's own", text)
+
+    def test_filled_commands_are_named_with_the_rule_before_the_closing_instruction(self):
+        text = self.brief(filled=["build", "test"], human=["new dependency: left-pad (package.json)"])
+        line = ("The gate commands `build`, `test` come from this branch's own `.sdlc/config.json` and are this project's gate from "
+                "now on. When one fails, fix the project, or the command line so that it really builds, tests or lints. Never "
+                "make it something that cannot fail (`true`, `exit 0`, `|| true`, an empty run).")
+        self.assertIn(line, text)
+        self.assertLess(text.index("2 failed"), text.index(line))                    # after the output it is about
+        self.assertLess(text.index(line), text.index("Also reported, for a person"))
+        self.assertLess(text.index(line), text.index("Fix the cause"))
+
+
+class ConfigFill(RepoCase):
+    """`config_fill` — what a branch's config.json fills in, judged against where it left main: the comparison the guard and
+    the gate share — and `Config.with_filled_commands`, which puts it where the config has no value."""
+
+    def fill(self, change, move_main=None):
+        """`config_fill` for a branch off main whose one change is `change(config dict)`; `move_main` then changes main."""
+        r = self.repo
+        r.git("checkout", "-q", "-B", "sdlc/x", "main")
+        cfg = json.loads(r.read(".sdlc/config.json"))
+        change(cfg)
+        r.write(".sdlc/config.json", json.dumps(cfg, indent=2))
+        r.git("commit", "-q", "--allow-empty", "-am", "config")
+        r.git("checkout", "-q", "main")
+        if move_main:
+            cfg = json.loads(r.read(".sdlc/config.json"))
+            move_main(cfg)
+            r.write(".sdlc/config.json", json.dumps(cfg, indent=2))
+            r.git("commit", "-qam", "main moves on")
+        from sdlclib.gitops import Git
+        return G.config_fill(Git(r.root), "main", "sdlc/x")
+
+    def test_the_values_a_branch_gives_to_commands_that_had_none(self):
+        # the project's config has `lint: ""` and no `run`, `format`, `typecheck`
+        got = self.fill(lambda c: c["commands"].update(lint="ruff .", run="python app.py", format="black .", typecheck="tsc"))
+        self.assertEqual(got, {"lint": "ruff .", "run": "python app.py", "format": "black .", "typecheck": "tsc"})
+
+    def test_nothing_changed_is_a_fill_of_nothing_and_any_other_change_is_none(self):
+        self.assertEqual(self.fill(lambda c: None), {})
+        self.assertIsNone(self.fill(lambda c: c["commands"].update(test="true")))                  # a command with a value
+        self.assertIsNone(self.fill(lambda c: c["commands"].update(lint="ruff .", build="make")))  # …beside a fill
+        self.assertIsNone(self.fill(lambda c: (c["commands"].update(lint="ruff ."), c.update(mode="team"))))
+        self.assertIsNone(self.fill(lambda c: c.pop("commands")))                                   # removing them
+
+    def test_it_is_judged_against_where_the_branch_left_main_and_not_main_now(self):
+        got = self.fill(lambda c: c["commands"].update(lint="ruff ."), move_main=lambda c: c["loop"].update(poll_minutes=5))
+        self.assertEqual(got, {"lint": "ruff ."})
+        # main filled the same command meanwhile: the branch still filled it, `with_filled_commands` keeps main's
+        got = self.fill(lambda c: c["commands"].update(lint="ruff ."), move_main=lambda c: c["commands"].update(lint="flake8"))
+        self.assertEqual(got, {"lint": "ruff ."})
+        self.assertEqual(C.Config(self.repo.root).with_filled_commands(got).command("lint"), "flake8")
+
+    def config_with(self, commands, gate=None):
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["commands"] = commands
+        if gate:
+            cfg["gate"] = {"commands": gate}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        return C.Config(self.repo.root)
+
+    def test_a_filled_command_has_a_value_only_where_the_config_has_none(self):
+        cfg = self.config_with({"build": "make", "test": "", "lint": None, "run": "  "})
+        filled = cfg.with_filled_commands({"build": "ninja", "test": "pytest", "lint": "ruff .", "run": "python app.py",
+                                           "typecheck": "tsc", "format": "black ."})
+        self.assertEqual([filled.command(n) for n in ("build", "test", "lint", "run", "typecheck")],
+                         ["make", "pytest", "ruff .", "python app.py", "tsc"])
+        self.assertEqual(filled.command("format"), "auto")                 # the default is a value too
+        self.assertEqual([cfg.command(n).strip() for n in ("build", "test", "lint", "run")], ["make", "", "", ""])
+
+    def test_the_copy_leaves_the_original_alone(self):
+        cfg = self.config_with({"build": "make"})
+        copy = cfg.with_filled_commands({"test": "pytest"})
+        self.assertEqual((cfg.command("test"), copy.command("test")), ("", "pytest"))
+        self.assertIsNot(copy.data["commands"], cfg.data["commands"])
+        self.assertEqual((copy.root, copy.get("mode"), copy.get("gate.commands")), (cfg.root, cfg.get("mode"), cfg.get("gate.commands")))
+
+    def test_a_name_with_a_dot_is_looked_up_whole(self):
+        cfg = self.config_with({"lint.js": "eslint ."})
+        self.assertEqual(cfg.with_filled_commands({"lint.js": "oxlint"}).data["commands"]["lint.js"], "eslint .")
+
+    def test_the_gate_commands_follow_the_filled_ones_and_the_list_stays_the_configs(self):
+        cfg = self.config_with({"build": "make", "typecheck": ""}, gate=["build", "test", "typecheck"])
+        self.assertEqual(cfg.gate_commands(), [("build", "make")])
+        filled = cfg.with_filled_commands({"test": "pytest", "typecheck": "tsc --noEmit", "lint": "ruff ."})
+        self.assertEqual(filled.gate_commands(), [("build", "make"), ("test", "pytest"), ("typecheck", "tsc --noEmit")])
+        self.assertEqual(filled.get("gate.commands"), ["build", "test", "typecheck"])               # `lint` is no gate command
 
 
 class GateIntegrity(RepoCase):
@@ -302,6 +469,80 @@ class RunnerCase(RepoCase):
         r = self.runner().run("/sdlc:go --item a-first --design", self.repo.path(".sdlc/logs/s.jsonl"), 0.03)
         self.assertEqual(r.status, "timeout")
         self.assertLess(time.time() - t, 15)
+
+
+class ResultStatus(RepoCase):
+    """How a finished claude process becomes a status: what its result event says, and whether the engine asked it to stop
+    (rc 130) or the time cap did (rc 124)."""
+
+    def read(self, rc, result=None, **fields):
+        log = self.repo.path(".sdlc/logs/classify.jsonl")
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        with open(log, "w") as fh:
+            fh.write(json.dumps({"type": "system", "subtype": "init", "plugins": [{"name": "sdlc"}]}) + "\n")
+            if result is not None:
+                ev = {"type": "result", "subtype": "success", "is_error": False, "result": result, "num_turns": 6,
+                      "terminal_reason": "completed"}
+                ev.update(fields)
+                fh.write(json.dumps(ev) + "\n")
+        res = S.SessionResult()
+        res.sid, res.log, res.rc = "sid-1", log, rc
+        S.Runner(self.repo.root, claude_bin=os.path.join(STUBS, "claude"))._read(res)
+        return res
+
+    def test_an_interrupted_claude_that_reports_success_is_interrupted(self):
+        r = self.read(130, "", terminal_reason="aborted_streaming")
+        self.assertEqual((r.status, r.terminal, r.text), ("interrupted", "aborted_streaming", ""))
+
+    def test_an_aborted_result_is_interrupted_whatever_the_exit_code(self):
+        self.assertEqual(self.read(0, "", terminal_reason="aborted_streaming").status, "interrupted")
+        self.assertEqual(self.read(0, "", terminal_reason="aborted_tools").status, "interrupted")
+        self.assertEqual(self.read(130, "", terminal_reason="aborted_tools").status, "interrupted")
+
+    def test_a_session_that_finished_itself_before_the_signal_landed_stays_ok(self):
+        self.assertEqual(self.read(130, "SDLC_BUILT a-first").status, "ok")
+        self.assertEqual(self.read(0, "SDLC_BUILT a-first").status, "ok")
+
+    def test_an_interrupt_without_a_success_result_is_interrupted(self):
+        self.assertEqual(self.read(130, None).status, "interrupted")
+        self.assertEqual(self.read(130, "[Request interrupted by user]", subtype="error_during_execution", is_error=True,
+                                   terminal_reason="aborted_streaming").status, "interrupted")
+
+    def test_a_time_cap_is_a_timeout_even_though_its_sigint_leaves_an_aborted_result(self):
+        self.assertEqual(self.read(124, "", terminal_reason="aborted_streaming").status, "timeout")
+
+    def test_a_result_without_terminal_reason_keeps_its_old_reading(self):
+        r = self.read(0, "done", terminal_reason="")
+        self.assertEqual((r.status, r.terminal), ("ok", ""))
+        self.assertEqual(self.read(0, "", subtype="error_max_turns", is_error=True, terminal_reason="").status, "max_turns")
+
+    def test_a_spend_cap_is_its_own_status_and_stays_resumable_like_a_turn_cap(self):
+        for subtype, status in (("error_max_turns", "max_turns"), ("error_max_budget_usd", "budget")):
+            r = self.read(0, "", subtype=subtype, is_error=True)
+            self.assertEqual((r.status, r.stopped), (status, True), subtype)
+
+
+class CommitSubject(unittest.TestCase):
+    """The subject of the commit that lands docs on the default branch says what the docs do there."""
+
+    def doc(self, slug, status):
+        return W.WorkDoc.parse("---\nslug: %s\ntitle: %s\nstatus: %s\n---\n\n## Goal\nx\n" % (slug, slug, status))
+
+    def subject(self, statuses, **kw):
+        from sdlclib.enqueue import message_for
+        return message_for([self.doc("d%d" % i, s) for i, s in enumerate(statuses)], **kw).splitlines()[0]
+
+    def test_ready_items_are_queued_proposals_proposed_and_dropped_items_dropped(self):
+        self.assertEqual(self.subject(["ready"]), "sdlc: queue d0")
+        self.assertEqual(self.subject(["ready", "ready", "ready"]), "sdlc: queue 3 work items")
+        self.assertEqual(self.subject(["proposed"]), "sdlc: propose d0")
+        self.assertEqual(self.subject(["proposed"] * 3), "sdlc: propose 3 work items")
+        self.assertEqual(self.subject(["dropped", "dropped"]), "sdlc: drop 2 work items")
+
+    def test_a_mix_is_a_queue_commit_and_a_named_verb_is_kept(self):
+        self.assertEqual(self.subject(["ready", "proposed"]), "sdlc: queue 2 work items")
+        self.assertEqual(self.subject(["proposed", "dropped"]), "sdlc: queue 2 work items")
+        self.assertEqual(self.subject(["proposed"], verb="accept"), "sdlc: accept d0")
 
 
 class EnqueueChecks(RepoCase):
@@ -420,6 +661,43 @@ class StatusAndCli(RepoCase):
         self.assertIn("+ c-idea", r.stdout)
         s = json.loads(self.repo.cli("status", "--json").stdout)
         self.assertEqual(s["counts"], {"design": 2, "proposed": 1})
+
+    def test_the_cost_line_says_it_covers_the_loop_only(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)
+        out = self.repo.cli("status").stdout
+        self.assertIn("loop cost: today $1.00 · 7 days $1.00 · median per merged item $1.00 (1)", out)
+        self.assertNotIn("\ncost:", "\n" + out)
+        cost = json.loads(self.repo.cli("status", "--json").stdout)["cost"]
+        self.assertEqual((cost["covers"], cost["today_usd"], cost["week_usd"]), ("sessions the loop ran", 1.0, 1.0))
+
+    def waiting_for_a_person(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["new_dep"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+
+    def test_without_a_remote_a_needs_a_person_item_says_how_to_accept_it(self):
+        self.waiting_for_a_person()
+        text = self.repo.cli("status").stdout
+        self.assertIn("  ! a-first — new dependency: left-pad", text)
+        self.assertIn("      accept as is: git merge sdlc/a-first", text)
+        entry = json.loads(self.repo.cli("status", "--json").stdout)["needs_you"][0]
+        self.assertEqual((entry["kind"], entry["accept"]), ("human", "git merge sdlc/a-first"))
+
+    def test_the_command_in_the_line_is_the_one_that_accepts_it(self):
+        self.waiting_for_a_person()
+        self.repo.git("merge", "-q", "--no-edit", "sdlc/a-first")
+        s = json.loads(self.repo.cli("status", "--json").stdout)
+        self.assertEqual((s["needs_you"], s["counts"]), ([], {"done": 1}))
+
+    def test_questions_and_proposals_name_no_merge_command(self):
+        self.repo.add_items("a-first", ("c-idea", {"status": "proposed"}))
+        self.repo.scenario({"a-first:design": ["needs_input"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        text = self.repo.cli("status").stdout
+        self.assertIn("? a-first", text)
+        self.assertNotIn("git merge", text)
+        self.assertTrue(all("accept" not in n for n in json.loads(self.repo.cli("status", "--json").stdout)["needs_you"]))
 
     def test_uninitialized_and_legacy_repos(self):
         d = tempfile.mkdtemp()

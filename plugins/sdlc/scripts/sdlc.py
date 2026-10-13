@@ -293,11 +293,12 @@ def cmd_rate(a: argparse.Namespace) -> int:
 
 def cmd_gate(a: argparse.Namespace) -> int:
     from sdlclib.gate import run_gate
-    from sdlclib.gitops import Git
+    from sdlclib.gitops import Git, dirty_summary
     cfg = Config(a.root)
     git = Git(a.root)
-    if git.branch() != "sdlc/" + a.slug or git.dirty():
-        eprint("check out sdlc/%s with a clean tree first" % a.slug)
+    dirty = git.dirty()
+    if git.branch() != "sdlc/" + a.slug or dirty:
+        eprint("check out sdlc/%s with a clean tree first%s" % (a.slug, " (uncommitted: %s)" % dirty_summary(dirty) if dirty else ""))
         return 1
     res = run_gate(cfg, git, a.slug, git.base_ref(cfg.default_branch), run_commands=not a.no_commands)
     if a.json:

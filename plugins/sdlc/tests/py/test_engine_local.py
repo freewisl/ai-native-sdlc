@@ -10,6 +10,13 @@ import unittest
 from helpers import RepoCase, SDLC, STUBS
 
 
+def latest_run_log(repo):
+    """The text of the newest `.sdlc/logs/run-*.log` — what the engine said."""
+    d = repo.path(".sdlc/logs")
+    with open(os.path.join(d, sorted(n for n in os.listdir(d) if n.startswith("run-"))[-1])) as fh:
+        return fh.read()
+
+
 class HappyPath(RepoCase):
     def test_two_items_with_a_dependency_are_designed_built_gated_and_merged(self):
         self.repo.add_items(("b-second", {"deps": ["a-first"]}), "a-first")
@@ -129,6 +136,72 @@ class Continuations(RepoCase):
         self.assertEqual(self.repo.engine().run(), 0)
         self.assertEqual(self.repo.status_of("a-first"), "done")
         self.assertNotIn("failures", self.repo.items_state()["a-first"])
+
+
+class BudgetCap(RepoCase):
+    """A session stopped by loop.budget_usd_per_session is continued like one stopped by the turn cap — and everything that
+    names the stop (log, next prompt, event, failure) names the budget, not a turn cap."""
+    config = {"loop": {"budget_usd_per_session": 2.5}}
+
+    def sessions(self, phase):
+        with open(self.repo.path(".sdlc/logs/events.jsonl")) as fh:
+            return [e["detail"] for e in map(json.loads, fh) if e["event"] == "loop.session" and e["detail"]["phase"] == phase]
+
+    def builds(self):
+        return [c for c in self.repo.calls() if c["key"] == "a-first:build"]
+
+    def test_the_budget_stop_resumes_the_same_session_and_the_log_says_budget(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["max_budget", "ok"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        builds = self.builds()
+        self.assertEqual([b["resumed"] for b in builds], [False, True])
+        self.assertEqual(builds[0]["sid"], builds[1]["sid"])
+        self.assertEqual([b["budget"] for b in builds], ["2.5", "2.5"])      # the amount the reason names is the one claude got
+        self.assertIn("Continue where you stopped (budget cap ($2.5))", builds[1]["prompt"])
+        log = latest_run_log(self.repo)
+        self.assertIn("STOPPED a-first", log)
+        self.assertIn("budget cap ($2.5); continuing (warm resume)", log)
+        self.assertNotIn("turn cap", log)
+        self.assertEqual([s["status"] for s in self.sessions("build")], ["budget", "ok"])
+        self.assertEqual(self.repo.status_of("a-first"), "done")
+        self.assertAlmostEqual(self.repo.items_state()["a-first"]["cost"], 1.5)      # the resumed session's cost counts once
+
+    def test_a_cold_budget_stop_starts_a_fresh_session_that_is_told_why(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["max_budget", "ok"]})
+        e = self.repo.engine()
+        e.cold_seconds = 0
+        self.assertEqual(e.run(), 0)
+        builds = self.builds()
+        self.assertFalse(builds[1]["resumed"])
+        self.assertIn("--continue", builds[1]["prompt"])
+        self.assertIn("budget cap ($2.5)", builds[1]["prompt"])
+        self.assertNotIn("turn cap", builds[1]["prompt"])
+
+    def test_without_a_configured_amount_the_reason_names_none(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["max_budget", "ok"]})
+        e = self.repo.engine()
+        e.runner.budget = 0.0
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([b["budget"] for b in self.builds()], ["", ""])
+        self.assertIn("budget cap; continuing (warm resume)", latest_run_log(self.repo))
+
+    def test_a_budget_stop_without_progress_fails_naming_the_budget(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["max_budget", "max_budget_noprogress"]})
+        self.assertEqual(self.repo.engine().run(), 1)
+        self.assertIn("no progress since the last stop (budget cap ($2.5))", self.repo.items_state()["a-first"]["last_error"])
+
+    def test_budget_stops_are_capped_like_turn_caps(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:design": ["max_budget"] * 6})
+        e = self.repo.engine()
+        e.max_continuations = 2
+        self.assertEqual(e.run(), 1)
+        self.assertEqual(len([c for c in self.repo.calls() if c["key"] == "a-first:design"]), 3)
+        self.assertIn("still unfinished after 2 continuations (budget cap ($2.5))", self.repo.items_state()["a-first"]["last_error"])
 
 
 class Limits(RepoCase):
@@ -287,6 +360,7 @@ class Gate(RepoCase):
         self.assertEqual(keys[2][3], "sonnet")
         fix = [c for c in self.repo.calls() if c["key"] == "a-first:fix"][0]
         self.assertIn("test ! -f FAIL", fix["prompt"])
+        self.assertNotIn("this branch's own `.sdlc/config.json`", fix["prompt"])      # the project's commands: nothing to warn about
         self.assertEqual(self.repo.status_of("a-first"), "done")
         self.assertIsNone(self.repo.show("main", "FAIL"))
 
@@ -646,10 +720,282 @@ class GuardFiles(RepoCase):
         r.git("commit", "-q", "-m", "docs and state")
         self.assertIsNone(guard_files_changed(Config(r.root), Git(r.root), "main", "sdlc/x"))
         cfg = json.loads(r.read(".sdlc/config.json"))
-        cfg["commands"]["lint"] = "true"
+        cfg["commands"]["test"] = "true"
         r.write(".sdlc/config.json", json.dumps(cfg))
         r.git("commit", "-qam", "and the config")
         self.assertIn(".sdlc/config.json (modified)", guard_files_changed(Config(r.root), Git(r.root), "main", "sdlc/x"))
+
+    def guard(self, change):
+        """What the guard says about a branch off main whose one change is `change(config dict)` — or, for a string, that
+        text as the whole file; None when the file is deleted."""
+        from sdlclib.config import Config
+        from sdlclib.gate import guard_files_changed
+        from sdlclib.gitops import Git
+        r = self.repo
+        r.git("checkout", "-q", "-B", "sdlc/x", "main")
+        cfg_on_main = Config(r.root)                                            # the file the loop gates by: main's
+        if change is None:
+            r.git("rm", "-q", ".sdlc/config.json")
+        elif isinstance(change, str):
+            r.write(".sdlc/config.json", change)
+        else:
+            cfg = json.loads(r.read(".sdlc/config.json"))
+            change(cfg)
+            r.write(".sdlc/config.json", json.dumps(cfg, indent=4, sort_keys=True))
+        r.git("add", "-A", "-f")
+        r.git("commit", "-q", "--allow-empty", "-m", "config")
+        out = guard_files_changed(cfg_on_main, Git(r.root), "main", "sdlc/x")
+        r.git("checkout", "-q", "main")
+        return out
+
+    def new_project(self):
+        """A project that has not recorded its commands yet: a config with an empty `commands` and one empty command."""
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["commands"] = {"lint": ""}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg, indent=2))
+        self.repo.git("commit", "-qam", "a new project: no commands yet")
+
+    def test_filling_commands_that_have_no_value_yet_is_not_a_guard_change(self):
+        self.new_project()
+        def fill(cfg):
+            cfg["commands"].update({"build": "make", "test": "pytest", "lint": "ruff check .", "run": "python app.py"})
+        self.assertIsNone(self.guard(fill))                                   # a missing key and an empty string both count as unset
+        self.assertIsNone(self.guard(lambda c: c["commands"].update(test="pytest")))
+        self.assertIsNone(self.guard(lambda c: c.pop("commands")))            # nothing at all: no semantic change
+        self.assertIsNone(self.guard(lambda c: c["commands"].update(format="")))    # an empty command next to an unset one
+        self.assertIsNone(self.guard(lambda c: c.update(commands={})))        # the same as `lint: ""`
+
+    def test_a_fill_is_judged_against_where_the_branch_left_main_not_main_now(self):
+        """Main moved on after the branch was cut — someone changed another key — which is not the branch's change."""
+        from sdlclib.config import Config
+        from sdlclib.gate import guard_files_changed
+        from sdlclib.gitops import Git
+        self.new_project()
+        r = self.repo
+        r.git("checkout", "-q", "-b", "sdlc/x")
+        cfg = json.loads(r.read(".sdlc/config.json"))
+        cfg["commands"]["lint"] = "ruff ."
+        r.write(".sdlc/config.json", json.dumps(cfg, indent=2))
+        r.git("commit", "-qam", "the skeleton fills lint")
+        r.git("checkout", "-q", "main")
+        cfg = json.loads(r.read(".sdlc/config.json"))
+        cfg["loop"]["poll_minutes"] = 5
+        r.write(".sdlc/config.json", json.dumps(cfg, indent=2))
+        r.git("commit", "-qam", "a person changed the loop")
+        self.assertIsNone(guard_files_changed(Config(r.root), Git(r.root), "main", "sdlc/x"))
+
+    def test_a_reformatted_config_changes_nothing(self):
+        self.assertIsNone(self.guard(lambda c: None))                        # re-indented and key-sorted by the helper
+
+    def test_changing_removing_or_blanking_a_command_that_has_a_value_goes_to_a_person(self):
+        guard = ".sdlc/config.json (modified)"
+        for what, change in (("change", lambda c: c["commands"].update(test="true")),
+                             ("remove", lambda c: c["commands"].pop("build")),
+                             ("blank", lambda c: c["commands"].update(build="")),
+                             ("whitespace", lambda c: c["commands"].update(build="  ")),
+                             ("null", lambda c: c["commands"].update(test=None))):
+            self.assertIn(guard, self.guard(change) or "", what)
+
+    def test_a_fill_beside_any_other_change_goes_to_a_person(self):
+        self.new_project()
+        for what, change in (("other key", lambda c: c.update(loop={"self_check": True})),
+                             ("a protection off", lambda c: c.update(protect={"protect_tests": False})),
+                             ("the gate's list", lambda c: c.update(gate={"commands": []})),
+                             ("a command and the loop", lambda c: (c["commands"].update(test="pytest"), c.update(mode="team"))),
+                             ("an unknown key", lambda c: c.update(x=0)),
+                             ("not a string", lambda c: c["commands"].update(test=["pytest"])),
+                             ("a blank string", lambda c: c["commands"].update(test="  ")),
+                             ("commands is not an object", lambda c: c.update(commands="pytest"))):
+            self.assertIn(".sdlc/config.json (modified)", self.guard(change) or "", what)
+
+    def test_a_config_that_is_no_longer_json_or_is_gone_goes_to_a_person(self):
+        self.new_project()
+        self.assertIn(".sdlc/config.json (modified)", self.guard("{not json"))
+        self.assertIn(".sdlc/config.json (modified)", self.guard("[]"))
+        self.assertIn(".sdlc/config.json (deleted or renamed)", self.guard(None))
+
+    def test_the_other_guard_files_are_not_softened_by_a_commands_fill(self):
+        self.new_project()
+        self.repo.git("checkout", "-q", "-B", "sdlc/x", "main")
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["commands"]["lint"] = "ruff ."
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.write(".claude/settings.json", "{}\n")
+        self.repo.git("add", "-A", "-f")
+        self.repo.git("commit", "-q", "-m", "both")
+        from sdlclib.config import Config
+        from sdlclib.gate import guard_files_changed
+        from sdlclib.gitops import Git
+        out = guard_files_changed(Config(self.repo.root), Git(self.repo.root), "main", "sdlc/x")
+        self.assertEqual(out, "guard files changed, a person merges these — .claude/settings.json (added)")
+
+    def gate_events(self):
+        with open(self.repo.path(".sdlc/logs/events.jsonl")) as fh:
+            return [json.loads(l) for l in fh if '"loop.gate"' in l]
+
+    def no_commands_yet(self):
+        """A project that has recorded no commands: its first item is the skeleton that does."""
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["commands"] = {}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg, indent=2))
+        self.repo.git("commit", "-qam", "a new project: no commands yet")
+
+    def test_a_skeleton_that_fills_commands_is_gated_by_them_and_merges_by_itself(self):
+        self.no_commands_yet()
+        self.repo.add_items("a-skeleton", ("b-second", {"deps": ["a-skeleton"]}))
+        fill = {"build": "true", "test": "test ! -f FAIL", "lint": "echo lint", "run": "echo run"}
+        self.repo.scenario({"a-skeleton:build": ["config:" + json.dumps({"commands": fill})]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        for slug in ("a-skeleton", "b-second"):
+            self.assertEqual(self.repo.status_of(slug), "done", slug)
+            self.assertEqual(self.repo.items_state()[slug].get("reasons", []), [], slug)
+        self.assertEqual(json.loads(self.repo.show("main", ".sdlc/config.json"))["commands"], fill)
+        gates = {e["detail"]["slug"]: e["detail"] for e in self.gate_events()}
+        # the skeleton runs what it fills in (nothing runs `run`: no gate command names it), the item after it what the
+        # skeleton merged — and only the skeleton's gate says its commands are the branch's own
+        self.assertEqual({slug: g["ran"] for slug, g in gates.items()},
+                         {"a-skeleton": ["build", "test", "lint"], "b-second": ["build", "test", "lint"]})
+        self.assertEqual({slug: g["filled"] for slug, g in gates.items()},
+                         {"a-skeleton": ["build", "test", "lint"], "b-second": []})
+
+    def test_a_filled_command_that_fails_sends_the_skeleton_to_a_fix_session_not_to_a_person(self):
+        self.no_commands_yet()
+        self.repo.add_items("a-skeleton")
+        fill = {"build": "true", "test": "test ! -f FAIL"}
+        self.repo.scenario({"a-skeleton:build": ["config_fail:" + json.dumps({"commands": fill})]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        first, second = [e["detail"] for e in self.gate_events()]
+        self.assertEqual((first["passed"], first["ran"], first["fixable"], first["human"]),
+                         (False, ["build", "test"], ["`test ! -f FAIL` failed (exit 1)"], []))
+        self.assertEqual((second["passed"], second["ran"]), (True, ["build", "test"]))
+        self.assertIn("a-skeleton:fix", [k for k, *_ in self.keys()])
+        self.assertEqual(self.repo.status_of("a-skeleton"), "done")
+        self.assertEqual(self.repo.items_state()["a-skeleton"].get("reasons", []), [])
+        self.assertEqual(json.loads(self.repo.show("main", ".sdlc/config.json"))["commands"], fill)
+
+    def test_the_fix_session_is_told_not_to_make_a_filled_command_that_cannot_fail(self):
+        self.no_commands_yet()
+        self.repo.add_items("a-skeleton")
+        fill = {"build": "true", "test": "test ! -f FAIL"}
+        self.repo.scenario({"a-skeleton:build": ["config_fail:" + json.dumps({"commands": fill})]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        (fix,) = [c for c in self.repo.calls() if c["key"] == "a-skeleton:fix"]
+        self.assertIn("`test ! -f FAIL` failed (exit 1)", fix["prompt"])
+        self.assertIn("The gate commands `build`, `test` come from this branch's own `.sdlc/config.json` and are this project's "
+                      "gate from now on.", fix["prompt"])
+        self.assertIn("Never make it something that cannot fail (`true`, `exit 0`, `|| true`, an empty run).", fix["prompt"])
+
+    def test_the_warning_names_only_the_commands_the_branch_filled_in(self):
+        """The project has build and test already; the branch adds lint — which fails, and a fix session corrects."""
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["config:" + json.dumps({"commands": {"lint": "exit 4"}})],
+                            "a-first:fix": ["fix_config:" + json.dumps({"commands": {"lint": "echo linted"}})]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        first, second = [e["detail"] for e in self.gate_events()]
+        self.assertEqual((first["ran"], first["filled"], first["fixable"]),
+                         (["build", "test", "lint"], ["lint"], ["`exit 4` failed (exit 4)"]))
+        self.assertEqual((second["passed"], second["filled"]), (True, ["lint"]))
+        (fix,) = [c for c in self.repo.calls() if c["key"] == "a-first:fix"]
+        self.assertIn("The gate commands `lint` come from this branch's own `.sdlc/config.json`", fix["prompt"])
+        self.assertNotIn("`build`, ", fix["prompt"])
+        self.assertEqual(self.repo.status_of("a-first"), "done")
+
+    def test_a_wrong_command_a_skeleton_filled_in_is_corrected_by_a_fix_session_before_it_merges(self):
+        self.no_commands_yet()
+        self.repo.add_items("a-skeleton")
+        self.repo.scenario({"a-skeleton:build": ["config:" + json.dumps({"commands": {"build": "true", "test": "exit 3"}})],
+                            "a-skeleton:fix": ["fix_config:" + json.dumps({"commands": {"test": "echo fixed"}})]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        first, second = [e["detail"] for e in self.gate_events()]
+        self.assertEqual((first["passed"], first["fixable"], first["human"]), (False, ["`exit 3` failed (exit 3)"], []))
+        self.assertEqual((second["passed"], second["ran"], second["human"]), (True, ["build", "test"], []))
+        self.assertEqual(self.repo.status_of("a-skeleton"), "done")                      # still only a fill: no guard, no person
+        self.assertEqual(json.loads(self.repo.show("main", ".sdlc/config.json"))["commands"],
+                         {"build": "true", "test": "echo fixed"})
+
+    def test_the_gate_runs_the_command_in_force_not_the_one_a_branch_changed_and_the_branch_still_goes_to_a_person(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["config_fail:" + json.dumps({"commands": {"test": "true"}})]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        first = self.gate_events()[0]["detail"]
+        # the branch's `test: true` would pass with FAIL there: what failed is the command the project has
+        self.assertEqual((first["ran"], first["fixable"], first["filled"]),
+                         (["build", "test"], ["`test ! -f FAIL` failed (exit 1)"], []))
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec["state"], "needs-human")
+        self.assertEqual(rec["reasons"], ["guard files changed, a person merges these — .sdlc/config.json (modified)"])
+        self.assertEqual(json.loads(self.repo.show("main", ".sdlc/config.json"))["commands"]["test"], "test ! -f FAIL")
+
+    def test_a_fill_beside_another_change_is_not_run_and_goes_to_a_person(self):
+        self.no_commands_yet()
+        self.repo.add_items("a-skeleton")
+        patch = {"commands": {"test": "test ! -f FAIL"}, "loop": {"poll_minutes": 5}}
+        self.repo.scenario({"a-skeleton:build": ["config_fail:" + json.dumps(patch)]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        gate = self.gate_events()[0]["detail"]
+        self.assertEqual((gate["ran"], gate["fixable"], gate["filled"]), ([], [], []))
+        self.assertEqual(self.repo.items_state()["a-skeleton"]["reasons"],
+                         ["guard files changed, a person merges these — .sdlc/config.json (modified)"])
+
+    def built_skeleton(self, fill, extra=()):
+        """What an interactive /sdlc:go leaves on sdlc/a-skeleton: a built work doc and a config that fills in the commands."""
+        r = self.repo
+        r.add_items("a-skeleton")
+        r.git("checkout", "-q", "-b", "sdlc/a-skeleton")
+        r.write("work/a-skeleton.md", r.doc_text("a-skeleton", status="built") +
+                "\n## Plan\n1. Write src/a-skeleton.txt.\n\n## Proof\n| R | check | kind |\n|---|---|---|\n| R1 | test command | auto |\n"
+                "\n## Review\nSDLC_REVIEW_TALLY important=0 nits=1 validated=yes\n")
+        r.write("src/a-skeleton.txt", "built\n")
+        cfg = json.loads(r.read(".sdlc/config.json"))
+        cfg["commands"] = fill
+        r.write(".sdlc/config.json", json.dumps(cfg, indent=2))
+        for path in extra:
+            r.write(path, "x\n")
+        r.git("add", "-A")
+        r.git("commit", "-q", "-m", "build a-skeleton")
+
+    def test_ship_gates_a_skeleton_by_the_commands_it_fills_in_too(self):
+        self.no_commands_yet()
+        self.built_skeleton({"build": "true", "test": "test ! -f FAIL", "lint": "echo lint"}, extra=["FAIL"])
+        r = self.repo.cli("ship", "a-skeleton")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)                          # a command failed: fix it and ship again
+        self.assertIn("`test ! -f FAIL` failed (exit 1)", r.stdout)
+        self.assertIn("The gate commands `build`, `test`, `lint` come from this branch's own `.sdlc/config.json`", r.stdout)
+        self.assertEqual(self.gate_events()[-1]["detail"]["ran"], ["build", "test", "lint"])
+        self.repo.git("rm", "-q", "FAIL")
+        self.repo.git("commit", "-q", "-m", "fix")
+        r = self.repo.cli("ship", "a-skeleton")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.gate_events()[-1]["detail"]["ran"], ["build", "test", "lint"])
+        self.assertEqual(self.repo.status_of("a-skeleton"), "done")
+        self.assertEqual(json.loads(self.repo.show("main", ".sdlc/config.json"))["commands"]["lint"], "echo lint")
+
+    def test_the_gate_command_runs_what_a_skeleton_fills_in_too(self):
+        self.no_commands_yet()
+        self.built_skeleton({"build": "true", "test": "echo tested"})
+        r = self.repo.cli("gate", "a-skeleton", "--json")
+        out = json.loads(r.stdout)
+        self.assertEqual((r.returncode, out["passed"], out["ran"], out["filled"]), (0, True, ["build", "test"], ["build", "test"]))
+        out = json.loads(self.repo.cli("gate", "a-skeleton", "--json", "--no-commands").stdout)       # nothing runs, nothing is filled
+        self.assertEqual((out["ran"], out["filled"]), ([], []))
+
+    def test_changing_a_command_that_has_a_value_still_waits_for_a_person(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ['config:{"commands": {"test": "true"}}']})
+        self.assertEqual(self.repo.engine().run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec["state"], "needs-human")
+        self.assertEqual(rec["reasons"], ["guard files changed, a person merges these — .sdlc/config.json (modified)"])
+        self.assertEqual(json.loads(self.repo.show("main", ".sdlc/config.json"))["commands"]["test"], "test ! -f FAIL")
+
+    def test_an_item_that_breaks_the_config_waits_for_a_person_too(self):
+        self.repo.add_items("a-first", "b-second")
+        self.repo.scenario({"a-first:build": ["config_raw:{not json"], "b-second:build": ["remove:.sdlc/config.json"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["reasons"],
+                         ["guard files changed, a person merges these — .sdlc/config.json (modified)"])
+        self.assertEqual(self.repo.items_state()["b-second"]["reasons"],
+                         ["guard files changed, a person merges these — .sdlc/config.json (deleted or renamed)"])
 
 
 class WhatAPersonDecides(RepoCase):
@@ -681,6 +1027,29 @@ class WhatAPersonDecides(RepoCase):
         with open(e.log_path) as fh:
             self.assertIn("MERGED  a-first — merged by a person", fh.read())
         self.assertEqual([k for k, *_ in self.keys()].count("a-first:build"), 1)           # the loop did not build it again
+        self.assertNotIn("sdlc/a-first", self.repo.git("branch", "--list"))                # the merged branch went with it
+
+    def test_a_merged_branch_is_removed_on_a_repository_without_a_remote(self):
+        self.repo.git("branch", "sdlc/a-first")                                             # at main's tip: merged by any measure
+        self.repo.git("branch", "sdlc/b-second")
+        self.repo.git("checkout", "-q", "sdlc/b-second")
+        e = self.repo.engine()
+        e.drop_merged_branch("a-first")
+        e.drop_merged_branch("b-second")                                                    # checked out: `-d` refuses, no error
+        e.drop_merged_branch("no-such-item")
+        branches = self.repo.git("branch", "--list")
+        self.assertNotIn("sdlc/a-first", branches)
+        self.assertIn("sdlc/b-second", branches)
+
+    def test_a_branch_a_person_squashed_is_left_in_place_without_an_error(self):
+        self.waiting()
+        self.repo.git("merge", "--squash", "sdlc/a-first")
+        self.repo.git("commit", "-q", "-m", "a-first, taken by hand")
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "merged")
+        self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))                   # `-d` refuses a branch that is not merged
+        self.assertEqual(self.repo.status_of("b-second"), "done")
 
     def test_a_squash_merge_by_hand_is_done_too_with_no_engine_state_left(self):
         """The branch tip of a squash is not an ancestor of main: only the built doc on main tells that it was merged."""
@@ -757,9 +1126,10 @@ class Stopping(RepoCase):
         self.assertEqual(self.repo.engine().run(), 2)
         self.assertEqual(self.repo.calls(), [])
 
-    def test_stop_now_interrupts_the_session_and_resume_continues_it(self):
+    def start_and_stop(self, first):
+        """Detach a loop whose build session sits in the stub action `first` until `stop` comes; what stop printed."""
         self.repo.add_items("a-first")
-        self.repo.scenario({"a-first:build": ["sleep:60", "ok"]})
+        self.repo.scenario({"a-first:build": [first, "ok"]})
         r = self.repo.cli("run", "--detach", "--claude-bin", STUBS + "/claude")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("loop started in the background", r.stdout)
@@ -772,8 +1142,9 @@ class Stopping(RepoCase):
         r = self.repo.cli("stop")
         self.assertIn("stopped", r.stdout)
         self.assertLess(time.time() - t, 20)
-        stop = self.repo.items_state()["a-first"]["stop"]
-        self.assertEqual(stop["phase"], "build")
+        return r
+
+    def resume_to_done(self):
         r = self.repo.cli("resume", "--claude-bin", STUBS + "/claude")
         self.assertEqual(r.returncode, 0, r.stdout)
         for _ in range(300):
@@ -781,8 +1152,225 @@ class Stopping(RepoCase):
                 break
             time.sleep(0.1)
         self.assertEqual(self.repo.status_of("a-first"), "done")
+
+    def test_stop_now_interrupts_the_session_and_resume_continues_it(self):
+        self.start_and_stop("sleep:60")
+        stop = self.repo.items_state()["a-first"]["stop"]
+        self.assertEqual(stop["phase"], "build")
+        self.resume_to_done()
         builds = [c for c in self.repo.calls() if c["key"] == "a-first:build"]
         self.assertTrue(builds[-1]["resumed"])
+
+    def test_stop_is_not_a_failure_when_claude_answers_the_interrupt_with_a_success_result(self):
+        """A real claude that gets SIGINT still writes a result — `success`, no text, terminal_reason aborted_streaming."""
+        self.start_and_stop("sleep_graceful:60")
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec["stop"]["phase"], "build")
+        self.assertFalse(rec.get("failures"))
+        self.assertNotIn("last_error", rec)
+        self.resume_to_done()
+        builds = [c for c in self.repo.calls() if c["key"] == "a-first:build"]
+        self.assertEqual([c["action"] for c in builds], ["sleep_graceful:60", "ok"])
+        self.assertTrue(builds[-1]["resumed"])                      # the same session continues, not a fresh one
+        self.assertEqual(builds[-1]["sid"], builds[0]["sid"])
+        self.assertFalse(self.repo.items_state()["a-first"].get("failures"))
+        with open(self.repo.path(".sdlc/logs/events.jsonl")) as fh:
+            self.assertEqual([json.loads(l)["event"] for l in fh if '"loop.item"' in l and '"fail"' in l], [])
+
+    def test_a_session_cut_short_by_something_else_is_a_stop_too(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["aborted:aborted_tools", "ok"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["stop"]["phase"], bool(rec.get("failures"))), ("build", False))
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "planned")
+
+    def test_work_that_was_done_before_the_cut_still_counts(self):
+        """The doc says what happened, not the result event: a phase that finished is not repeated because of how it ended."""
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:design": ["aborted_after_work"], "a-first:build": ["aborted_after_work"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.repo.status_of("a-first"), "done")
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build"])
+        rec = self.repo.items_state()["a-first"]
+        self.assertFalse(rec.get("stop") or rec.get("failures"))
+
+    def test_a_session_that_ends_silent_says_so_in_its_failure(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["silent"]})
+        self.repo.engine().run()
+        err = self.repo.items_state()["a-first"]["last_error"]
+        self.assertIn("build session ended without finishing it: it printed no final message", err)
+        self.assertIn("3 turns", err)
+
+
+class DirtyTree(RepoCase):
+    """Uncommitted work is what somebody wrote — not the bytecode and the caches a test run leaves behind, which git folds
+    into a bare `?? dir/` when nothing else is in the new directory."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.write(".gitignore", ".sdlc/state/\n.sdlc/logs/\n.sdlc/worktrees/\n")    # this project does not ignore bytecode
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "no bytecode in .gitignore")
+
+    def litter(self):
+        self.repo.write("tally/__pycache__/x.cpython-312.pyc", "\0")
+        self.repo.write("tests/__pycache__/t.cpython-312-pytest-8.0.0.pyc", "\0")
+        self.repo.write(".pytest_cache/v/cache/lastfailed", "{}")
+        self.repo.write("tools/old.pyc", "\0")
+        self.repo.write("lib/__pycache__/mod.func-12.py312.nbi", "x")          # a cache file that does not end in .pyc
+
+    def dirty(self):
+        from sdlclib.gitops import Git
+        return Git(self.repo.root).dirty()
+
+    def run_log(self):
+        return latest_run_log(self.repo)
+
+    def test_a_new_package_holding_only_bytecode_is_clean(self):
+        self.litter()
+        self.assertIn("?? tally/\n", self.repo.git("status", "--porcelain") + "\n")      # what plain git says: a folded dir
+        self.assertEqual(self.dirty(), [])
+
+    def test_a_real_file_beside_the_bytecode_is_dirty_and_named(self):
+        self.litter()
+        self.repo.write("tally/real.py", "x = 1\n")
+        self.repo.write("notes/sub/idea.md", "later\n")
+        self.assertEqual(self.dirty(), ["?? notes/sub/idea.md", "?? tally/real.py"])
+
+    def test_tracked_changes_and_renames_are_reported_once_by_their_new_path(self):
+        self.repo.git("mv", "tests/test_base.py", "tests/test_moved.py")
+        self.repo.write("package.json", "{}\n")
+        self.assertEqual(self.dirty(), [" M package.json", "R  tests/test_moved.py"])
+
+    def test_the_engines_own_files_are_not_dirt(self):
+        self.repo.write(".sdlc/state/x.json", "{}")
+        self.repo.write(".sdlc/logs/y.log", "x")
+        self.assertEqual(self.dirty(), [])
+
+    def test_the_loop_starts_on_a_tree_with_only_bytecode_and_does_not_commit_it(self):
+        self.repo.add_items("a-first")
+        self.litter()
+        self.repo.scenario({"a-first:build": ["dirty_built"]})        # leftovers make the engine commit for the session
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.repo.status_of("a-first"), "done")
+        self.assertIsNotNone(self.repo.show("main", "LEFTOVER-a-first"))
+        tracked = self.repo.git("ls-files").splitlines()
+        self.assertEqual([p for p in tracked if p.endswith(".pyc") or ".pytest_cache" in p], [])
+
+    def test_the_stop_fingerprint_ignores_bytecode_but_not_real_files(self):
+        from sdlclib.gitops import Git
+        git = Git(self.repo.root)
+        clean = git.diff_hash()
+        self.litter()
+        self.assertEqual(git.diff_hash(), clean)
+        self.repo.write("tally/real.py", "x = 1\n")
+        self.assertNotEqual(git.diff_hash(), clean)
+
+    def test_the_loop_refuses_a_tree_with_a_real_file_and_names_it(self):
+        self.repo.add_items("a-first")
+        self.litter()
+        self.repo.write("tally/real.py", "x = 1\n")
+        self.assertEqual(self.repo.engine().run(), 2)
+        self.assertEqual(self.repo.calls(), [])
+        log = self.run_log()
+        self.assertIn("uncommitted changes (?? tally/real.py)", log)
+        self.assertNotIn("pyc", log)
+
+    def test_a_refusal_names_up_to_three_files_and_counts_the_rest(self):
+        self.repo.add_items("a-first")
+        for n in "abcde":
+            self.repo.write("mine/%s.txt" % n, n)
+        self.assertEqual(self.repo.engine().run(), 2)
+        self.assertIn("(?? mine/a.txt; ?? mine/b.txt; ?? mine/c.txt … (+2 more))", self.run_log())
+
+    def test_ship_goes_past_bytecode_and_names_what_it_refuses(self):
+        self.repo.add_items("a-first")
+        self.repo.git("checkout", "-qb", "sdlc/a-first")
+        self.litter()
+        r = self.repo.cli("ship", "a-first")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("work/a-first.md says 'ready'", r.stdout)                  # the dirty check let it through
+        self.repo.write("tally/real.py", "x = 1\n")
+        r = self.repo.cli("ship", "a-first")
+        self.assertEqual((r.returncode, r.stdout.strip()), (1, "commit your changes first: ?? tally/real.py"))
+
+    def test_the_gate_command_names_what_it_refuses_too(self):
+        self.repo.add_items("a-first")
+        self.repo.git("checkout", "-qb", "sdlc/a-first")
+        self.repo.write("tally/real.py", "x = 1\n")
+        r = self.repo.cli("gate", "a-first", "--no-commands")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("with a clean tree first (uncommitted: ?? tally/real.py)", r.stderr)
+
+
+class LinkedWorktree(RepoCase):
+    """The default branch is checked out in the main checkout and the loop or the user works in a linked worktree: what lands
+    on the default branch lands there, and what the main checkout holds uncommitted decides whether it can."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.write(".gitignore", ".sdlc/state/\n.sdlc/logs/\n.sdlc/worktrees/\n")     # this project does not ignore bytecode
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "no bytecode in .gitignore")
+        self.wt = os.path.join(self.repo.tmp, "linked")
+
+    def bytecode(self):
+        self.repo.write("tally/__pycache__/x.cpython-312.pyc", "\0")
+        self.repo.write(".pytest_cache/v/cache/lastfailed", "{}")
+
+    def enqueue_from_the_worktree(self):
+        from sdlclib.config import Config
+        from sdlclib.enqueue import enqueue, prepare
+        from sdlclib.gitops import Git, make_forge
+        self.repo.git("worktree", "add", "-q", "-b", "feature", self.wt)
+        cfg, git = Config(self.wt), Git(self.wt)
+        path = os.path.join(self.wt, "work", "x-new.md")
+        with open(path, "w") as fh:
+            fh.write(self.repo.doc_text("x-new"))
+        return enqueue(cfg, git, make_forge(git, "main"), prepare(cfg, git, git.base_ref("main"), [path]), [path])
+
+    def test_docs_are_queued_into_a_main_checkout_that_holds_only_bytecode(self):
+        self.bytecode()
+        result = self.enqueue_from_the_worktree()
+        self.assertEqual(result["how"], "committed on main")
+        self.assertIsNotNone(self.repo.show("main", "work/x-new.md"))
+
+    def test_a_real_uncommitted_file_in_the_main_checkout_stops_it_and_is_named(self):
+        from sdlclib.enqueue import EnqueueError
+        self.bytecode()
+        self.repo.write("scratch.txt", "mine\n")
+        with self.assertRaises(EnqueueError) as ctx:
+            self.enqueue_from_the_worktree()
+        self.assertIn("with uncommitted changes (?? scratch.txt) — commit them first", str(ctx.exception))
+        self.assertIsNone(self.repo.show("main", "work/x-new.md"))
+
+    def merge_from_the_worktree(self, left_in_main=()):
+        """Merge sdlc/a-first from a linked worktree that has it checked out, with `left_in_main` (path, text) files lying
+        around uncommitted in the main checkout, where main is checked out."""
+        from sdlclib.gitops import Git, LocalForge
+        self.repo.git("checkout", "-q", "-b", "sdlc/a-first")
+        self.repo.write("src/a-first.txt", "built\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "build")
+        self.repo.git("checkout", "-q", "main")
+        for rel, text in left_in_main:
+            self.repo.write(rel, text)
+        self.repo.git("worktree", "add", "-q", self.wt, "sdlc/a-first")
+        return LocalForge(Git(self.wt), "main").merge("a-first", "a-first")
+
+    def test_a_merge_from_the_worktree_goes_past_bytecode_in_the_main_checkout(self):
+        ok, info = self.merge_from_the_worktree([("tally/__pycache__/x.cpython-312.pyc", "\0"),
+                                                 (".pytest_cache/v/cache/lastfailed", "{}")])
+        self.assertTrue(ok, info)
+        self.assertEqual(self.repo.show("main", "src/a-first.txt"), "built\n")
+
+    def test_a_merge_from_the_worktree_names_what_the_main_checkout_holds(self):
+        ok, info = self.merge_from_the_worktree([("scratch.txt", "mine\n"), ("tally/__pycache__/x.cpython-312.pyc", "\0")])
+        self.assertFalse(ok)
+        self.assertIn("with uncommitted changes (?? scratch.txt)", info)
+        self.assertIsNone(self.repo.show("main", "src/a-first.txt"))
 
 
 class Accept(RepoCase):
@@ -1258,6 +1846,27 @@ class SelfCheck(RepoCase):
         self.assertEqual(self.repo.status_of("old-debt"), "proposed")
         self.assertIn("source: self-check", self.repo.show("main", "work/fix-one.md"))
         self.assertEqual([k for k, *_ in self.keys()].count("self-check"), 2)
+
+    def test_findings_that_wait_for_a_person_are_counted_when_the_run_stops(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"selfcheck_docs": [{"slug": "old-debt", "status": "proposed"},
+                                               {"slug": "more-debt", "status": "proposed"}]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertIn("stop=nothing runnable — 2 item(s) wait for you", latest_run_log(self.repo))
+        self.assertEqual(self.repo.status_of("old-debt"), "proposed")
+
+    def test_findings_that_are_only_proposed_are_committed_as_a_proposal(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"selfcheck_docs": [{"slug": "old-debt", "status": "proposed"},
+                                               {"slug": "more-debt", "status": "proposed"}]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.repo.git("log", "-1", "--format=%s", "--", "work/old-debt.md"), "sdlc: propose 2 work items")
+
+    def test_findings_that_are_partly_ready_are_still_a_queue_commit(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"selfcheck_docs": [{"slug": "fix-one", "status": "ready"}, {"slug": "old-debt", "status": "proposed"}]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.repo.git("log", "-1", "--format=%s", "--", "work/old-debt.md"), "sdlc: queue 2 work items")
 
     def test_a_drop_the_loop_recorded_moves_main_but_is_not_a_merge_so_nothing_is_self_checked(self):
         self.repo.add_items("a-first")

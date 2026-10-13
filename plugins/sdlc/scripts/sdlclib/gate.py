@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .config import Config
 from .gitops import Git
@@ -39,6 +39,7 @@ class GateResult:
         self.outputs: Dict[str, str] = {}
         self.notes: List[str] = []
         self.ran: List[str] = []
+        self.filled: List[str] = []      # gate commands whose command line is the branch's own fill in .sdlc/config.json
 
     @property
     def passed(self) -> bool:
@@ -55,7 +56,7 @@ class GateResult:
 
     def as_dict(self) -> dict:
         return {"passed": self.passed, "fixable": self.fixable, "human": self.human, "conflict": self.conflict,
-                "ran": self.ran, "notes": self.notes}
+                "ran": self.ran, "filled": self.filled, "notes": self.notes}
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -183,18 +184,80 @@ def _guard_rel(cfg: Config, path: str) -> str:
     return p
 
 
+def _json_object(text: Optional[str]) -> Optional[dict]:
+    try:
+        data = json.loads(text) if text is not None else None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _unset(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equal as JSON: Python alone would call `false` and `0`, or `true` and `1`, the same."""
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def only_fills_commands(old_text: Optional[str], new_text: Optional[str]) -> bool:
+    """`.sdlc/config.json` changed in one way only: commands that had no value got one. Every difference is a
+    `commands.<name>` whose old value is missing, null or an empty string and whose new value is a non-empty string — a new
+    project's skeleton recording how to build and test it. Any name may be filled: one that nothing refers to does nothing,
+    and one that is referred to (`format`, `lint_file`, a name in `gate.commands`) adds a check. Changing or removing a
+    command that has a value, any other key, or a file that is no longer a JSON object is not that: those loosen a
+    guardrail."""
+    old, new = _json_object(old_text), _json_object(new_text)
+    if old is None or new is None:
+        return False
+    old_cmds, new_cmds = old.get("commands"), new.get("commands")
+    if any(c is not None and not isinstance(c, dict) for c in (old_cmds, new_cmds)):
+        return False
+    if not _same({k: v for k, v in old.items() if k != "commands"}, {k: v for k, v in new.items() if k != "commands"}):
+        return False
+    old_cmds, new_cmds = old_cmds or {}, new_cmds or {}
+    for name in set(old_cmds) | set(new_cmds):
+        before, after = old_cmds.get(name), new_cmds.get(name)
+        if _same(before, after) or (_unset(before) and _unset(after)):
+            continue
+        if not (_unset(before) and isinstance(after, str) and after.strip()):
+            return False
+    return True
+
+
+def config_fill(git: Git, base: str, head: str) -> Optional[Dict[str, str]]:
+    """The commands a branch's `.sdlc/config.json` fills in, when filling them is all it changes — `only_fills_commands`,
+    judged against where the branch left the default branch, not against the default branch now. None when the file differs
+    in any other way. The guard lets such a change through and the gate runs what it fills."""
+    start = git.out("merge-base", base, head) or base
+    old_text, new_text = git.show(start, ".sdlc/config.json"), git.show(head, ".sdlc/config.json")
+    if not only_fills_commands(old_text, new_text):
+        return None
+    old = (_json_object(old_text) or {}).get("commands") or {}
+    new = (_json_object(new_text) or {}).get("commands") or {}
+    return {name: value for name, value in new.items() if _unset(old.get(name)) and isinstance(value, str) and value.strip()}
+
+
 def guard_files_changed(cfg: Config, git: Git, base: str, head: str) -> Optional[str]:
     """The files that keep a session in bounds — `.sdlc/config.json`, the frozen-paths file, the Claude Code settings and
-    the gate's own checks directory. A change to any of them on the branch always waits for a person: a session must not
-    loosen its own guardrails and have that merged unattended. Work docs and `.sdlc/state` are not guard files."""
+    the gate's own checks directory. A change to any of them on the branch waits for a person: a session must not loosen
+    its own guardrails and have that merged unattended. The one change let through is a new project's skeleton filling in
+    `commands.*` that were still empty (`only_fills_commands`): that adds checks, it removes none. Work docs and
+    `.sdlc/state` are not guard files."""
     files = {".sdlc/config.json", ".claude/settings.json", ".claude/settings.local.json"}
     frozen = str(cfg.get("protect.frozen_paths_file", "") or "")
     if frozen:
         files.add(_guard_rel(cfg, frozen))
     checks = cfg.rel("checks") + "/"
     kinds = {"A": "added", "D": "deleted or renamed"}
-    hits = ["%s (%s)" % (path, kinds.get(st, "modified")) for st, path in sorted(git.changed(base, head), key=lambda c: c[1])
-            if path in files or path.startswith(checks)]
+    hits = []
+    for st, path in sorted(git.changed(base, head), key=lambda c: c[1]):
+        if path not in files and not path.startswith(checks):
+            continue
+        if path == ".sdlc/config.json" and st == "M" and config_fill(git, base, head) is not None:
+            continue
+        hits.append("%s (%s)" % (path, kinds.get(st, "modified")))
     if not hits:
         return None
     return "guard files changed, a person merges these — " + _list(hits, 8)
@@ -325,7 +388,12 @@ def run_gate(cfg: Config, git: Git, slug: str, base: str, run_commands: bool = T
         # 1. commands
         if run_commands:
             mins = float(cfg.get("gate.timeout_minutes", 30) or 30)
-            for name, cmd in cfg.gate_commands():
+            # a branch that only fills in commands the project had none of — a new project's skeleton — is gated by them;
+            # otherwise (and for every command that has a value) the gate runs the commands in force
+            fills = config_fill(git, base, head) or {}
+            commands = cfg.with_filled_commands(fills).gate_commands()
+            res.filled = [name for name, cmd in commands if cmd == str(fills.get(name) or "").strip()]
+            for name, cmd in commands:
                 r = run_shell(cmd, cwd=git.root, timeout=mins * 60)
                 res.ran.append(name)
                 if not r.ok:

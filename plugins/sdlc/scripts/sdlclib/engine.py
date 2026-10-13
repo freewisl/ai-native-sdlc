@@ -17,11 +17,11 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from . import state as st
-from .config import PHASES, Config
+from .config import PHASES, Config, NotInitialized
 from .enqueue import EnqueueError, departure_reason, drain_inbox, enqueue, prepare, record_drop
 from .events import log_event
 from .gate import GateResult, run_gate
-from .gitops import Forge, Git, make_forge, remote_host
+from .gitops import NOISE_EXCLUDES, Forge, Git, dirty_summary, make_forge, remote_host
 from .queue import Item, TEAM_WAITS, runnable, scan, waiting
 from .session import Runner, SessionResult
 from .util import epoch, now, now_iso, plugin_version, read_text, run, say, stamp, tail
@@ -233,6 +233,7 @@ class Engine:
                 if it is None:
                     if self.self_check_due():
                         added = self.self_check()
+                        items = self.scan()               # findings that wait for a person count in what the run reports
                         if added:
                             continue
                     pollable = self.pollable(items)
@@ -339,7 +340,7 @@ class Engine:
         dirty = self.git.dirty()
         if dirty:
             self.say("LEFT    still on %s: uncommitted changes (%s) — look at them, then `git switch %s`" % (
-                b, dirty[0].strip(), self.default))
+                b, dirty_summary(dirty), self.default))
         elif self.git.ok("checkout", "-q", self.default) or self.git.ok("checkout", "-q", "--detach", self.base()):
             self.say("BACK    on %s again" % self.default)
         else:
@@ -354,13 +355,26 @@ class Engine:
         if b.startswith("sdlc/") and st.item(self.root, b[5:]).get("stop"):
             self.say("RESUME  %s — the session stopped last time left uncommitted changes here; continuing it first" % b[5:])
             return b[5:]
-        raise StopRun("the working tree has uncommitted changes (%s) — commit or stash them first" % dirty[0].strip(), 2)
+        raise StopRun("the working tree has uncommitted changes (%s) — commit or stash them first" % dirty_summary(dirty), 2)
 
     def to_default(self) -> None:
-        if self.git.dirty():
-            raise StopRun("the working tree is not clean on %s: %s" % (self.git.branch() or "HEAD", self.git.dirty()[0]), 2)
+        dirty = self.git.dirty()
+        if dirty:
+            raise StopRun("the working tree is not clean on %s: %s" % (self.git.branch() or "HEAD", dirty_summary(dirty)), 2)
         if not self.git.to_default(self.default):
             raise StopRun("cannot check out or fast-forward %s" % self.default, 2)
+        self.refresh_config()
+
+    def refresh_config(self) -> None:
+        """`.sdlc/config.json` changes on the default branch while the loop runs — a skeleton item fills in `commands.*` and
+        this very loop merges it — and the next item must be gated by the file as it is now, not as the run began."""
+        try:
+            fresh = Config(self.root)
+        except NotInitialized:
+            return                                   # unreadable at this moment: keep what the run has
+        if fresh.raw != self.cfg.raw:
+            self.cfg = fresh
+            self.say("CONFIG  .sdlc/config.json changed on %s — the next items use the new one" % self.default)
 
     def scan(self) -> Dict[str, Item]:
         return scan(self.cfg, self.git, self.base(), st.load_items(self.root))
@@ -411,7 +425,7 @@ class Engine:
         """Commit whatever a session left uncommitted on the item branch (never on the default branch)."""
         if not self.git.dirty() or self.git.branch() != "sdlc/" + slug:
             return False
-        self.git("add", "-A", "--", ".", ":(exclude).sdlc/state", ":(exclude).sdlc/logs", ":(exclude).sdlc/worktrees")
+        self.git("add", "-A", "--", ".", *NOISE_EXCLUDES)
         r = self.git("commit", "-q", "-m", message)
         if not r.ok:
             r = self.git("commit", "-q", "--no-verify", "-m", message)
@@ -422,9 +436,10 @@ class Engine:
         b = "sdlc/" + slug
         if self.git.branch() == b:
             return
-        if self.git.dirty():
-            raise StopRun("the session left %s with uncommitted changes (expected %s) — sort it out by hand" %
-                          (self.git.branch() or "a detached HEAD", b), 2)
+        dirty = self.git.dirty()
+        if dirty:
+            raise StopRun("the session left %s with uncommitted changes (%s; expected %s) — sort it out by hand" %
+                          (self.git.branch() or "a detached HEAD", dirty_summary(dirty), b), 2)
         if not self.git.ok("checkout", "-q", b):
             raise StopRun("cannot return to %s after the session" % b, 2)
 
@@ -539,7 +554,9 @@ class Engine:
                 if phase == "design" and self.design_unfinished(slug):
                     self.reopen_design(slug, before_status)
                     return self.fail(slug, "design left Plan/Proof empty")
-                return self.fail(slug, "the %s session ended without finishing it: %s" % (phase, tail(res.text, 3)[:300]))
+                said = tail(res.text, 3)[:300].strip() or "it printed no final message (%d turns%s)" % (
+                    res.turns, ", ended: " + res.terminal if res.terminal else "")
+                return self.fail(slug, "the %s session ended without finishing it: %s" % (phase, said))
             if res.status == "error":
                 if self.is_infra(res) and infra_retries < 2:
                     infra_retries += 1
@@ -552,8 +569,10 @@ class Engine:
                     self.remember_stop(slug, phase, res, "service error", model=model)
                     return Outcome.INFRA
                 return self.fail(slug, "the %s session failed: %s" % (phase, res.api_error or tail(res.text, 2)[:200]))
-            # stopped: max_turns · timeout · limited · interrupted
-            why = {"max_turns": "turn cap", "timeout": "time cap (%d min)" % self.session_minutes, "limited": res.limit_text,
+            # stopped: max_turns · budget · timeout · limited · interrupted
+            budget = self.runner.budget
+            why = {"max_turns": "turn cap", "budget": "budget cap ($%g)" % budget if budget > 0 else "budget cap",
+                   "timeout": "time cap (%d min)" % self.session_minutes, "limited": res.limit_text,
                    "interrupted": "stopped by request"}.get(res.status, res.status)
             fp = self.git.diff_hash()
             self.remember_stop(slug, phase, res, why, fp, model)
@@ -757,6 +776,7 @@ class Engine:
                 st.update(self.root, it.slug, state="merged", reasons=None)
                 self.say("MERGED  %s — merged by a person" % it.slug)
                 self.event("loop.item", "merged-by-person", "", {"slug": it.slug})
+                self.drop_merged_branch(it.slug)
                 continue
             if it.phase == "needs-human" or (it.phase == "blocked" and gh):
                 if gh and not it.rec.get("pr"):
@@ -766,6 +786,7 @@ class Engine:
                     st.update(self.root, it.slug, state="merged", reasons=None)
                     self.say("MERGED  %s — merged by a person" % it.slug)
                     self.event("loop.item", "merged-by-person", "", {"slug": it.slug})
+                    self.drop_merged_branch(it.slug)
                     moved = True
                 elif s == "closed" and gh:
                     st.update(self.root, it.slug, state="closed", reasons=None)
@@ -773,6 +794,12 @@ class Engine:
                     self.event("loop.item", "closed-by-person", "", {"slug": it.slug})
                     moved = True
         return moved
+
+    def drop_merged_branch(self, slug: str) -> None:
+        """Without a remote nothing else removes the branch a person merged by hand (on GitHub the PR's merge does). Safe
+        delete: a branch that is not merged into the checked-out one — a squash — stays, and a failure is left alone."""
+        if self.forge.kind == "local" and self.git.branch() != "sdlc/" + slug:
+            self.git("branch", "-d", "sdlc/" + slug)
 
     # ------------------------------------------------------------------ gate, ship
     def gate_phase(self, slug: str) -> str:
@@ -806,6 +833,11 @@ class Engine:
         lines += ["- " + f for f in res.fixable]
         for name, out in res.outputs.items():
             lines.append("\n`%s` output (last lines):\n```\n%s\n```" % (name, out))
+        if res.filled:
+            lines.append("\nThe gate commands %s come from this branch's own `.sdlc/config.json` and are this project's gate from "
+                         "now on. When one fails, fix the project, or the command line so that it really builds, tests or lints. "
+                         "Never make it something that cannot fail (`true`, `exit 0`, `|| true`, an empty run)." %
+                         ", ".join("`%s`" % n for n in res.filled))
         if res.human:
             lines.append("\nAlso reported, for a person (do not try to get around these): " + "; ".join(res.human))
         lines.append("\nFix the cause — never weaken, skip or delete a test. Update the `## Review` tally in the work doc if "
@@ -856,8 +888,9 @@ class Engine:
         b = "sdlc/" + slug
         if self.git.branch() != b:
             return 1, "check out %s first (now on %s)" % (b, self.git.branch() or "a detached HEAD")
-        if self.git.dirty():
-            return 1, "commit your changes first: " + "; ".join(self.git.dirty()[:3])
+        dirty = self.git.dirty()
+        if dirty:
+            return 1, "commit your changes first: " + dirty_summary(dirty)
         s = self.doc_status(slug)
         if s not in ("built", "done"):
             return 1, "work/%s.md says '%s' — set status: built (with the review tally) when the change is ready" % (slug, s)
@@ -959,6 +992,30 @@ class Engine:
         return len(ready)
 
 
+def _after_setting(line: str) -> str:
+    """`test_changes: allowed — why`, `**test_changes:** allowed: why` and `` `test_changes` allowed — why`` give `why`. Markup
+    the mention opened is closed with it; markup that starts the reason (a code span naming the test) is the reason's own."""
+    m = re.match(r"([*_`]*)test_changes", line, re.I)
+    if not m:
+        return line
+    opened = list(m.group(1))
+
+    def close(text: str) -> str:
+        while text and text[0] in opened:
+            opened.remove(text[0])
+            text = text[1:]
+        return text
+
+    after = line[m.end():]
+    rest = close(after)
+    sep = re.match(r"\s*[:=]", rest)
+    if not sep and rest == after:
+        return line                                  # not the setting spelled out: the whole line is the reason
+    if sep:
+        rest = close(rest[sep.end():].lstrip())
+    return re.sub(r"^\s*(?:[*_`]*allowed[*_`]*)?[\s,;:—–-]*", "", rest, flags=re.I)
+
+
 def tests_allowed_note(d: Optional[WorkDoc]) -> str:
     """One line for the PR body and the merge commit when the design let this item change existing tests — the reason is
     the first line of the Plan, Departures or Proof that speaks of `test_changes` or existing tests. Empty otherwise."""
@@ -967,10 +1024,9 @@ def tests_allowed_note(d: Optional[WorkDoc]) -> str:
     why = ""
     for name in ("Plan", "Departures", "Proof"):
         for raw in re.sub(r"<!--.*?-->", "", d.section(name), flags=re.S).splitlines():
-            line = re.sub(r"^[\s>*+-]+|^\d+[.)]\s+", "", raw.strip()).strip()
+            line = re.sub(r"^(?:[>+-]\s*|\*\s+|\d+[.)]\s+)+", "", raw.strip()).strip()     # list bullets and numbers, not emphasis
             if re.search(r"test_changes|existing tests?", line, re.I):
-                line = re.sub(r"^[*_`]*test_changes(?:[*_`]*\s*[:=]|[*`]+)\s*[*`]*\s*(?:allowed)?\s*[*`]*[\s,;:—–-]*", "", line,
-                              flags=re.I).strip()
+                line = _after_setting(line).strip()
                 if line:
                     why = line[:200]
                     break

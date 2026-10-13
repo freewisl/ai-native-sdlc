@@ -28,8 +28,9 @@ RESET_EPOCH_KEYS = ("resetsAt", "resets_at")
 class SessionResult:
     def __init__(self) -> None:
         self.sid = ""
-        self.status = "error"        # ok | max_turns | timeout | limited | interrupted | error | no_plugin
+        self.status = "error"        # ok | max_turns | budget | timeout | limited | interrupted | error | no_plugin
         self.rc = 0
+        self.terminal = ""           # the result event's terminal_reason: completed · aborted_streaming · aborted_tools · …
         self.text = ""
         self.turns = 0
         self.cost_total = 0.0
@@ -48,7 +49,7 @@ class SessionResult:
     @property
     def stopped(self) -> bool:
         """Stopped early with its work resumable."""
-        return self.status in ("max_turns", "timeout", "limited", "interrupted")
+        return self.status in ("max_turns", "budget", "timeout", "limited", "interrupted")
 
     def token(self, name: str) -> Optional[str]:
         """The value after a printed marker like `SDLC_PLANNED <slug>`, from the final result text."""
@@ -230,6 +231,7 @@ class Runner:
             res.plugin_loaded = "sdlc" in plugins
         if isinstance(r, dict) and r:
             res.text = str(r.get("result") or "")
+            res.terminal = str(r.get("terminal_reason") or "")
             res.turns = int(r.get("num_turns") or 0)
             res.cost_total = float(r.get("total_cost_usd") or 0.0)
             res.models = sorted((r.get("modelUsage") or {}).keys())
@@ -241,7 +243,7 @@ class Runner:
             elif sub == "error_max_turns":
                 res.status = "max_turns"
             elif sub == "error_max_budget_usd":
-                res.status = "max_turns"     # resumable like a turn cap
+                res.status = "budget"        # resumable like a turn cap, but it is the spend cap that stopped it
             else:
                 res.status = "error"
         kind, reset, msg = classify_limit(res.text, info.get("rate") if isinstance(info.get("rate"), dict) else None)
@@ -249,7 +251,9 @@ class Runner:
             res.status, res.limit_kind, res.limit_reset, res.limit_text = "limited", kind, reset, msg
         elif res.rc == 124:
             res.status = "timeout"
-        elif res.rc == 130 and res.status != "ok":
+        elif res.terminal.startswith("aborted") or (res.rc == 130 and not (res.status == "ok" and res.terminal == "completed")):
+            # a SIGINT'd claude still writes a result: `success`, empty text, terminal_reason aborted_streaming — it was cut
+            # short, not finished. Only a session that ended by itself (`completed`) before the signal landed stays ok.
             res.status = "interrupted"
         elif not r and res.status == "error" and not res.api_error:
             res.api_error = "no result in the session log (exit %s)" % res.rc

@@ -22,7 +22,7 @@ Arguments: $ARGUMENTS
 1. **Look first.** Read `.sdlc/config.json` (`language`, `mode`, `paths.work` — default `work` — and `commands`), CLAUDE.md and the existing work docs (Glob the work dir; `sdlc.py status` shows the queue). On an existing codebase sweep it with the `sdlc-researcher` agent. When the goal hinges on a decision only the user can take (which provider, which platform), ask one short multiple-choice question first, recommended answer first — never invent it.
 2. **Split** the goal into work items, one pull request each, typically 3–12 (a small goal is one item; more than a dozen: queue the first dozen and say the rest follows once they merge).
    - One coherent change with its own tests that a single build session can finish.
-   - A new app: item 1 is the skeleton — project setup, one passing test, and the build/test/lint commands recorded in `commands.*` of `.sdlc/config.json` and in CLAUDE.md. An empty test command makes the gate verify nothing; on an existing repository without one, tell the user.
+   - A new app: item 1 is the skeleton — project setup, one passing test, and the build/test/lint commands recorded in `commands.*` of `.sdlc/config.json` and in CLAUDE.md. Filling a command that is still empty is the one `.sdlc/config.json` change the gate lets through unattended; changing or removing a command that has a value goes to a person. An empty test command makes the gate verify nothing; on an existing repository without one, tell the user.
    - Independent where possible. `depends_on: [slug]` only for a real order: an item starts after its dependencies merged.
    - Acceptance criteria: numbered `R1. WHEN … THE SYSTEM SHALL …`, observable and testable, a handful per item. They freeze once the item is planned, so describe behavior, not implementation. Leave Plan and Proof to the design session.
 3. **Write one doc per item** into the work dir as `<slug>.md` (slug: lowercase ascii, digits, `-`; the file name equals the slug). Format: `${CLAUDE_PLUGIN_ROOT}/skills/go/references/work-doc.md`; skeleton: `${CLAUDE_PLUGIN_ROOT}/templates/<language>/work.md`.
@@ -51,7 +51,7 @@ Arguments: $ARGUMENTS
 7. **Tell the user**, briefly:
    - Follow it with "어디까지 됐어?". Stop it with "멈춰" (the running session is recorded; "이어서 돌려" continues it) or "이것만 끝내고 멈춰". A question the loop cannot settle is parked for them while the rest goes on. It stops by itself when the queue is empty, only items waiting for them are left, failures pile up, or a usage limit resets too far away, and says why. Cost so far is in the status.
    - The loop works in this checkout and switches branches here: leave the files alone while it runs, or use another `git worktree`.
-   - Solo: what passes the gate is merged by the loop; a few merges a week are offered for a quick rating.
+   - Solo: what passes the gate is merged by the loop; only what the gate hands to a person waits for them (a new dependency, a risk path, a guard file, an existing test changed, …) — the status lists it with the reasons. A few merges a week are offered for a quick rating.
    - Team: a person merges the queue PR (that is the approval of the list). Each item then gets a draft design PR; an approving review by someone other than its author, or the label `sdlc:approved`, lets the build start. A passed gate marks the PR ready, and a person merges it. The loop polls every 10 minutes and gives up after 12 idle hours ("이어서 돌려" restarts it).
 
 ## Start or resume

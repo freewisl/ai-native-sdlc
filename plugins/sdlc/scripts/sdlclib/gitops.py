@@ -15,6 +15,24 @@ from typing import List, Optional, Tuple
 from .util import CmdResult, run
 
 IGNORED_DIRTY = (".sdlc/state/", ".sdlc/logs/", ".sdlc/worktrees/")
+# pathspecs that keep the same noise out of a commit the engine makes for a session
+NOISE_EXCLUDES = (":(exclude).sdlc/state", ":(exclude).sdlc/logs", ":(exclude).sdlc/worktrees", ":(exclude,glob)**/__pycache__/**",
+                  ":(exclude,glob)**/*.pyc", ":(exclude,glob)**/.pytest_cache/**")
+
+
+def is_noise(path: str) -> bool:
+    """A path nobody wrote: the engine's own state and logs, and what a test run leaves behind — Python bytecode (anything
+    under a `__pycache__/`, or a stray `.pyc`) and the pytest cache. Neither dirties the tree nor goes into a commit."""
+    if any(path.startswith(p) for p in IGNORED_DIRTY):
+        return True
+    parts = path.rstrip("/").split("/")
+    return "__pycache__" in parts or ".pytest_cache" in parts or path.endswith(".pyc")
+
+
+def dirty_summary(lines: List[str], cap: int = 3) -> str:
+    """The first few dirty entries for a refusal message — `?? tally/real.py; M  setup.py` — and how many more there are."""
+    out = "; ".join(l.strip() for l in lines[:cap])
+    return out + (" … (+%d more)" % (len(lines) - cap) if len(lines) > cap else "")
 
 
 class Git:
@@ -41,14 +59,20 @@ class Git:
     def head(self, ref: str = "HEAD") -> str:
         return self.out("rev-parse", "-q", "--verify", ref + "^{commit}")
 
-    def dirty(self) -> List[str]:
-        r = self("status", "--porcelain")
-        lines = []
-        for line in r.out.splitlines():
-            path = line[3:]
-            if any(path.startswith(p) for p in IGNORED_DIRTY) or path.endswith("__pycache__/"):
+    def dirty(self, cwd: Optional[str] = None) -> List[str]:
+        """What a person would call uncommitted work, as `XY path` lines. Every untracked file is listed on its own — a
+        folded `?? dir/` would hide what is inside — and the engine's state and the noise a test run leaves are left out."""
+        entries = self("status", "--porcelain", "-z", "--untracked-files=all", cwd=cwd).out.split("\0")
+        lines: List[str] = []
+        i = 0
+        while i < len(entries):
+            entry, i = entries[i], i + 1
+            if len(entry) < 4:
                 continue
-            lines.append(line)
+            if entry[0] in "RC" or entry[1] in "RC":
+                i += 1                           # a rename or copy carries its source path as the next entry
+            if not is_noise(entry[3:]):
+                lines.append(entry)
         return lines
 
     def has_remote(self) -> bool:
@@ -94,8 +118,7 @@ class Git:
         """Fingerprint of HEAD plus every uncommitted change, new files' content included — equal fingerprints at two
         stops mean the session in between changed nothing."""
         h = hashlib.sha1((self.head() + "\n" + self("diff", "HEAD").out).encode("utf-8", "replace"))
-        new = [p for p in self.out("ls-files", "--others", "--exclude-standard").splitlines()
-               if not any(p.startswith(x) for x in IGNORED_DIRTY)]
+        new = [p for p in self.out("ls-files", "--others", "--exclude-standard").splitlines() if not is_noise(p)]
         for p in sorted(new)[:500]:
             h.update(p.encode("utf-8", "replace"))
             try:
@@ -237,8 +260,9 @@ class LocalForge(Forge):
             wt = g.worktree_of(self.default)
             if not wt:
                 return False, "cannot check out " + self.default
-            if g("status", "--porcelain", cwd=wt).out.strip():
-                return False, "%s is checked out in %s with uncommitted changes" % (self.default, wt)
+            dirty = g.dirty(cwd=wt)
+            if dirty:
+                return False, "%s is checked out in %s with uncommitted changes (%s)" % (self.default, wt, dirty_summary(dirty))
             g("checkout", "-q", "--detach")
             where = wt
         r = g("merge", "--squash", b, cwd=where)

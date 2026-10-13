@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 from . import state as st
 from .config import Config
 from .events import read_events
-from .gitops import Git
+from .gitops import Git, make_forge
 from .queue import Item, counts, runnable, scan
 from .util import epoch, parse_iso, read_json
 
@@ -53,7 +53,7 @@ def collect(root: str) -> Dict[str, Any]:
                    "last_stop": loop.get("stop", "") if not pid else "", "run_cost_usd": loop.get("cost_usd", 0)}
     out["counts"] = counts(items)
     out["next"] = [it.slug for it in runnable(items)][:5]
-    out["needs_you"] = needs_you(items)
+    out["needs_you"] = needs_you(items, local=make_forge(git, default, str(cfg.get("loop.forge", "auto"))).kind == "local")
     out["items"] = [it.as_dict() for it in sorted(items.values(), key=lambda i: (i.created or "9999", i.slug))]
     out["cost"] = costs(root)
     merges = [e for e in read_events(root, "loop.merge")]
@@ -64,7 +64,9 @@ def collect(root: str) -> Dict[str, Any]:
     return out
 
 
-def needs_you(items: Dict[str, Item]) -> List[Dict[str, Any]]:
+def needs_you(items: Dict[str, Item], local: bool = False) -> List[Dict[str, Any]]:
+    """What waits for the user. `local`: there is no remote, so no PR — a person accepts a `needs-human` item by merging its
+    branch, and the entry's `accept` says the command."""
     out: List[Dict[str, Any]] = []
     for it in sorted(items.values(), key=lambda i: (i.created or "9999", i.slug)):
         d = it.branch_doc or it.doc
@@ -72,7 +74,10 @@ def needs_you(items: Dict[str, Item]) -> List[Dict[str, Any]]:
         if it.phase == "needs-input":
             out.append(dict(base, kind="question", text=_first_lines(d.section("Questions") if d else "", 8)))
         elif it.phase == "needs-human":
-            out.append(dict(base, kind="human", text=[str(r) for r in it.rec.get("reasons") or []]))
+            entry = dict(base, kind="human", text=[str(r) for r in it.rec.get("reasons") or []])
+            if local and it.branch:
+                entry["accept"] = "git merge sdlc/%s" % it.slug
+            out.append(entry)
         elif it.phase == "approval":
             out.append(dict(base, kind="approve-design", text=["design PR waits for an approving review"]))
         elif it.phase == "awaiting-merge":
@@ -87,6 +92,8 @@ def needs_you(items: Dict[str, Item]) -> List[Dict[str, Any]]:
 
 
 def costs(root: str) -> Dict[str, Any]:
+    """What the loop spent: the sessions it ran, summed from its events. A session the user ran by hand (`/sdlc:go`) is
+    not in it — `covers` says so in the JSON, the label `loop cost:` in the text."""
     today = _dt.date.today()
     day = week = 0.0
     per_slug: Dict[str, float] = {}
@@ -105,7 +112,7 @@ def costs(root: str) -> Dict[str, Any]:
             per_slug[det["slug"]] = per_slug.get(det["slug"], 0.0) + c
     merged = [(e.get("detail") or {}).get("slug") for e in read_events(root, "loop.merge")]
     vals = [per_slug[s] for s in merged if s in per_slug and per_slug[s] > 0]
-    return {"today_usd": round(day, 2), "week_usd": round(week, 2),
+    return {"covers": "sessions the loop ran", "today_usd": round(day, 2), "week_usd": round(week, 2),
             "median_per_merged_usd": round(statistics.median(vals), 2) if vals else None, "merged_items_counted": len(vals)}
 
 
@@ -160,8 +167,10 @@ def render(s: Dict[str, Any]) -> str:
             L.append("  %s %s — %s%s" % (mark.get(n["kind"], "-"), n["slug"], text[:160], ("  " + n["pr"]) if n.get("pr") else ""))
             for more in n["text"][1:4]:
                 L.append("      " + more[:160])
+            if n.get("accept"):
+                L.append("      accept as is: " + n["accept"])
     co = s["cost"]
-    L.append("cost: today $%.2f · 7 days $%.2f%s" % (co["today_usd"], co["week_usd"],
+    L.append("loop cost: today $%.2f · 7 days $%.2f%s" % (co["today_usd"], co["week_usd"],
              " · median per merged item $%.2f (%d)" % (co["median_per_merged_usd"], co["merged_items_counted"])
              if co["median_per_merged_usd"] is not None else ""))
     if s["recent_merges"]:

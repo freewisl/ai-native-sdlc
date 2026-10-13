@@ -81,7 +81,8 @@ calls = os.environ.get("STUB_CLAUDE_CALLS")
 if calls:
     with open(calls, "a") as fh:
         fh.write(json.dumps({"key": key, "action": action, "sid": sid, "resumed": resumed, "model": model,
-                             "effort": opt("--effort") or "", "prompt": prompt, "claudecode": os.environ.get("CLAUDECODE"), "cwd": os.getcwd(),
+                             "effort": opt("--effort") or "", "budget": opt("--max-budget-usd"), "prompt": prompt,
+                             "claudecode": os.environ.get("CLAUDECODE"), "cwd": os.getcwd(),
                              "branch": git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip()}) + "\n")
 
 name, _, param = action.partition(":")
@@ -112,14 +113,16 @@ def add_section(text, title, body):
 
 
 def commit(msg):
-    git("add", "-A", "--", ".", ":(exclude).sdlc/state", ":(exclude).sdlc/logs")
+    # a session commits what it wrote, not the bytecode and caches that running tests leaves behind
+    git("add", "-A", "--", ".", ":(exclude).sdlc/state", ":(exclude).sdlc/logs", ":(exclude,glob)**/__pycache__/**",
+        ":(exclude,glob)**/*.pyc", ":(exclude,glob)**/.pytest_cache/**")
     git("commit", "-q", "-m", msg)
 
 
-def result(text, subtype="success", is_error=False, api_error=None, rc=0):
+def result(text, subtype="success", is_error=False, api_error=None, rc=0, terminal="completed"):
     emit({"type": "result", "subtype": subtype, "is_error": is_error, "result": text, "session_id": sid, "num_turns": 3,
           "total_cost_usd": cost, "modelUsage": {"claude-%s" % model: {"outputTokens": 10}}, "permission_denials": [],
-          "api_error_status": api_error})
+          "api_error_status": api_error, "terminal_reason": terminal})
     sys.exit(rc)
 
 
@@ -188,8 +191,44 @@ def on_sigint(signum, frame):
     sys.exit(130)
 
 
+def on_sigint_graceful(signum, frame):
+    # what the real claude does on SIGINT: ends the turn and still writes a result — it looks like a success, with no
+    # text, and says only in terminal_reason that it was cut short
+    result("", terminal="aborted_streaming")
+
+
+def patch_config(patch):
+    """Merge a JSON patch into .sdlc/config.json (a null value removes the key) — the skeleton item filling commands.*."""
+    path = os.path.join(".sdlc", "config.json")
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    def merge(a, b):
+        for k, v in b.items():
+            if v is None:
+                a.pop(k, None)
+            elif isinstance(v, dict) and isinstance(a.get(k), dict):
+                merge(a[k], v)
+            else:
+                a[k] = v
+    merge(data, patch)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+
+
+def write_raw(path, text):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 if name == "sleep":
     signal.signal(signal.SIGINT, on_sigint)
+    time.sleep(float(param or 30))
+    name = "ok"
+elif name == "sleep_graceful":
+    signal.signal(signal.SIGINT, on_sigint_graceful)
     time.sleep(float(param or 30))
     name = "ok"
 
@@ -211,13 +250,14 @@ if name in ("ok", "no_plugin"):
         result("SDLC_SELFCHECK items=%d" % (len(scen.get("selfcheck_docs", [])) if n == 0 else 0))
     else:
         result("ok")
-elif name == "max_turns":
+elif name in ("max_turns", "max_budget"):
+    # the two caps that stop a session with its work resumable: the turn cap and the spend cap (--max-budget-usd)
     os.makedirs("src", exist_ok=True)
     with open(os.path.join("src", "%s-partial-%d.txt" % (slug, n)), "w") as fh:
         fh.write("partial\n")
-    result("", subtype="error_max_turns", is_error=True)
-elif name == "max_turns_noprogress":
-    result("", subtype="error_max_turns", is_error=True)
+    result("", subtype="error_max_turns" if name == "max_turns" else "error_max_budget_usd", is_error=True)
+elif name in ("max_turns_noprogress", "max_budget_noprogress"):
+    result("", subtype="error_max_turns" if name == "max_turns_noprogress" else "error_max_budget_usd", is_error=True)
 elif name == "limit_session":
     emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour",
                                                           "resetsAt": int(time.time() + float(param or 1))}})
@@ -259,6 +299,16 @@ elif name == "infra":
     result("API Error: Overloaded", subtype="error_during_execution", is_error=True, api_error=529)
 elif name == "gave_up":
     result("I could not finish this.")
+elif name == "silent":
+    result("")                       # ended on its own, with nothing to say and the doc untouched
+elif name == "aborted":
+    result("", terminal=param or "aborted_streaming")    # cut short without anyone's signal
+elif name == "aborted_after_work":
+    if phase == "design":                                # the phase was done and committed; the result still says aborted
+        design()
+    elif phase == "build":
+        build()
+    result("", terminal="aborted_streaming")
 elif name == "new_dep":
     def dep():
         with open("package.json") as fh:
@@ -314,6 +364,27 @@ elif name == "touch":
     result("SDLC_BUILT %s" % slug)
 elif name == "remove":
     build(extra=lambda: git("rm", "-q", param))
+    result("SDLC_BUILT %s" % slug)
+elif name == "config":
+    build(extra=lambda: patch_config(json.loads(param)))
+    result("SDLC_BUILT %s" % slug)
+elif name == "config_fail":
+    # the same, and the change leaves the project's test command (`test ! -f FAIL`) failing until a fix session removes FAIL
+    def patch_and_fail():
+        patch_config(json.loads(param))
+        with open("FAIL", "w") as fh:
+            fh.write("the test command fails while this file exists\n")
+    build(extra=patch_and_fail)
+    result("SDLC_BUILT %s" % slug)
+elif name == "fix_config":
+    # a fix session that corrects what the branch recorded in .sdlc/config.json
+    patch_config(json.loads(param))
+    with open("FIXED-%s" % slug, "a") as fh:
+        fh.write("fixed\n")
+    commit("fix %s" % slug)
+    result("SDLC_FIXED")
+elif name == "config_raw":
+    build(extra=lambda: write_raw(os.path.join(".sdlc", "config.json"), param))
     result("SDLC_BUILT %s" % slug)
 elif name == "change_acceptance":
     def change():
