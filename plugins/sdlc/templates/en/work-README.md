@@ -6,7 +6,7 @@ writes these; you can too.
 
 | status | meaning |
 |---|---|
-| `proposed` | an idea someone still has to accept (set it to `ready` to queue it) |
+| `proposed` | an idea someone still has to accept: say so in /sdlc:status (it runs `sdlc.py accept <slug>`), or set it to `ready` and `sdlc.py enqueue` it |
 | `ready` | on the queue; the loop designs it next |
 | `planned` | designed (on branch `sdlc/<slug>`); the loop builds it next |
 | `built` | built and reviewed; the merge gate runs next |

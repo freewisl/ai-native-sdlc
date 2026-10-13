@@ -408,18 +408,51 @@ class WhatAPersonDecides(RepoCase):
         self.waiting()
         self.assertEqual(self.counts(), {"needs-human": 1, "design": 1})
         self.repo.git("merge", "-q", "--no-edit", "sdlc/a-first")                         # the person takes it from here
-        self.assertEqual(self.repo.status_of("a-first"), "built")                         # the doc on main still says built
-        self.assertEqual(self.counts(), {"needs-human": 1, "design": 1})                  # status alone does not know yet
+        self.assertEqual(self.repo.status_of("a-first"), "built")                         # a built doc on main: a person merged it
+        self.assertEqual(self.counts(), {"done": 1, "design": 1})                         # status knows at once, no loop needed
         e = self.repo.engine()
         self.assertEqual(e.run(), 0)
         rec = self.repo.items_state()["a-first"]
-        self.assertEqual(rec["state"], "merged")
+        self.assertEqual(rec["state"], "merged")                                           # the loop clears the stale wait
         self.assertNotIn("reasons", rec)
         self.assertEqual(self.repo.status_of("b-second"), "done")                         # its dependent was released and ran
         self.assertEqual(self.counts(), {"done": 2})
         with open(e.log_path) as fh:
             self.assertIn("MERGED  a-first — merged by a person", fh.read())
         self.assertEqual([k for k, *_ in self.keys()].count("a-first:build"), 1)           # the loop did not build it again
+
+    def test_a_squash_merge_by_hand_is_done_too_with_no_engine_state_left(self):
+        """The branch tip of a squash is not an ancestor of main: only the built doc on main tells that it was merged."""
+        self.waiting()
+        self.repo.git("merge", "--squash", "sdlc/a-first")
+        self.repo.git("commit", "-q", "-m", "a-first, taken by hand")
+        ancestor = subprocess.run(["git", "-C", self.repo.root, "merge-base", "--is-ancestor", "sdlc/a-first", "main"],
+                                  env=self.repo.env())
+        self.assertEqual(ancestor.returncode, 1)
+        os.remove(self.repo.path(".sdlc/state/items.json"))                               # …and the engine remembers nothing
+        self.assertEqual(self.repo.status_of("a-first"), "built")
+        s = json.loads(self.repo.cli("status", "--json").stdout)
+        self.assertEqual({i["slug"]: i["phase"] for i in s["items"]}, {"a-first": "done", "b-second": "design"})
+        self.assertEqual(s["counts"], {"done": 1, "design": 1})
+        self.assertEqual(s["needs_you"], [])                                              # nothing waits for anyone
+        self.assertEqual(s["next"], ["b-second"])                                         # its dependent is runnable
+        text = self.repo.cli("status").stdout
+        self.assertIn("1 done", text)
+        self.assertNotIn("needs you", text)
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        with open(e.log_path) as fh:
+            log = fh.read()
+        self.assertNotIn("ITEM    a-first", log)                                            # not gated, built or merged again
+        self.assertEqual([k for k, *_ in self.keys()].count("a-first:build"), 1)
+        self.assertEqual(self.repo.status_of("b-second"), "done")
+        self.assertEqual(self.counts(), {"done": 2})
+
+    def test_a_built_doc_that_is_only_on_the_branch_is_not_done_even_without_engine_state(self):
+        self.waiting()
+        os.remove(self.repo.path(".sdlc/state/items.json"))
+        self.assertEqual(self.repo.status_of("a-first"), "ready")                         # main says ready; built is on the branch
+        self.assertEqual(self.counts(), {"gate": 1, "design": 1})                         # the gate is next, as for any built item
 
     def test_an_item_that_is_still_waiting_stays_waiting(self):
         self.waiting()

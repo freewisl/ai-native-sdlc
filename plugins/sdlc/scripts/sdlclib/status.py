@@ -1,5 +1,6 @@
 """What `/sdlc:status` and "어디까지 됐어?" show: is the loop running and on what, the queue by phase, what needs you,
-cost, recent merges, and a few auto-merged changes nobody has looked at yet."""
+cost, recent merges, and a few auto-merged changes nobody has looked at yet. `collect` reads local refs and state files
+only; `sdlc.py status` refreshes the remote refs before it calls it."""
 from __future__ import annotations
 
 import datetime as _dt

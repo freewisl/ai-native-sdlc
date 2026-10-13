@@ -729,12 +729,18 @@ class Engine:
                     self.say("CLOSED  %s — PR closed by a person" % it.slug)
 
     def poll_human(self, items: Dict[str, Item]) -> bool:
-        """Items that wait for a person are out of the loop's hands: when the person merges the PR (locally: the
-        branch) the item is done, when they close the PR it is closed. Without this they stay `needs-human` until
-        `retry`. True when an item moved."""
+        """Items that wait for a person are out of the loop's hands. A person who merged the change left the doc `built`
+        (or `done`) on the default branch, which the queue already reads as done: only the stale wait is cleared here.
+        A merge that left the doc at another status (a blocked item's PR) is told by the PR (locally: the branch being
+        merged); a PR a person closed closes the item. True when an item moved."""
         moved = False
         for it in items.values():
             gh = self.forge.kind == "github"
+            if it.phase == "done" and it.rec.get("state") == "needs-human":
+                st.update(self.root, it.slug, state="merged", reasons=None)
+                self.say("MERGED  %s — merged by a person" % it.slug)
+                self.event("loop.item", "merged-by-person", "", {"slug": it.slug})
+                continue
             if it.phase == "needs-human" or (it.phase == "blocked" and gh):
                 if gh and not it.rec.get("pr"):
                     continue                           # nothing was published for it, so there is no PR to have moved

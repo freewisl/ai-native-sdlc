@@ -6,7 +6,7 @@
 
 | status | 뜻 |
 |---|---|
-| `proposed` | 아직 누군가 받아들여야 하는 제안 (`ready` 로 바꾸면 큐에 들어감) |
+| `proposed` | 아직 누군가 받아들여야 하는 제안 — /sdlc:status 에서 "받아"라고 하면 `sdlc.py accept <slug>` 를 실행합니다 (직접 하려면 `ready` 로 바꾸고 `sdlc.py enqueue`) |
 | `ready` | 큐에 있음. 루프가 다음에 설계 |
 | `planned` | 설계됨 (`sdlc/<slug>` 브랜치). 루프가 다음에 구현 |
 | `built` | 구현·리뷰됨. 다음은 머지 게이트 |

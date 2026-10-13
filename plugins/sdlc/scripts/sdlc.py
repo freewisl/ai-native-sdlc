@@ -4,7 +4,7 @@
 Run it from inside the repository (or pass --root). Standard library only, Python 3.9+.
 
   run [--detach] [--items a,b] [--max-items N] [--max-minutes M] [--dry-run]   work the queue until it is empty
-  status [--json]                    loop, queue, what needs you, cost
+  status [--json] [--no-fetch]       loop, queue, what needs you, cost (fetches the remote first; --no-fetch stays offline)
   enqueue [--new] [FILE.md ...]      put work docs on the queue (--new: every new doc in work/)
   accept SLUG ...                    accept proposed work docs: status ready on the default branch (team: through a PR)
   stop [--after-item]                stop the loop now (the session is resumable) or after the current item
@@ -55,6 +55,7 @@ def cmd_run(a: argparse.Namespace) -> int:
 
 SETTLE_SECONDS = 2.0      # a loop with nothing to do (empty queue, a pause) is gone this soon after it registered
 START_SECONDS = 20.0      # the longest a loop that has not registered yet (gh login check) is waited for
+STATUS_FETCH_SECONDS = 10.0   # the longest `status` waits for the remote before it shows what it has
 DONE_LINE = re.compile(r"^== done +merged=(\d+) awaiting=(\d+) parked=(\d+) needs_human=(\d+) failed=(\d+) "
                        r"stop=(.*?) \(\d+ min, \$[\d.]+\)\s*$", re.M)
 
@@ -109,7 +110,11 @@ def ended_at_once(log: str, rc: int) -> int:
 
 
 def cmd_status(a: argparse.Namespace) -> int:
+    from sdlclib.gitops import Git
     from sdlclib.status import collect, render
+    Config(a.root)                                  # not adopted here: say so before any network use
+    if not a.no_fetch:
+        Git(a.root).refresh(STATUS_FETCH_SECONDS)   # what a person merged or pushed meanwhile; a failure is not reported
     s = collect(a.root)
     print(json.dumps(s, ensure_ascii=False, indent=2) if a.json else render(s))
     return 0
@@ -343,6 +348,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("status")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--no-fetch", action="store_true", help="do not refresh the remote refs first (offline, instant)")
     p.set_defaults(fn=cmd_status)
 
     p = sub.add_parser("enqueue")

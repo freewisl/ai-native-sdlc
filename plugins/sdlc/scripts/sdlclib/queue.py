@@ -8,6 +8,9 @@ Phases (`Item.phase`):
   team waits approval (design PR not approved yet) · awaiting-merge (gate passed, a person merges)
   for a person  proposed · needs-input · needs-human · blocked (failed too often)
   finished   done · dropped · closed (PR closed by a person)
+
+The engine merges only `done` docs, so a doc that is `built` on the default branch was merged by a person (a change that
+waited for them): it counts as done, whether they merged, squashed or took the PR — and with no engine state at all.
 """
 from __future__ import annotations
 
@@ -94,11 +97,13 @@ def phase_of(it: Item, team: bool, max_failures: int) -> str:
     st = str(rec.get("state") or "")
     if st in ("dropped", "closed"):
         return st
-    if st == "merged":                      # a person merged what waited for them (the doc on the default branch may still say built)
+    if st == "merged":                      # a person merged what waited for them, and the doc on the default branch says less than built
         return "done"
     d = it.doc.status if it.doc else ""
     if d in ("done", "dropped"):
         return d
+    if d == "built":                        # only a person lands a built doc on the default branch (see the module note)
+        return "done"
     s = (it.branch_doc.status if it.branch_doc else "") or d or "ready"
     if s in ("dropped", "proposed"):
         return s

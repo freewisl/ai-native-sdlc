@@ -29,11 +29,11 @@ With a slug in the arguments, show that item alone: status, phase, what it waits
 | Mark · kind | What happened | What resolves it |
 |---|---|---|
 | `?` question | a session parked a question in the doc's `## Questions` | Show the whole question and its recommended answer (the status text is cut: read `## Questions` from the work doc as above). The user's answer → `sdlc.py answer <slug> "<their words>"` |
-| `!` human | the gate sent it to a person; the reasons name it — new dependency, risk path, test integrity, acceptance criteria changed, merge conflict, a merge that did not happen | Accept as is: the user merges the PR (link shown; without a remote the work waits on branch `sdlc/<slug>`) — if the item stays listed afterwards, "다시 해봐" makes the loop look at it again. Fixed it themselves or changed a gate rule: "다시 해봐". Not wanted: "그건 빼" |
+| `!` human | the gate sent it to a person; the reasons name it — new dependency, risk path, test integrity, acceptance criteria changed, merge conflict, a merge that did not happen | Accept as is: the user merges the PR (link shown; without a remote the work waits on branch `sdlc/<slug>`) — nothing more to do: the item counts as done as soon as the merge is on the default branch (`sdlc.py status` fetches first, so a merge made on GitHub shows up at once; offline it shows the last fetch); a PR they close is noticed by the running loop on its next pass, not by status. Fixed it themselves or changed a gate rule: "다시 해봐". Not wanted: "그건 빼" |
 | `✓` approve-design | team: the draft design PR waits for approval | someone other than its author approves it, or adds the label `sdlc:approved`; the loop notices within about 10 minutes |
 | `⇢` merge | team: the gate passed, the PR is ready | a person merges it |
 | `✗` blocked | failed three times; the last error is shown | "다시 해봐" gives it another round; "그건 빼" |
-| `+` proposed | an idea waiting to be accepted (a problem that was already there, or a follow-up of a rejected change) | accept: `status: ready` in its work doc on the default branch, committed (team: through a PR) — not while a loop runs in this checkout, it switches branches here; "그건 빼" dismisses it |
+| `+` proposed | an idea waiting to be accepted (a problem that was already there, or a follow-up of a rejected change) | accept: `sdlc.py accept <slug>` — also while a loop runs here (the doc waits in the inbox and the loop commits it between items); team: a queue PR a person merges. "그건 빼" dismisses it |
 | `…` dependency | waits for an item that waits for the user, was dropped, or has no doc | resolve that item |
 
 ## Replies you apply
@@ -41,6 +41,7 @@ Apply a reply only when it clearly answers something shown here or in the conver
 - An answer to a parked question → `sdlc.py answer <slug> "<their words, as they said them>"`. If the loop is not running afterwards, offer to continue (`sdlc.py resume`) and do it on their yes.
 - "다시 해봐" / "retry" → `sdlc.py retry <slug>`: failures and waits are cleared and the loop takes the item again. If nothing changed, the same gate reasons come back — say so.
 - "그건 빼" / "drop" → `sdlc.py drop <slug> "<their reason>"` (it closes the item's PR).
+- "받아" / "그거 해" / "accept it", about a `+` proposed item → `sdlc.py accept <slug>` (several at once: `sdlc.py accept a b`); relay in one line where it landed — committed on the default branch, in the inbox until the running loop takes it, or (team) a queue PR a person has to merge. If the loop is not running afterwards, offer to start it (`sdlc.py resume`) and do it on their yes.
 - A verdict on a merge from "worth a look": "좋아" → `sdlc.py rate <slug> good`. "고쳐야 해, <what>" → `sdlc.py rate <slug> fix "<what>"`: a follow-up work item is queued; when the loop is not running, offer to start it (`sdlc.py resume`) and do it on their yes. "별로, <why>" → `sdlc.py rate <slug> reject "<why>"`: a `proposed` follow-up waits for their acceptance. For fix or reject without a reason, ask what should change — without a note nothing is queued.
 
-Confirm what you did in one line. Everything else here is read-only: do not merge, approve or close PRs for the user, and edit a work doc only when they ask (accepting a `proposed` item).
+Confirm what you did in one line. Everything else here is read-only: do not merge, approve or close PRs for the user, and do not edit work docs yourself — accepting a `proposed` item is `sdlc.py accept`.

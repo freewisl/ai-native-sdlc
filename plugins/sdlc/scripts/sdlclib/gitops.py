@@ -7,6 +7,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import tempfile
 from typing import List, Optional, Tuple
 
@@ -110,6 +112,29 @@ class Git:
     # ---------- moves ----------
     def fetch(self) -> bool:
         return self.has_remote() and self("fetch", "-q", "--prune", "origin", timeout=120).ok
+
+    def refresh(self, timeout: float) -> bool:
+        """`fetch --prune` for a read-only view: it never asks for a password, says nothing, and does not outlive `timeout` —
+        the whole process group goes (ssh and the https helper included). False on any failure: the view shows what it has."""
+        if not self.has_remote():
+            return False
+        try:
+            p = subprocess.Popen(["git", "-C", self.root, "fetch", "-q", "--prune", "origin"], stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                                 env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        except OSError:
+            return False
+        try:
+            return p.wait(timeout=timeout) == 0
+        except subprocess.TimeoutExpired:
+            return False
+        finally:
+            if p.poll() is None:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except OSError:
+                    p.kill()
+                p.wait()
 
     def base_ref(self, default: str) -> str:
         """What a change is measured against: origin/<default> when it exists, else the local default branch."""

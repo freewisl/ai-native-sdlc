@@ -64,7 +64,9 @@ source: user           # user | goal:<id> | self-check
 - **Needs input:** a session sets `needs-input` and writes `## Questions`; the item is parked (not a failure). `sdlc.py answer` stores the answer; the engine writes it into the doc and continues.
 - **Dropped:** a session may set `dropped` (reason in Departures) when the item turns out unnecessary.
 
-The repository is the source of truth. A slug is done when its PR merged, or when the doc says `done` on the default branch.
+The repository is the source of truth. A slug is done when its PR merged, or when the doc says `done` on the default branch. The engine merges only `done` docs, so a doc that reaches the default branch as `built` was merged by a person (a needs-human PR they accepted) and counts as done too. The loop also notices a person merging or closing a needs-human PR on its own, so the item leaves the "needs you" list without a `retry`.
+
+A design session that sets `planned` but leaves Plan or Proof empty has not designed anything: the engine puts the doc back to `ready` and counts a failure. A question asked in a build session parks the item as `planned`, so the answer continues the build, not the design.
 
 ## Engine: `scripts/sdlc.py` + `scripts/sdlclib/`
 
@@ -72,9 +74,10 @@ The CLI subcommands are:
 - `init`: adopt and migrate
 - `enqueue [--new] <files>` — while a loop runs in the same checkout (no remote), docs go to `.sdlc/state/inbox/` and the loop commits them between items
 - `run [--detach] [--items] [--max-items] [--max-minutes] [--dry-run]`
-- `status [--json]`
+- `status [--json] [--no-fetch]` — fetches the remote first (10 s cap, failures ignored) so a person's merge shows at once; the go and run preflights call it too
 - `stop [--after-item]` — now (the session gets SIGINT and is recorded, so it resumes) or after the current item (pause file)
 - `resume` — clear the pause, start detached
+- `accept <slug>…` — a `proposed` doc becomes `ready` on the default branch, the same way `enqueue` commits (solo: directly or a queue PR merged at once; team: the PR waits; a running loop takes it from the inbox)
 - `answer <slug> <text>`, `retry <slug>`, `drop <slug> [reason]`, `rate <slug> good|fix|reject [note]`
 - `gate <slug>`, `ship <slug>` — the end of an interactive `/sdlc:go`: the same gate and merge the loop uses
 
@@ -96,23 +99,36 @@ Engine state (`.sdlc/state/items.json`) holds only what the repository cannot sa
 - The whole stream goes to the log.
 - **Stopping at the time cap:** SIGINT, then 30 s, SIGTERM, 10 s, SIGKILL.
 - **Usage limits:** limit messages for session, weekly, Opus, Sonnet and usage/spend are parsed.
-  - A model-family limit switches the session to `loop.fix_model` (or another family) and continues.
+  - A model-family limit switches the session to another configured model of a different family (see "Models per phase") and continues.
   - A session or weekly limit sleeps until the reset time it reports (or retries every 30 minutes), up to `limit_wait_hours`.
 - **Cost:** `total_cost_usd` already includes earlier spend on a resume, so the engine records the delta per session id.
 - **Cold resume:** if more than 55 minutes have passed since the stop (prompt cache gone), the engine starts a fresh "continue" session instead of `--resume`. Our logs show a cold resume cost $7–14 for 6–22 turns, against $0.62 for a warm one.
 - **No progress:** if the branch head and diff hash at a stop equal the previous stop, it counts as a failure and the next session starts fresh.
+
+**Models per phase** (user, 2026-10-12: "단계마다 모델별 세팅")
+- Design and self-check run on the strongest model; build and fix run on a cheaper one. Config:
+  `loop.models` = `{design: opus, build: sonnet, fix: sonnet, self_check: opus}` and
+  `loop.efforts` = `{design: high, build: high, fix: medium, self_check: high}`.
+- **Escalation:** a build for an item that has failed before runs on `loop.escalate_model` (opus; "" turns it off).
+- The old keys still work. A string `loop.model` applies to design, build and self-check, `loop.fix_model` to fix, and a string `loop.effort` to every phase. Migration from 0.x carries them only when they differ from the 0.x defaults (opus / sonnet / high).
+- A model-family limit switches the session to another configured model of a different family, else sonnet, else opus.
+- **Subagents** (frontmatter `model`):
+  - reviewer: opus (the quality gate)
+  - verifier, simplifier: sonnet
+  - researcher: haiku
+  - new `sdlc-builder`: sonnet. In an interactive `/sdlc:go` the main session designs, reviews and ships, and the builder implements the plan. In the loop the build session itself runs on sonnet and does not delegate further.
 
 **Gate (shell, no tokens)**
 Every check below runs before any merge, by both `go` and `run`:
 1. In the loop's checkout on `sdlc/<slug>` with the default branch merged in uncommitted (aborted afterwards — installed dependencies and caches are the session's), run the build, test and lint commands. A conflict is fixable: a fix session merges and resolves.
 2. The review tally line in the work doc's `## Review` says `important=0`.
 3. Test integrity: no existing test file is deleted, no test cases are removed, and no skip/only/xfail/@Disabled is added.
-4. The Acceptance criteria are unchanged since the design commit, or the change is explained in Departures.
+4. The Acceptance criteria are unchanged since the design commit. Any change goes to a person, even one explained in Departures; the Departures line tells that person why.
 5. No new dependency in the manifests. A new dependency sends the PR to a human (`gate.new_dependencies: human|allow`).
 6. No changed file matches `risk.human` globs. A match sends the PR to a human.
 7. `checks/*` executables pass.
 
-Fixable failures (1, 2, 7) get a fix session on `loop.fix_model`, up to `fix_rounds`, then count as a failure. Failures for a person (3–6) send the item to "needs a person": PR comment + `sdlc:needs-human` label, item state `needs-human`, and the loop moves on. A pass leads to a merge, and the engine verifies that the merge happened. Repositories without a remote squash-merge locally (in a linked worktree: where the default branch is checked out), and the same gate applies.
+Fixable failures (1, 2, 7) get a fix session on `loop.models.fix`, up to `fix_rounds`, then count as a failure. Failures for a person (3–6) send the item to "needs a person": PR comment + `sdlc:needs-human` label, item state `needs-human`, and the loop moves on. A pass leads to a merge, and the engine verifies that the merge happened. Repositories without a remote squash-merge locally (in a linked worktree: where the default branch is checked out), and the same gate applies.
 
 **Self-check**
 - After merges, the engine reviews the merged diff.
@@ -153,7 +169,10 @@ The status view shows:
   - Blocks commands that modify or delete existing test files (`rm`, `mv`, `sed -i`, `git rm`/`checkout`/`restore`, redirection) while they are locked.
   - Production deploy patterns need `RELEASE_APPROVAL`. This is now one tier; the staging and dev tiers and the rollback exemption are gone.
   - Secret scan on commit.
-- The hooks file uses `onFailure: block` on the guards, if `claude plugin validate` accepts it.
+- **Existing test** means a test file that is present at `merge-base HEAD origin/<default>` (else the local default branch). Tests this branch added stay editable, which keeps test-first work possible. This is the same base the gate uses. Without git, a commit or a default branch, any test file on disk counts as existing.
+- **The active doc** (`.sdlc/state/active-work`) applies only while the branch is `sdlc/<slug>`. Design-first: while that doc is `ready` or `proposed`, edits are allowed only in the work dir, `.sdlc/` and outside the project.
+- **guard-bash parses commands on a best-effort basis.** It cannot see variable indirection, brace expansion, `find -exec`/`xargs`, `python -c`, `patch`/`git apply` or snapshot updates. The gate's test-integrity check (base...head) is the backstop.
+- The guards use `onFailure: block` (fail-closed: a guard that crashes or times out blocks the tool call). The validator accepts any key, so this rests on the runtime schema of claude 2.1.296, which supports `continue`|`block`. Checked live on 2.1.296 (2026-10-13): a guard that exits 1 and a guard that times out both block the call ("blocking because onFailure is \"block\""), and every guard rule denied in a real session.
 - post-edit, post-bash, stop-verify, session-start and session-end are kept. Their context text is updated.
 
 ## Agents
@@ -176,10 +195,10 @@ The status view shows:
 Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `tests/py/stubs`), run on Python 3.9 and 3.12.
 
 - [x] P1 Python engine core: config, work docs, git/gh, claude runner + result parsing, gate, loop, status, enqueue, stop/resume, unit tests with stub claude/gh
-- [ ] P2 init (python): detect, scaffold, migrate v1 → v2, `--check`; github-setup.sh kept
-- [ ] P3 skills: init, go (+ references), run (fill + start + stop/resume), status; agents (reviewer validate mode); delete the old skills and diagnoser
-- [ ] P4 hooks adapted (work doc, test lock add-only + bash bypass, one deploy tier) + bash hook tests updated
-- [ ] P5 templates (work.md, CLAUDE.sections, REVIEW.md, config v2), delete old templates and scripts
+- [x] P2 init (python): detect, scaffold, migrate v1 → v2, `--check`; github-setup.sh kept
+- [x] P3 skills: init, go (+ references), run (fill + start + stop/resume), status; agents (reviewer validate mode); delete the old skills and diagnoser
+- [x] P4 hooks adapted (work doc, test lock add-only + bash bypass, one deploy tier) + bash hook tests updated
+- [x] P5 templates (work.md, CLAUDE.sections, REVIEW.md, config v2), delete old templates and scripts
 - [ ] P6 README (≈150 lines, ko), CHANGELOG 1.0.0, marketplace/plugin manifests, docs images
 - [ ] P7 full test run + `claude plugin validate --strict`; end-to-end trial on a scratch repo without a remote (real claude, a small app); fix what it finds
 - [ ] P8 hand-off to the user: migration notes per repo (pilot, solar-next, …), merge to main, push and update only on the user's go-ahead

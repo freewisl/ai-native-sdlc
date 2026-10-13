@@ -28,7 +28,7 @@ One `key: value` per line and nothing after the value — a trailing `# comment`
 
 | status | meaning | set by |
 |---|---|---|
-| `proposed` | an idea a person has to accept (they change it to `ready`) | review and self-check, for pre-existing problems |
+| `proposed` | an idea a person has to accept (`sdlc.py accept <slug>` makes it `ready`) | review and self-check, for pre-existing problems |
 | `ready` | queued; design is next | you when you create it (interactive); a person; the engine after an answer |
 | `planned` | designed, criteria frozen; build is next | the design |
 | `built` | built and reviewed; the gate is next | the build / review |
