@@ -18,7 +18,7 @@
 
 <!-- sdlc:begin mistakes -->
 ## Things Claude gets wrong
-- (add a line here the second time the same mistake appears; `/sdlc:lesson` does this)
+- (add a line here the second time the same mistake appears)
 <!-- sdlc:end mistakes -->
 
 <!-- sdlc:begin verifying -->
@@ -29,5 +29,5 @@
 
 Run all three before reporting any task complete, and paste the output.
 If a test fails, fix the code, not the test.
-Every change starts from a committed plan.md (`/sdlc:go` writes and commits it; `/sdlc:plan` for the step-by-step path).
+Every change has a work doc (`work/<slug>.md`: goal, acceptance criteria, plan, proof); `/sdlc:go` writes it.
 <!-- sdlc:end verifying -->

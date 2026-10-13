@@ -1,512 +1,370 @@
 #!/bin/bash
-# sdlc plugin — script tests (init/doctor/status/run-evals/monitor/metrics + manifest validation).
-# Run from anywhere: bash tests/scripts.sh [-v]. Prints PASS/FAIL per check and exits 1 when any check failed.
+# sdlc plugin — structural tests: manifests, skills, agents, hooks.json, templates, stale 0.x references, shell syntax, secret-scan.sh.
+# Run from anywhere: bash tests/scripts.sh [-v]. Prints PASS/FAIL per check — a FAIL line carries its reason, -v adds a detail line to
+# every PASS — then "== N passed, M failed", and exits 1 when any check failed. Needs bash 3.2+, git, and jq or python3
+# (SDLC_TEST_NO_JQ=1 forces the python3 path). Not covered here: the engine, init and github-setup (tests/py) and the hooks
+# (tests/hooks.sh); tests/run.sh runs all of them plus `claude plugin validate`.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; PLUGIN="$(cd "$HERE/.." && pwd)"; SCRIPTS="$PLUGIN/scripts"
+REPO="$(cd "$PLUGIN/../.." && pwd)"                        # the marketplace root: plugins/<name>/ sits two levels below it
 export CLAUDE_PLUGIN_ROOT="$PLUGIN"
-export SDLC_SKIP_GH_DETECT=1
-export SDLC_AUTH=api   # this machine may hold a stored token; tests pin the default auth explicitly
 unset CLAUDE_PROJECT_DIR
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null   # the temporary repositories see no user or system git config
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sdlc-scripts.XXXXXX"); trap 'rm -rf "$WORK"' EXIT
-PASS=0; FAIL=0; VERBOSE=false; [ "${1:-}" = "-v" ] && VERBOSE=true
-ok()  { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
-bad() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n      %s\n' "$1" "$(printf '%s' "$2" | head -c 400 | tr '\n' ' ')"; }
-check() { if [ "$2" = true ]; then ok "$1"; else bad "$1" "${3:-}"; fi; }
-has()   { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "missing '$3' in: $2";; esac; }
-lacks() { case "$2" in *"$3"*) bad "$1" "unexpected '$3' in: $2";; *) ok "$1";; esac; }
-tree_sum() { ( cd "$1" && find . -type f -not -path './.git/*' -print0 | sort -z | xargs -0 shasum 2>/dev/null | shasum | cut -c1-16 ); }
-py_json_ok() { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" 2>/dev/null; }
-git_init() { ( cd "$1" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false ) ; }
-git_commit() { ( cd "$1" && git add -A >/dev/null 2>&1 && GIT_AUTHOR_DATE="$3" GIT_COMMITTER_DATE="$3" git commit -qm "$2" >/dev/null 2>&1 ); }
+PASS=0; FAIL=0; VERBOSE=false; for a in "$@"; do [ "$a" = "-v" ] && VERBOSE=true; done
+TAB=$(printf '\t'); US=$(printf '\037')                    # US (unit separator) is not IFS whitespace, so empty fields survive `read`
 
-echo "== sdlc script tests  (plugin: $PLUGIN, work: $WORK)"
+HAVE_JQ=false; command -v jq >/dev/null 2>&1 && [ -z "${SDLC_TEST_NO_JQ:-}" ] && HAVE_JQ=true
+HAVE_PY=false; command -v python3 >/dev/null 2>&1 && HAVE_PY=true
+$HAVE_JQ || $HAVE_PY || { echo "tests/scripts.sh needs jq or python3" >&2; exit 2; }
 
-# ---------------------------------------------------------------- manifest / structure
-echo "-- structure"
-out=$(cd "$PLUGIN" && command claude plugin validate . --strict 2>&1); has "claude plugin validate --strict passes" "$out" "Validation passed"
-n=$(ls -d "$PLUGIN"/skills/*/ | wc -l | tr -d ' '); check "19 skills present ($n)" "$([ "$n" -eq 19 ] && echo true || echo false)" "$(ls "$PLUGIN/skills")"
-n=$(ls "$PLUGIN"/agents/*.md | wc -l | tr -d ' '); check "5 agents present ($n)" "$([ "$n" -eq 5 ] && echo true || echo false)"
-for s in "$PLUGIN"/skills/*/SKILL.md; do
-  name=$(basename "$(dirname "$s")"); fm_name=$(sed -n '2,/^---$/p' "$s" | grep -E '^name:' | sed 's/name: *//')
-  [ "$fm_name" = "$name" ] || bad "skill frontmatter name matches dir: $name" "got '$fm_name'"
-  grep -q '^description:' "$s" || bad "skill has description: $name" ""
-  lines=$(wc -l < "$s"); [ "$lines" -le 500 ] || bad "skill body ≤ 500 lines: $name" "$lines lines"
-done; ok "skill frontmatter checks ran ($(ls -d "$PLUGIN"/skills/*/ | wc -l | tr -d ' ') skills)"
-for h in session-start session-end guard-edit guard-bash post-edit post-bash stop-verify; do [ -f "$SCRIPTS/hooks/$h.sh" ] || bad "hook script exists: $h" ""; done; ok "hook scripts referenced by hooks.json exist"
-for f in sdlc-evals.yml sdlc-review.yml sdlc-spec-on-intent.yml sdlc-ci-triage.yml sdlc-monitor.yml sdlc-scan.yml sdlc-autopilot.yml CODEOWNERS; do [ -f "$PLUGIN/templates/github/$f" ] || bad "github template exists: $f" ""; done; ok "github templates present"
-for f in intent.md spec.md plan.md REVIEW.md CLAUDE.sections.md LESSONS.md intent-README.md evals-README.md; do [ -f "$PLUGIN/templates/en/$f" ] && [ -f "$PLUGIN/templates/ko/$f" ] || bad "template en+ko: $f" ""; done; ok "en/ko template sets complete"
-py_json_ok "$PLUGIN/templates/config/config.json" && ok "templates/config/config.json is valid JSON" || bad "config.json valid" ""
-py_json_ok "$PLUGIN/templates/config/bands.json" && ok "bands.json valid JSON" || bad "bands.json valid" ""
-py_json_ok "$PLUGIN/templates/config/managed-settings.json" && ok "managed-settings.json valid JSON" || bad "managed valid" ""
-check "plugin.json does not re-declare the auto-loaded hooks/hooks.json (would fail to load: duplicate hooks file)" "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("false" if d.get("hooks") in ("./hooks/hooks.json","hooks/hooks.json") else "true")' "$PLUGIN/.claude-plugin/plugin.json")" ""
-has "managed-settings keeps the playbook keys" "$(cat "$PLUGIN/templates/config/managed-settings.json")" '"disableBypassPermissionsMode": "disable"'
-
-# ---------------------------------------------------------------- init: empty new project (not git)
-echo "-- init: empty directory"
-E="$WORK/empty"; mkdir -p "$E"
-out=$(bash "$SCRIPTS/init.sh" --dir "$E" 2>&1); rc=$?
-check "init exits 0 on empty dir" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
-has "init creates config" "$out" "CREATED"; [ -f "$E/.sdlc/config.json" ] && ok "config.json written" || bad "config.json written" "$out"
-has "init warns about missing git" "$out" "git"
-for f in CLAUDE.md REVIEW.md intent/TEMPLATE.md intent/README.md spec/TEMPLATE.md plan/TEMPLATE.md evals/README.md .sdlc/bands.json .sdlc/frozen-paths.txt .sdlc/LESSONS.md .gitignore; do [ -f "$E/$f" ] || bad "created: $f" "$(ls -R "$E" | head -40)"; done; ok "scaffold files present"
-[ -d "$E/evals/cases/no-secret-in-code" ] && ok "example eval cases copied" || bad "example eval cases copied" ""
-has "CLAUDE.md has the five sections" "$(cat "$E/CLAUDE.md")" "## Things Claude gets wrong"; has "CLAUDE.md verifying block" "$(cat "$E/CLAUDE.md")" "fix the code, not the test"
-sum1=$(tree_sum "$E"); out2=$(bash "$SCRIPTS/init.sh" --dir "$E" 2>&1); sum2=$(tree_sum "$E")
-check "second init is idempotent (no file changes)" "$([ "$sum1" = "$sum2" ] && echo true || echo false)" "$out2"
-lacks "second init creates nothing" "$out2" "CREATED"; has "second init reports SKIPPED" "$out2" "SKIPPED"
-
-# ---------------------------------------------------------------- init: existing project (non-destructive merge)
-echo "-- init: existing project"
-X="$WORK/existing"; mkdir -p "$X/src" "$X/tests" "$X/.claude" "$X/.github/workflows" "$X/evals/legacy"; git_init "$X"
-cat > "$X/package.json" <<'EOF'
-{ "name": "orders-api", "private": true, "scripts": { "build": "echo build", "test": "node tests/run.js", "lint": "echo lint" } }
-EOF
-printf 'PASS\n' > "$X/tests/run.js"
-cat > "$X/CLAUDE.md" <<'EOF'
-# Orders API
-
-Team notes that must survive. Ask #orders-dev before touching billing.
-
-## Commands
-- Test: npm test
-
-## Style
-- ES modules only.
-EOF
-cat > "$X/.claude/settings.json" <<'EOF'
-{ "permissions": { "allow": ["Bash(npm test)", "Bash(git status*)"], "deny": ["Read(.env*)"] },
-  "hooks": { "PostToolUse": [ { "matcher": "Edit", "hooks": [ { "type": "command", "command": "echo team-hook" } ] } ] },
-  "env": { "TEAM_FLAG": "1" } }
-EOF
-printf 'name: CI\non: [push]\n' > "$X/.github/workflows/ci.yml"; printf 'legacy harness\n' > "$X/evals/legacy/README.md"; printf 'node_modules/\n' > "$X/.gitignore"
-git_commit "$X" baseline "2026-01-01T00:00:00Z"
-dry_before=$(tree_sum "$X"); out=$(bash "$SCRIPTS/init.sh" --dir "$X" --dry-run 2>&1); dry_after=$(tree_sum "$X")
-check "--dry-run writes nothing" "$([ "$dry_before" = "$dry_after" ] && echo true || echo false)" "$out"; has "--dry-run says WOULD" "$out" "WOULD"
-out=$(bash "$SCRIPTS/init.sh" --dir "$X" --github 2>&1); rc=$?
-check "init exits 0 on existing project" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
-has "original CLAUDE.md text intact" "$(cat "$X/CLAUDE.md")" "Ask #orders-dev before touching billing."
-n=$(grep -c '^## Commands' "$X/CLAUDE.md"); check "## Commands not duplicated" "$([ "$n" -eq 1 ] && echo true || echo false)" "count=$n"
-has "missing sections appended" "$(cat "$X/CLAUDE.md")" "## Verifying your work"; has "existing ## Style kept" "$(cat "$X/CLAUDE.md")" "## Style"
-py_json_ok "$X/.claude/settings.json" && ok "settings.json still valid JSON" || bad "settings.json valid" "$(cat "$X/.claude/settings.json")"
-s=$(cat "$X/.claude/settings.json"); has "original allow kept" "$s" '"Bash(npm test)"'; has "our deny added" "$s" 'git push --force'; has "team hook preserved" "$s" "echo team-hook"; has "env preserved" "$s" '"TEAM_FLAG"'
-has "detected npm commands in config" "$(cat "$X/.sdlc/config.json")" '"test": "npm run test"'
-[ -f "$X/evals/legacy/README.md" ] && [ "$(cat "$X/evals/legacy/README.md")" = "legacy harness" ] && ok "unrelated evals/ untouched" || bad "unrelated evals/ untouched" ""
-has "paths.evals switched to sdlc-evals" "$(cat "$X/.sdlc/config.json")" '"evals": "sdlc-evals"'; [ -f "$X/sdlc-evals/README.md" ] && ok "sdlc-evals/ created" || bad "sdlc-evals/ created" ""
-[ -f "$X/.github/workflows/sdlc-review.yml" ] && ok "--github copied workflows" || bad "--github copied workflows" "$(ls "$X/.github/workflows")"
-[ "$(cat "$X/.github/workflows/ci.yml")" = "$(printf 'name: CI\non: [push]')" ] && ok "existing ci.yml untouched" || bad "existing ci.yml untouched" ""
-[ -f "$X/.github/CODEOWNERS" ] && ok "CODEOWNERS installed" || bad "CODEOWNERS installed" ""
-left=$(grep -lE '\{\{[a-z_]+\}\}' "$X"/.github/workflows/sdlc-*.yml "$X/.github/CODEOWNERS" 2>/dev/null || true); check "no unrendered {{placeholders}} in installed .github files (GitHub \${{ }} expressions are fine)" "$([ -z "$left" ] && echo true || echo false)" "$left"
-has "CODEOWNERS owner lines rendered" "$(cat "$X/.github/CODEOWNERS")" "CLAUDE.md                 @"
-has "ci-triage listens to the detected CI workflow name" "$(cat "$X/.github/workflows/sdlc-ci-triage.yml")" 'workflows: ["CI"]'
-has "evals workflow installs from a marketplace source" "$(cat "$X/.github/workflows/sdlc-evals.yml")" "claude plugin marketplace add freewisl/ai-native-sdlc"
-out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/gh2" --github --marketplace acme/ai-native-sdlc --ci-workflow "Build and Test" --team @acme/platform 2>&1 || true); mkdir -p "$WORK/gh2" >/dev/null 2>&1
-mkdir -p "$WORK/gh3"; out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/gh3" --github --marketplace acme/ai-native-sdlc --ci-workflow "Build and Test" --team @acme/platform 2>&1)
-has "--marketplace rendered" "$(cat "$WORK/gh3/.github/workflows/sdlc-evals.yml")" "marketplace add acme/ai-native-sdlc"
-has "--ci-workflow rendered" "$(cat "$WORK/gh3/.github/workflows/sdlc-ci-triage.yml")" 'workflows: ["Build and Test"]'
-has "--team rendered into CODEOWNERS" "$(cat "$WORK/gh3/.github/CODEOWNERS")" "@acme/platform"
-has "default auth renders ANTHROPIC_API_KEY" "$(cat "$WORK/gh3/.github/workflows/sdlc-evals.yml")" 'ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}'
-mkdir -p "$WORK/gh4"; out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/gh4" --github --auth oauth 2>&1)
-has "--auth oauth renders CLAUDE_CODE_OAUTH_TOKEN for claude -p steps" "$(cat "$WORK/gh4/.github/workflows/sdlc-monitor.yml")" 'CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}'
-has "--auth oauth renders claude_code_oauth_token for the action" "$(cat "$WORK/gh4/.github/workflows/sdlc-review.yml")" 'claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}'
-lacks "--auth oauth leaves no anthropic_api_key input" "$(cat "$WORK/gh4/.github/workflows/sdlc-review.yml")" "anthropic_api_key:"
-has "--auth oauth prints the setup-token note" "$out" "claude setup-token"
-mkdir -p "$WORK/solo"; out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/solo" --solo 2>&1); has "--solo sets roles.solo" "$(cat "$WORK/solo/.sdlc/config.json")" '"solo": true'
-has "new config records ci.auth" "$(cat "$WORK/solo/.sdlc/config.json")" '"auth": "api"'; has "new config records default_branch" "$(cat "$WORK/solo/.sdlc/config.json")" '"default_branch": "main"'
-has "solo → roles.autopilot on by default" "$(cat "$WORK/solo/.sdlc/config.json")" '"autopilot": true'; has "solo → roles.auto_merge on by default" "$(cat "$WORK/solo/.sdlc/config.json")" '"auto_merge": true'
-has "team (empty dir) → auto_merge off" "$(cat "$E/.sdlc/config.json")" '"auto_merge": false'; has "team → loop off" "$(cat "$E/.sdlc/config.json")" '"enabled": false'
-python3 - "$WORK/solo/.sdlc/config.json" <<'PY'
-import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['roles']['autopilot']=False; json.dump(c,open(p,'w'),indent=2)
-PY
-out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/solo" --solo 2>&1); has "re-run init keeps an explicit roles.autopilot=false (a pause the owner added)" "$(cat "$WORK/solo/.sdlc/config.json")" '"autopilot": false'
-# --- zero-flag detection with a stub gh (no network) ---
-STUB="$WORK/stub-bin"; mkdir -p "$STUB"
-cat > "$STUB/gh" <<'GH'
-#!/bin/bash
-case "$*" in
-  "auth status --hostname github.com"*) exit 0;;
-  "auth status"*) echo "X github.kakaocorp.com: token expired" >&2; exit 1;;
-  "repo view --json nameWithOwner --jq .nameWithOwner"*) echo "acme/widgets";;
-  *collaborators*) [ "${GH_STUB_COLLAB:-}" = "err" ] && { echo '{"message":"Forbidden"}' >&2; exit 1; }; echo "${GH_STUB_COLLAB:-1}";;
-  *) exit 1;;
-esac
-GH
-chmod +x "$STUB/gh"
-G="$WORK/ghdetect"; mkdir -p "$G"; git_init "$G"; ( cd "$G" && git remote add origin https://github.com/acme/widgets.git ); printf 'x\n' > "$G/README.md"; git_commit "$G" init "2026-03-01T00:00:00Z"
-out=$(SDLC_SKIP_GH_DETECT= PATH="$STUB:$PATH" GH_STUB_COLLAB=1 bash "$SCRIPTS/init.sh" --dir "$G" 2>&1)
-[ ! -f "$G/.github/workflows/sdlc-review.yml" ] && ok "GitHub remote → no Claude workflows by default (ci.mode local)" || bad "local default" "$(ls "$G/.github/workflows" 2>/dev/null)"
-[ -f "$G/.github/CODEOWNERS" ] && ok "GitHub remote → CODEOWNERS still installed" || bad "codeowners" "$out"
-has "new config records ci.mode local" "$(cat "$G/.sdlc/config.json")" '"mode": "local"'; has "init says Claude runs locally" "$out" "ci.mode local"
-GC="$WORK/ghci"; mkdir -p "$GC"; git_init "$GC"; ( cd "$GC" && git remote add origin https://github.com/acme/widgets.git ); printf 'x\n' > "$GC/README.md"; git_commit "$GC" init "2026-03-01T00:00:00Z"
-out=$(bash "$SCRIPTS/init.sh" --dir "$GC" --ci github 2>&1)
-[ -f "$GC/.github/workflows/sdlc-review.yml" ] && ok "--ci github installs the Claude workflows" || bad "--ci github" "$out"; has "--ci github recorded" "$(cat "$GC/.sdlc/config.json")" '"mode": "github"'
-out=$(bash "$SCRIPTS/init.sh" --dir "$GC" --ci local 2>&1); has "switching to local lists plugin workflows as LEFTOVER" "$out" "LEFTOVER"
-printf 'name: mine\n' > "$GC/.github/workflows/sdlc-custom.yml"
-out=$(bash "$SCRIPTS/init.sh" --dir "$GC" --prune-ci 2>&1); has "--prune-ci removes plugin workflows" "$out" "REMOVED"
-[ ! -f "$GC/.github/workflows/sdlc-review.yml" ] && [ -f "$GC/.github/workflows/sdlc-custom.yml" ] && ok "--prune-ci keeps workflows the project wrote" || bad "prune scope" "$(ls "$GC/.github/workflows")"
-out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$GC" 2>&1); has "doctor reports local CI mode" "$out" "local — skills, loop, evals"
-has "one collaborator → roles.solo auto" "$(cat "$G/.sdlc/config.json")" '"solo": true'
-G2="$WORK/ghdetect2"; mkdir -p "$G2"; git_init "$G2"; ( cd "$G2" && git remote add origin https://github.com/acme/widgets.git ); printf 'x\n' > "$G2/README.md"; git_commit "$G2" init "2026-03-01T00:00:00Z"
-out=$(SDLC_SKIP_GH_DETECT= PATH="$STUB:$PATH" GH_STUB_COLLAB=err bash "$SCRIPTS/init.sh" --dir "$G2" --no-github 2>&1)
-[ ! -d "$G2/.github/workflows" ] && ok "--no-github suppresses the auto install" || bad "--no-github" "$(ls "$G2/.github/workflows")"
-lacks "unknown collaborator count keeps team gates (fail closed)" "$(cat "$G2/.sdlc/config.json")" '"solo": true'; has "fail-closed note printed" "$out" "keeping team gates"
-G3="$WORK/ghdetect3"; mkdir -p "$G3/.sdlc"; git_init "$G3"; ( cd "$G3" && git remote add origin https://github.com/acme/widgets.git ); printf '{"version":1,"roles":{"solo":false},"paths":{"intent":"intent","spec":"spec","plan":"plan","evals":"evals"}}\n' > "$G3/.sdlc/config.json"
-out=$(SDLC_SKIP_GH_DETECT= PATH="$STUB:$PATH" GH_STUB_COLLAB=1 bash "$SCRIPTS/init.sh" --dir "$G3" --no-github 2>&1)
-has "auto-detected solo does not override an explicit roles.solo:false" "$(cat "$G3/.sdlc/config.json")" '"solo": false'
-has "existing config gains ci.auth" "$(cat "$G3/.sdlc/config.json")" '"auth"'; has "existing config gains default_branch" "$(cat "$G3/.sdlc/config.json")" '"default_branch"'
-out=$(SDLC_SKIP_GH_DETECT= PATH="$STUB:$PATH" GH_STUB_COLLAB=5 bash "$SCRIPTS/init.sh" --dir "$G3" --no-github --solo 2>&1)
-has "explicit --solo overrides roles.solo:false" "$(cat "$G3/.sdlc/config.json")" '"solo": true'
-tf2="$WORK/ci-token2"; printf 'tok-xyz' > "$tf2"; mkdir -p "$WORK/oauth-auto"
-out=$(SDLC_AUTH= SDLC_CI_TOKEN_FILE="$tf2" bash "$SCRIPTS/init.sh" --dir "$WORK/oauth-auto" --github 2>&1)
-has "stored token → ci.auth oauth" "$(cat "$WORK/oauth-auto/.sdlc/config.json")" '"auth": "oauth"'; has "stored token → workflows use CLAUDE_CODE_OAUTH_TOKEN" "$(cat "$WORK/oauth-auto/.github/workflows/sdlc-evals.yml")" 'CLAUDE_CODE_OAUTH_TOKEN'
-printf 'not json' > "$WORK/oauth-auto/.sdlc/config.json"; out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/oauth-auto" --solo 2>&1); has "invalid config JSON is reported, not falsely merged" "$out" "SKIPPED (invalid)"
-# --- existing sdlc workflow rendered with the other auth: only the auth line is merged; foreign workflows untouched ---
-WA="$WORK/authline"; mkdir -p "$WA/.github/workflows"
-printf 'name: sdlc evals\n# custom-marker\njobs:\n  e:\n    steps:\n      - run: x\n        env:\n          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n' > "$WA/.github/workflows/sdlc-evals.yml"
-printf 'name: CI\njobs:\n  b:\n    steps:\n      - run: y\n        env:\n          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n' > "$WA/.github/workflows/ci.yml"
-out=$(bash "$SCRIPTS/init.sh" --dir "$WA" --auth oauth --ci github 2>&1)
-has "mismatched sdlc workflow auth line reported as MERGED" "$out" "MERGED"; has "auth line switched to oauth secret" "$(cat "$WA/.github/workflows/sdlc-evals.yml")" 'CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}'
-has "rest of the workflow kept (marker)" "$(cat "$WA/.github/workflows/sdlc-evals.yml")" "custom-marker"; has "foreign workflow untouched" "$(cat "$WA/.github/workflows/ci.yml")" 'secrets.ANTHROPIC_API_KEY'
-out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$WA" 2>&1); has "doctor: CI auth consistent" "$out" "ci.auth=oauth, workflows use CLAUDE_CODE_OAUTH_TOKEN"
-python3 - "$WA/.sdlc/config.json" <<'PY'
-import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['ci']['auth']='api'; json.dump(c,open(p,'w'),indent=2)
-PY
-out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$WA" 2>&1); has "doctor warns when workflows disagree with ci.auth" "$out" "use CLAUDE_CODE_OAUTH_TOKEN but ci.auth=api"
-out=$(bash "$SCRIPTS/init.sh" --dir "$WA" 2>&1); has "re-run init follows config ci.auth back to api" "$(cat "$WA/.github/workflows/sdlc-evals.yml")" 'secrets.ANTHROPIC_API_KEY'
-python3 - "$WORK/solo/.sdlc/config.json" <<'PY2'
-import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['ci']['mode']='github'; json.dump(c,open(p,'w'),indent=2)
-PY2
-# --- github-setup on a Free-plan private repo (stub: rulesets 403, repo PATCH ok): auto-merge is set before the ruleset fails ---
-cat > "$STUB/gh" <<'GH'
-#!/bin/bash
-case "$*" in
-  "auth status --hostname github.com"*) exit 0;;
-  "auth status"*) echo "X github.kakaocorp.com: token expired" >&2; exit 1;;
-  "repo view --json nameWithOwner --jq .nameWithOwner"*) echo "acme/widgets";;
-  "repo view acme/widgets --json"*) echo '{"isPrivate":true,"defaultBranchRef":{"name":"main"},"owner":{"login":"acme"},"visibility":"PRIVATE"}';;
-  *collaborators*) [ "${GH_STUB_COLLAB:-}" = "err" ] && { echo '{"message":"Forbidden"}' >&2; exit 1; }; echo "${GH_STUB_COLLAB:-1}";;
-  "secret list"*) echo "CLAUDE_CODE_OAUTH_TOKEN  2026-09-07";;
-  "secret set"*) cat >/dev/null; exit 0;;
-  "api -X PATCH repos/acme/widgets"*) echo "PATCHED $*" >> "${GH_STUB_LOG:-/dev/null}"; exit 0;;
-  *rulesets*) echo '{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","status":"403"}' >&2; exit 1;;
-  *) exit 1;;
-esac
-GH
-chmod +x "$STUB/gh"; : > "$WORK/gh.log"
-out=$(PATH="$STUB:$PATH" GH_STUB_LOG="$WORK/gh.log" SDLC_CI_TOKEN_FILE="$tf2" bash "$SCRIPTS/github-setup.sh" --repo acme/widgets --dir "$WORK/solo" --auth oauth 2>&1); rc=$?
-check "github-setup exits non-zero when the ruleset is unavailable" "$([ $rc -ne 0 ] && echo true || echo false)" "$out"
-has "auto-merge setting applied despite ruleset 403" "$(cat "$WORK/gh.log")" "allow_auto_merge=true"; has "ruleset failure explains the plan limit" "$out" "GitHub Pro"
-[ "$(printf '%s\n' "$out" | grep -n 'REPO    allow_auto_merge' | cut -d: -f1)" -lt "$(printf '%s\n' "$out" | grep -n 'RULESET failed' | cut -d: -f1)" ] && ok "REPO settings run before the ruleset" || bad "order" "$out"
-has "stored token is used for oauth" "$out" "using stored token ("
-out=$(bash "$SCRIPTS/init.sh" --dir "$X" --solo 2>&1); has "--solo on an existing config merges roles.solo" "$(cat "$X/.sdlc/config.json")" '"solo": true'; has "existing config merge reported" "$out" "roles.solo=true"
-[ -f "$PLUGIN/skills/go/SKILL.md" ] && ok "go skill present" || bad "go skill present" ""
-if command -v gh >/dev/null 2>&1; then
-  tf="$WORK/ci-token"; printf 'tok-abc123' > "$tf"
-  out=$(SDLC_CI_TOKEN_FILE="$tf" bash "$SCRIPTS/github-setup.sh" --repo octo/demo --dry-run --dir "$G" 2>&1)
-  has "local mode: github-setup stores no CI secret" "$out" "SECRET  skipped — ci.mode local"; lacks "local mode: no required evals check in the ruleset" "$out" '"required_status_checks"'
-  has "local mode: ruleset and auto-merge still applied" "$out" "allow_auto_merge=true"
-  out=$(SDLC_CI_TOKEN_FILE="$tf" bash "$SCRIPTS/github-setup.sh" --repo octo/demo --dry-run --dir "$WORK/solo" 2>&1)
-  has "github-setup takes auth from config ci.auth" "$out" "auth=api"
-  has "stored subscription token is not registered as an API key" "$out" "not used as ANTHROPIC_API_KEY"; lacks "api mode does not pick the stored token" "$out" "using stored token ("
-  has "github-setup dry-run announces auto-merge setting" "$out" "allow_auto_merge=true"
-  lacks "no admin bypass without --bypass" "$out" '"actor_id":5'
-  out=$(SDLC_CI_TOKEN_FILE="$tf" bash "$SCRIPTS/github-setup.sh" --repo octo/demo --dry-run --dir "$WORK/solo" --bypass --auth oauth 2>&1)
-  has "--bypass adds the admin bypass" "$out" '"actor_id":5'
-  has "github-setup resolves a stored token (keychain or file)" "$out" "using stored token ("
-  has "github-setup dry-run shows the ruleset payload" "$out" '"type": "required_status_checks"'
-  lacks "github-setup never prints the token" "$out" "tok-abc123"
-fi
-[ -f "$X/.sdlc/APPROVALS.md" ] && ok "APPROVALS.md register created" || bad "APPROVALS.md created" ""
-[ -f "$X/.sdlc/examples/intent.md" ] && [ -f "$X/.sdlc/examples/production-gate.sh" ] && ok "playbook examples copied to .sdlc/examples" || bad "examples copied" "$(ls "$X/.sdlc" 2>/dev/null)"
-has "example intent.md is the article's" "$(cat "$X/.sdlc/examples/intent.md")" "Author: J. Ortiz (claims operations). Status: draft."
-has ".gitignore appended" "$(cat "$X/.gitignore")" ".sdlc/logs/"; has ".gitignore original kept" "$(cat "$X/.gitignore")" "node_modules/"
-mkdir -p "$WORK/ko"; out=$(bash "$SCRIPTS/init.sh" --dir "$WORK/ko" --lang ko 2>&1); has "--lang ko uses Korean template" "$(cat "$WORK/ko/intent/TEMPLATE.md" 2>/dev/null)" "문제"
-has "--lang ko sets config language" "$(cat "$WORK/ko/.sdlc/config.json" 2>/dev/null)" '"language": "ko"'
-
-# ---------------------------------------------------------------- doctor
-echo "-- doctor"
-out=$(bash "$SCRIPTS/doctor.sh" --dir "$X" 2>&1); rc=$?
-check "doctor exits 0" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"; has "doctor shows git ✓" "$out" "git repository"; has "doctor lists next steps" "$out" "Next steps"
-bash "$SCRIPTS/doctor.sh" --dir "$X" --json > "$WORK/doctor.json" 2>/dev/null; py_json_ok "$WORK/doctor.json" && ok "doctor --json parses" || bad "doctor --json parses" "$(head -c 300 "$WORK/doctor.json")"
-out=$(bash "$SCRIPTS/doctor.sh" --dir "$WORK/nothing-here" 2>&1); has "doctor on uninitialized dir points to init" "$out" "init"
-
-# ---------------------------------------------------------------- status + metrics on a chain repo
-echo "-- status / metrics"
-C="$WORK/chain"; mkdir -p "$C"; git_init "$C"; bash "$SCRIPTS/init.sh" --dir "$C" >/dev/null 2>&1; mkdir -p "$C/.sdlc/state"; git_commit "$C" "init" "2026-02-01T09:00:00Z"
-mk() { # <kind> <slug> <status> <created> [extra]
-  printf -- '---\ntype: %s\nslug: %s\ntitle: %s\nstatus: %s\nauthor: t\ncreated: %s\n%s\n---\n# %s %s\n\nBody of the %s for %s: %s %s %s\n' "$1" "$2" "$2" "$3" "$4" "${5:-links: {}}" "$1" "$2" "$1" "$2" "$1$1$1" "$2$2" "$3$3$3" > "$C/$1/$2.md"
+# ---------------------------------------------------------------- helpers
+ok()  { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; if $VERBOSE && [ -n "${2:-}" ]; then printf '      %s\n' "$2"; fi; return 0; }
+bad() { FAIL=$((FAIL+1)); printf 'FAIL  %s\n      %s\n' "$1" "$(printf '%s' "${2:-}" | head -c 600 | tr '\n' ' ')"; return 0; }
+eq()       { if [ "$2" = "$3" ]; then ok "$1" "${4:-}"; else bad "$1" "got '$2', want '$3'"; fi; }
+nonempty() { case "$2" in *[![:space:]]*) ok "$1" "$(printf '%s' "$2" | head -c 100)";; *) bad "$1" "empty or missing";; esac; }
+has()      { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "missing '$3' in: $2";; esac; }
+rel()      { printf '%s' "${1#"$PLUGIN"/}"; }                                  # a path relative to the plugin
+names()    { ls -1 "$1" 2>/dev/null | LC_ALL=C sort; }                         # the entries of a directory, one per line (no dotfiles)
+oneline()  { tr '\n' ' ' | sed 's/ *$//'; }
+# holds_exactly <dir> <entry…> → PASS when the directory holds those entries and no others (dotfiles ignored)
+holds_exactly() {
+  local dir="$1" missing extra; shift
+  printf '%s\n' "$@" | LC_ALL=C sort > "$WORK/want"; names "$dir" > "$WORK/have"
+  missing=$(LC_ALL=C comm -23 "$WORK/want" "$WORK/have" | oneline); extra=$(LC_ALL=C comm -13 "$WORK/want" "$WORK/have" | oneline)
+  if [ -z "$missing$extra" ]; then ok "${dir#"$PLUGIN"/} holds exactly: $*"
+  else bad "${dir#"$PLUGIN"/} holds exactly: $*" "missing: ${missing:-none}; unexpected: ${extra:-none}"; fi
 }
-mk intent claims-status draft 2026-02-01; git_commit "$C" "intent(claims-status)" "2026-02-01T10:00:00Z"
-mk intent claims-status approved 2026-02-01; git_commit "$C" "intent(claims-status): approve" "2026-02-02T10:00:00Z"
-mk spec claims-status approved 2026-02-03; git_commit "$C" "spec(claims-status)" "2026-02-03T10:00:00Z"
-mk plan claims-status approved 2026-02-04 "test_changes: forbidden"; printf 'plan/claims-status.md' > "$C/.sdlc/state/active-plan"; git_commit "$C" "plan(claims-status)" "2026-02-04T10:00:00Z"
-mk spec claims-status approved 2026-02-03; printf '\nR9. late requirement\n' >> "$C/spec/claims-status.md"; git_commit "$C" "spec(claims-status): rework" "2026-02-05T10:00:00Z"
-mk intent retry-policy rejected 2026-02-06 'reason: "duplicate"'; git_commit "$C" "intent(retry-policy): reject" "2026-02-06T10:00:00Z"
-out=$(bash "$SCRIPTS/status.sh" --dir "$C" 2>&1); rc=$?
-check "status exits 0" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"; has "status lists the slug" "$out" "claims-status"; has "status shows rework 1" "$(printf '%s' "$out" | grep claims-status)" "1"
-out=$(bash "$SCRIPTS/status.sh" claims-status --dir "$C" 2>&1); has "status <slug> shows the spec rework commit" "$out" "rework"
-has "status shows commit dates (BSD/GNU date)" "$(bash "$SCRIPTS/status.sh" --dir "$C" 2>&1 | grep claims-status)" "2026-02-0"
-out=$(python3 "$SCRIPTS/metrics.py" --dir "$C" --since 5y 2>&1); rc=$?
-check "metrics exits 0" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"; has "metrics has Stage 1 table" "$out" "Stage 1"; has "metrics survival rate computed" "$out" "Survival rate"
-has "metrics counts spec rework after plan" "$(printf '%s' "$out" | grep 'Requirements rework')" "| 1 |"
-has "metrics intent→spec elapsed" "$(printf '%s' "$out" | grep 'intent.md commit → spec.md commit')" "| 48"
-python3 "$SCRIPTS/metrics.py" --dir "$C" --format json > "$WORK/metrics.json" 2>/dev/null; py_json_ok "$WORK/metrics.json" && ok "metrics --format json parses" || bad "metrics json" "$(head -c 200 "$WORK/metrics.json")"
-mkdir -p "$C/.sdlc/logs"; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-printf '{"ts":"%s","event":"verify.run","session_id":"a","decision":"pass","reason":"hook"}\n{"ts":"%s","event":"verify.run","session_id":"a","decision":"allow","reason":"skill"}\n{"ts":"%s","event":"verify.run","session_id":"a","decision":"fail","reason":"hook"}\n' "$now" "$now" "$now" >> "$C/.sdlc/logs/events.jsonl"
-has "metrics counts hook pass and skill allow as success (2/3)" "$(python3 "$SCRIPTS/metrics.py" --dir "$C" 2>&1 | grep 'Local verify runs pass rate')" "| 0.67 |"
-printf '{"ts":"%s","event":"go.run","session_id":"a","decision":"info","reason":"skill","detail":{"slug":"x","autopilot":true,"duration_min":42}}\n{"ts":"%s","event":"go.run","session_id":"a","decision":"info","reason":"skill","detail":{"slug":"y","duration_min":18}}\n' "$now" "$now" >> "$C/.sdlc/logs/events.jsonl"
-has "metrics shows request→PR median from go.run" "$(python3 "$SCRIPTS/metrics.py" --dir "$C" 2>&1 | grep 'Request → PR')" "| 30 (2) |"
-# --- evals secret check: copied config is excluded exactly, agent-written files are judged ---
-CK="$WORK/ck-work"; mkdir -p "$CK/.claude" "$CK.meta"; printf 'password: Hunter2Hunter2\n' > "$CK/CLAUDE.md"; printf 'CLAUDE.md\n' > "$CK.meta/copied.txt"
-bash "$PLUGIN/templates/evals/cases/no-secret-in-code/check.sh" "$CK" >/dev/null 2>&1 && ok "check.sh ignores the copied CLAUDE.md" || bad "check.sh copied exclusion" "flagged copied file"
-printf 'url = "postgres://app:Hunter2Hunter2@db/x"\n' > "$CK/db.py"
-bash "$PLUGIN/templates/evals/cases/no-secret-in-code/check.sh" "$CK" >/dev/null 2>&1 && bad "check.sh must flag agent code" "passed" || ok "check.sh flags a credential in agent-written code"
-rm "$CK/db.py"; printf 'x\n' > "$CK.meta/copied.txt"
-bash "$PLUGIN/templates/evals/cases/no-secret-in-code/check.sh" "$CK" >/dev/null 2>&1 && bad "check.sh must flag an agent-written CLAUDE.md" "passed" || ok "check.sh flags CLAUDE.md when the agent (not the harness) wrote it"
-out=$(bash "$SCRIPTS/doctor.sh" --dir "$C" 2>&1); has "doctor reports auto mode readiness" "$out" "auto mode readiness"; has "doctor next steps carry layer tags" "$out" "[1 start]"
 
-# ---------------------------------------------------------------- run-evals (dry) and monitor
-echo "-- run-evals / monitor"
-out=$(bash "$SCRIPTS/run-evals.sh" --dry-run --dir "$E" 2>&1); rc=$?
-check "run-evals --dry-run exits 0" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"; has "dry-run lists 3 cases" "$out" "3 case(s) would run"; has "dry-run shows the claude command" "$out" "--output-format json"
-out=$(bash "$SCRIPTS/run-evals.sh" --dry-run --dir "$E" --case 'no-*' 2>&1); has "--case filters" "$out" "1 case(s) would run"
-out=$(bash "$SCRIPTS/run-evals.sh" --dry-run --dir "$WORK/nothing-here" 2>&1); check "run-evals without cases exits 2" "$([ $? -ne 0 ] && echo true || echo false)" "$out"
-out=$(python3 "$SCRIPTS/monitor.py" --selftest 2>&1); has "monitor selftest PASS" "$out" "== selftest PASS"
-mkdir -p "$E/.sdlc/history"; python3 - "$E/.sdlc/history/eval_pass_rate.jsonl" <<'PY'
-import json,sys
-vals=[1.0,0.98,1.0,0.99,1.0,0.98,1.0,0.99,1.0,0.98,0.6]
-open(sys.argv[1],'w').write("".join(json.dumps({"ts":f"2026-09-{i+1:02d}T02:00:00Z","value":v})+"\n" for i,v in enumerate(vals)))
-PY
-before=$(tree_sum "$E"); out=$(python3 "$SCRIPTS/monitor.py" --dry-run --dir "$E" --metric eval_pass_rate 2>&1); after=$(tree_sum "$E")
-has "monitor detects 3sigma on synthetic breach" "$out" "3sigma"; has "monitor tier 3 → propose" "$out" "propose"; has "dry-run does not invoke claude" "$out" "DRY would"
-check "monitor --dry-run writes nothing" "$([ "$before" = "$after" ] && echo true || echo false)" "$out"
-lacks "monitor dry-run creates no triage intent" "$(ls "$E/intent/triage" 2>/dev/null)" ".md"
-
-# ---------------------------------------------------------------- run-loop (/sdlc:run)
-echo "-- run-loop"
-L="$WORK/loop"; mkdir -p "$L"; git_init "$L"; printf 'x\n' > "$L/README.md"; git_commit "$L" init "2026-03-01T00:00:00Z"
-bash "$SCRIPTS/init.sh" --dir "$L" --solo --no-github >/dev/null 2>&1
-has "init enables the loop on a solo repository" "$(cat "$L/.sdlc/config.json")" '"enabled": true'
-mk_intent() { printf -- '---\ntype: intent\nslug: %s\ntitle: %s\nstatus: %s\ncreated: %s\n---\n# %s\n' "$1" "$2" "$3" "$4" "$2" > "$L/intent/$1.md"; }
-mk_intent a-first "First thing" approved 2026-03-01; mk_intent b-second "Second thing" approved 2026-03-02; mk_intent c-draft "Not yet" draft 2026-03-03; mk_intent d-done "Already done" approved 2026-03-04
-printf -- '---\ntype: plan\nslug: d-done\nstatus: implemented\n---\n' > "$L/plan/d-done.md"
-git_commit "$L" intents "2026-03-05T00:00:00Z"
-setcfg() { python3 - "$L/.sdlc/config.json" "$2" "$3" <<'PY'
-import json,sys; p,path,val=sys.argv[1:4]; c=json.load(open(p)); d=c
-for k in path.split('.')[:-1]: d=d.setdefault(k,{})
-d[path.split('.')[-1]]=json.loads(val); json.dump(c,open(p,'w'),indent=2)
-PY
+# json_ok <file> → 0 when the file is one valid JSON document
+json_ok() {
+  if $HAVE_JQ; then jq empty "$1" >/dev/null 2>&1
+  else python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1" >/dev/null 2>&1; fi
 }
-setcfg "$L" loop.enabled false; git_commit "$L" off "2026-03-05T00:30:00Z"
-out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); rc=$?
-check "run-loop refuses while loop.enabled is false" "$([ $rc -eq 2 ] && echo true || echo false)" "$out"; has "refusal names the switch" "$out" "loop.enabled=false"
-setcfg "$L" loop.enabled true; git_commit "$L" enable "2026-03-05T01:00:00Z"
-out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); rc=$?
-check "dry-run exits 0" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
-has "queue: first approved intent in created order (go hands off at the PR)" "$out" 'WOULD RUN  claude -p "/sdlc:go --slug a-first --autopilot --hand-off First thing"'
-has "queue: second approved intent" "$out" '--slug b-second'
-lacks "draft intent not queued" "$out" "c-draft"; lacks "implemented plan not queued" "$out" "d-done"
-has "dry-run announces the self-check" "$out" "WOULD SELF-CHECK"
-out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run --max-items 1 2>&1); lacks "--max-items 1 stops after one" "$out" "b-second"; has "stop reason max_items" "$out" "stop=max_items"
-touch "$L/.sdlc/state/pause"; out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); has "pause file stops the loop" "$out" "PAUSED"; rm "$L/.sdlc/state/pause"
-setcfg "$L" roles.solo false
-out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); rc=$?; check "team repository refused" "$([ $rc -eq 2 ] && echo true || echo false)" "$out"; has "refusal names solo" "$out" "solo-only"
-setcfg "$L" roles.solo true; git_commit "$L" solo "2026-03-05T02:00:00Z"
-printf 'y\n' > "$L/dirty.txt"; out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); has "dirty tree refused" "$out" "not clean"; rm "$L/dirty.txt"
-# real run with stubs: claude is a no-op that records its prompt; gh reports PR state per GH_STUB_MERGED
-cat > "$STUB/claude" <<'CL'
-#!/bin/bash
-printf '%s\n' "$*" >> "${CL_STUB_LOG:-/dev/null}"; case "$*" in *self-check*) echo 'SDLC_SELFCHECK clean';; esac; exit 0
-CL
-chmod +x "$STUB/claude"
-cat > "$STUB/gh" <<'GH'
-#!/bin/bash
-case "$*" in
-  "auth status --hostname github.com"*) exit 0;;
-  "auth status"*) echo "X github.kakaocorp.com: token expired" >&2; exit 1;;
-  "pr list --head sdlc/"*"--state merged"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); [ "${GH_STUB_MODE:-}" = merge ] && grep -q -- "--slug $h " "${CL_STUB_LOG:-/dev/null}" 2>/dev/null && echo 7;;
-  "pr list"*) ;;
-  *) exit 1;;
-esac
-GH
-chmod +x "$STUB/gh"; : > "$WORK/cl.log"
-out=$(PATH="$STUB:$PATH" CL_STUB_LOG="$WORK/cl.log" GH_STUB_MODE=merge bash "$SCRIPTS/run-loop.sh" --dir "$L" --claude-bin "$STUB/claude" 2>&1); rc=$?
-check "loop run exits 0 when everything merged" "$([ $rc -eq 0 ] && echo true || echo false)" "$out"
-has "both items merged" "$out" "merged=2"; has "self-check ran and was clean" "$out" "self_check=clean"; has "stopped because the queue emptied" "$out" "stop=queue empty"
-has "design phase runs first (--stop-after plan) with the intent title" "$(cat "$WORK/cl.log")" "/sdlc:go --slug a-first --autopilot --stop-after plan First thing"
-has "every new session gets its id up front" "$(cat "$WORK/cl.log")" "--session-id "
-has "loop sessions use the standard-context model" "$(cat "$WORK/cl.log")" "--model opus"; lacks "loop sessions are persisted for resume" "$(cat "$WORK/cl.log")" "--no-session-persistence"
-check "each item ran in its own -p session (2 go calls)" "$([ "$(grep -c -- '-p /sdlc:go' "$WORK/cl.log")" -eq 2 ] && echo true || echo false)" "$(cat "$WORK/cl.log")"
-has "loop.run event logged" "$(cat "$L/.sdlc/logs/events.jsonl")" '"event":"loop.run"'; has "loop.item events logged" "$(cat "$L/.sdlc/logs/events.jsonl")" '"event":"loop.item"'
-# failure path: nothing merges → failures counted, slug blocked after max_failures_per_slug, skipped next run
-setcfg "$L" loop.max_failures_per_slug 1; git_commit "$L" cfg "2026-03-05T03:00:00Z"
-out=$(PATH="$STUB:$PATH" CL_STUB_LOG="$WORK/cl2.log" GH_STUB_MODE=fail bash "$SCRIPTS/run-loop.sh" --dir "$L" --claude-bin "$STUB/claude" 2>&1); rc=$?
-check "loop run exits 1 when items failed" "$([ $rc -eq 1 ] && echo true || echo false)" "$out"
-has "failed items counted" "$out" "failed=2"; has "slug blocked after max_failures_per_slug" "$out" "BLOCKED a-first"
-has "block recorded in state file" "$(cat "$L/.sdlc/state/loop-failures.txt")" "a-first 1"
-out=$(bash "$SCRIPTS/run-loop.sh" --dir "$L" --dry-run 2>&1); has "blocked slugs are skipped next run" "$out" "blocked=[a-first b-second]"
-out=$(SDLC_SKIP_GH_DETECT=1 bash "$SCRIPTS/doctor.sh" --dir "$L" 2>&1); has "doctor reports the loop row" "$out" "autopilot loop (/sdlc:run)"
-# --- token economy: usage-limit stop + resume, shell-side checks wait + merge, fix round, cost recording ---
-L2="$WORK/loop2"; mkdir -p "$L2"; git_init "$L2"; printf 'x\n' > "$L2/README.md"; git_commit "$L2" init "2026-03-01T00:00:00Z"
-bash "$SCRIPTS/init.sh" --dir "$L2" --solo --no-github >/dev/null 2>&1
-printf -- '---\ntype: intent\nslug: c-one\ntitle: One\nstatus: approved\ncreated: 2026-03-01\n---\n' > "$L2/intent/c-one.md"
-printf -- '---\ntype: intent\nslug: d-two\ntitle: Two\nstatus: approved\ncreated: 2026-03-02\n---\n' > "$L2/intent/d-two.md"
-git_commit "$L2" intents "2026-03-02T00:00:00Z"
-cat > "$STUB/claude" <<'CL'
-#!/bin/bash
-printf '%s\n' "$*" >> "$CL_STUB_LOG"
-mode=$(cat "$CL_STUB_MODE_FILE" 2>/dev/null)
-case "$mode" in
-  limit) echo '{"type":"result","is_error":true,"subtype":"success","session_id":"sid-limit","total_cost_usd":2.5,"num_turns":30,"usage":{"cache_read_input_tokens":900000,"output_tokens":4000},"result":"You'"'"'ve hit your session limit · resets 7pm (Asia/Seoul)"}'; echo ok > "$CL_STUB_MODE_FILE";;
-  *) mdl=$(printf '%s' "$*" | sed -nE 's/.*--model ([^ ]+).*/\1/p'); echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-ok","total_cost_usd":1.25,"num_turns":12,"usage":{"cache_read_input_tokens":300000,"output_tokens":2000},"modelUsage":{"claude-'"$mdl"'-9":{}},"result":"SDLC_GO_PR 7"}';;
-esac
-exit 0
-CL
-chmod +x "$STUB/claude"
-cat > "$STUB/gh" <<'GH'
-#!/bin/bash
-S="$GH_STUB_STATE"
-case "$*" in
-  "auth status --hostname github.com"*) exit 0;;
-  "auth status"*) exit 1;;
-  "pr list --head sdlc/"*"--state merged"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null && echo 7;;
-  "pr list --head sdlc/"*"--state open"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null || { grep -q -- "--slug $h \|run for $h " "$CL_STUB_LOG" 2>/dev/null && { echo "$h" > "$S/current"; echo 7; }; };;
-  "pr checks"*) n=$(cat "$S/checks_fail" 2>/dev/null || echo 0); if [ "$n" -gt 0 ]; then echo $((n-1)) > "$S/checks_fail"; echo "X build  fail"; exit 1; fi; echo "✓ build pass"; exit 0;;
-  "pr merge"*) cat "$S/current" >> "$S/merged"; exit 0;;
-  *) exit 1;;
-esac
-GH
-chmod +x "$STUB/gh"
-GS="$WORK/ghstate"; mkdir -p "$GS"; : > "$GS/merged"; : > "$WORK/cl2.log"; echo limit > "$WORK/clmode"
-envs="PATH=$STUB:$PATH CL_STUB_LOG=$WORK/cl2.log CL_STUB_MODE_FILE=$WORK/clmode GH_STUB_STATE=$GS"
-out=$(env $envs bash "$SCRIPTS/run-loop.sh" --dir "$L2" --claude-bin "$STUB/claude" 2>&1); rc=$?
-has "usage limit stops the whole run" "$out" "stop=usage limit"; has "limit message names the reset time" "$out" "resets 7pm"
-check "only one session was spent before stopping (no cascade into the next item)" "$([ "$(grep -c -- '-p ' "$WORK/cl2.log")" -eq 1 ] && echo true || echo false)" "$(cat "$WORK/cl2.log")"
-lacks "a limit stop is not counted as a failure" "$(cat "$L2/.sdlc/state/loop-failures.txt" 2>/dev/null)" "c-one"
-has "session id kept for resume" "$(cat "$L2/.sdlc/state/loop-resume/c-one" 2>/dev/null)" "sid-limit"
-has "cost recorded on the item event" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | tail -1)" '"cost_usd":2.5'
-echo 1 > "$GS/checks_fail"
-out=$(env $envs bash "$SCRIPTS/run-loop.sh" --dir "$L2" --claude-bin "$STUB/claude" 2>&1); rc=$?
-has "next run resumes the stopped session" "$(cat "$WORK/cl2.log")" "--resume sid-limit"
-has "resume prompt continues the stopped phase instead of restarting" "$(cat "$WORK/cl2.log")" "Continue the design phase of the /sdlc:go run for c-one"
-has "checks are waited for in the shell" "$out" "CHECKS  PR #7"
-has "a failing check starts a short fix session" "$(cat "$WORK/cl2.log")" "has failing checks"
-check "the fix session runs on loop.fix_model" "$(grep 'has failing checks' "$WORK/cl2.log" | grep -q -- '--model sonnet' && echo true || echo false)" "$(grep 'has failing checks' "$WORK/cl2.log")"
-has "every loop session gets loop.effort" "$(head -1 "$WORK/cl2.log")" "--effort high"
-has "the models each item ran are recorded" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | grep c-one | tail -1)" '"models":"claude-opus-9,claude-sonnet-9"'
-has "both items merged by the shell after green checks" "$out" "merged=2"
-check "resume file removed after the resumed session" "$([ ! -s "$L2/.sdlc/state/loop-resume/c-one" ] && echo true || echo false)" ""
-has "item event records sessions incl. the fix round" "$(grep '"event":"loop.item"' "$L2/.sdlc/logs/events.jsonl" | grep c-one | tail -1)" '"sessions":2'
-has "run event records total cost" "$(grep '"event":"loop.run"' "$L2/.sdlc/logs/events.jsonl" | tail -1)" '"cost_usd":'
-has "metrics shows headless session cost" "$(python3 "$SCRIPTS/metrics.py" --dir "$L2" 2>&1 | grep 'Headless session cost')" "Headless session cost"
-# init migrates the old loop defaults (max_turns 200, item_max_minutes 45, model "") but keeps other values
-python3 - "$L2/.sdlc/config.json" <<'PY'
-import json,sys; p=sys.argv[1]; c=json.load(open(p)); c['loop']['max_turns']=200; c['loop']['item_max_minutes']=45; c['loop']['max_minutes']=600; c['loop']['model']=''; c['loop'].pop('fix_rounds',None); c['loop']['max_items']=3; json.dump(c,open(p,'w'),indent=2)
+# json_field <file> <.a.b> → the string at that object path ("" when it is absent or not a string)
+json_field() {
+  if $HAVE_JQ; then jq -r "$2 | if type == \"string\" then . else empty end" "$1" 2>/dev/null
+  else python3 - "$1" "$2" <<'PY' 2>/dev/null
+import json, sys
+cur = json.load(open(sys.argv[1]))
+for k in [p for p in sys.argv[2].split('.') if p]:
+    cur = cur.get(k) if isinstance(cur, dict) else None
+print(cur if isinstance(cur, str) else '')
 PY
-bash "$SCRIPTS/init.sh" --dir "$L2" --no-github >/dev/null 2>&1
-# models are aliases only: a full model id would pin the plugin to one generation
-pinned=$(grep -rnE 'claude-(opus|sonnet|haiku|fable|mythos)-[0-9]' "$PLUGIN/agents" "$PLUGIN/skills" "$PLUGIN/scripts" "$PLUGIN/templates" "$PLUGIN/hooks" 2>/dev/null)
-check "no full model id in agents, skills, scripts, templates or hooks" "$([ -z "$pinned" ] && echo true || echo false)" "$pinned"
-check "subagents that set a model also set effort" "$(for f in "$PLUGIN"/agents/*.md; do m=$(sed -n '2,/^---$/p' "$f" | grep '^model:' | grep -v inherit); [ -n "$m" ] && ! sed -n '2,/^---$/p' "$f" | grep -q '^effort:' && echo "$f"; done | grep -q . && echo false || echo true)" ""
-# --- two-phase items, --items order, depends_on, claims, worktree, dirty-tree stop ---
-L3="$WORK/loop3"; mkdir -p "$L3"; git_init "$L3"; printf 'x\n' > "$L3/README.md"; git_commit "$L3" init "2026-03-01T00:00:00Z"
-bash "$SCRIPTS/init.sh" --dir "$L3" --solo --no-github >/dev/null 2>&1
-for x in e-first f-second g-dep; do printf -- '---\ntype: intent\nslug: %s\ntitle: %s\nstatus: approved\ncreated: 2026-03-0%s\n---\n' "$x" "$x" "${#x}" > "$L3/intent/$x.md"; done
-printf -- '---\ntype: intent\nslug: g-dep\ntitle: g-dep\nstatus: approved\ncreated: 2026-03-01\ndepends_on: [f-second]\n---\n' > "$L3/intent/g-dep.md"
-git_commit "$L3" intents "2026-03-02T00:00:00Z"
-cat > "$STUB/claude" <<'CL'
-#!/bin/bash
-printf '%s\n' "$*" >> "$CL_STUB_LOG"
-slug=$(printf '%s' "$*" | sed -nE 's/.*--slug ([^ ]+).*/\1/p')
-case "$*" in
-  *"--stop-after plan"*)
-    git checkout -q -b "sdlc/$slug" 2>/dev/null || git checkout -q "sdlc/$slug"; mkdir -p plan
-    printf -- '---\ntype: plan\nslug: %s\nstatus: approved\n---\n' "$slug" > "plan/$slug.md"; git add -A >/dev/null; git commit -qm "plan($slug)" >/dev/null 2>&1
-    [ "$CL_STUB_DIRTY" = "$slug" ] && echo dirty > stray.txt
-    echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-d","total_cost_usd":0.5,"num_turns":8,"usage":{},"result":"SDLC_GO_PLANNED"}';;
-  *"--hand-off"*) echo "$slug" >> "$GH_STUB_STATE/built"; echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-b","total_cost_usd":1.0,"num_turns":20,"usage":{},"result":"SDLC_GO_PR 9"}';;
-esac
-exit 0
-CL
-chmod +x "$STUB/claude"
-cat > "$STUB/gh" <<'GH'
-#!/bin/bash
-S="$GH_STUB_STATE"
-case "$*" in
-  "auth status --hostname github.com"*) exit 0;;
-  "auth status"*) exit 1;;
-  "pr list --head sdlc/"*"--state merged"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null && echo 9;;
-  "pr list --head sdlc/"*"--state open"*) h=$(printf '%s' "$*" | sed -E 's/.*--head sdlc\/([^ ]+).*/\1/'); grep -qx "$h" "$S/merged" 2>/dev/null || { grep -qx "$h" "$S/built" 2>/dev/null && { echo "$h" > "$S/current"; echo 9; }; };;
-  "pr checks"*) exit 0;;
-  "pr merge"*) cat "$S/current" >> "$S/merged"; exit 0;;
-  *) exit 1;;
-esac
-GH
-chmod +x "$STUB/gh"
-G3S="$WORK/gh3state"; mkdir -p "$G3S"; : > "$G3S/merged"; : > "$G3S/built"; : > "$WORK/cl3.log"
-e3="PATH=$STUB:$PATH CL_STUB_LOG=$WORK/cl3.log GH_STUB_STATE=$G3S"
-out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items g-dep,f-second,e-first --no-self-check --claude-bin "$STUB/claude" 2>&1)
-has "split items: build session follows the design session" "$(cat "$WORK/cl3.log")" "/sdlc:go --slug f-second --autopilot --hand-off f-second"
-first=$(grep -o -- '--slug [a-z-]*' "$WORK/cl3.log" | head -1)
-check "--items order is followed (g-dep waits for f-second, so f-second goes first)" "$([ "$first" = "--slug f-second" ] && echo true || echo false)" "$first"
-has "depends_on item runs once its dependency merged" "$(cat "$WORK/cl3.log")" "--slug g-dep --autopilot --stop-after plan"
-has "all three merged" "$out" "merged=3"
-# claims: a slug claimed by a live process is skipped
-mk3() { printf -- '---\ntype: intent\nslug: %s\ntitle: %s\nstatus: approved\ncreated: 2026-03-09\n---\n' "$1" "$1" > "$L3/intent/$1.md"; }
-mk3 h-claimed; mk3 i-free; git_commit "$L3" more "2026-03-03T00:00:00Z"
-CD=$(cd "$L3" && cd "$(git rev-parse --git-common-dir)" && pwd)/sdlc-claims; mkdir -p "$CD"; sleep 300 & spid=$!; printf '%s other\n' "$spid" > "$CD/h-claimed"
-out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --no-self-check --dry-run --claude-bin "$STUB/claude" 2>&1)
-lacks "a slug claimed by another live loop is skipped" "$out" "--slug h-claimed"; has "the unclaimed slug is queued" "$out" "--slug i-free"
-kill $spid 2>/dev/null; wait $spid 2>/dev/null
-# linked worktree: main is checked out in the main tree, the loop detaches at its tip instead of failing
-git -C "$L3" worktree add -q --detach "$WORK/loop3-wt" >/dev/null 2>&1
-out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$WORK/loop3-wt" --items i-free --no-self-check --claude-bin "$STUB/claude" 2>&1)
-has "the loop runs in a linked worktree" "$out" "RESULT  i-free → merged"
-# a session that leaves the tree dirty stops the run and leaves the tree as it is
-mk3 j-dirty; mk3 k-after; git_commit "$L3" more2 "2026-03-04T00:00:00Z"
-out=$(env $e3 CL_STUB_DIRTY=j-dirty bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items j-dirty,k-after --no-self-check --claude-bin "$STUB/claude" 2>&1)
-has "a dirty tree after a session stops the run" "$out" "stop=dirty tree"; lacks "the next item is not started on a dirty tree" "$(cat "$WORK/cl3.log")" "--slug k-after"
-check "the stray file is left in place" "$([ -f "$L3/stray.txt" ] && echo true || echo false)" ""
-rm -f "$L3/stray.txt"
-has "init migrates the old max_turns default" "$(cat "$L2/.sdlc/config.json")" '"max_turns": 500'; has "init migrates the old item_max_minutes default" "$(cat "$L2/.sdlc/config.json")" '"item_max_minutes": 120'; has "init keeps a user-set max_minutes" "$(cat "$L2/.sdlc/config.json")" '"max_minutes": 600'; has "init migrates the empty model default" "$(cat "$L2/.sdlc/config.json")" '"model": "opus"'
-has "init fills missing loop keys" "$(cat "$L2/.sdlc/config.json")" '"fix_rounds": 2'; has "init keeps a user-set loop value" "$(cat "$L2/.sdlc/config.json")" '"max_items": 3'
-has "init fills the verifier skip keys" "$(cat "$L2/.sdlc/config.json")" '"agent": "auto"'; has "init fills loop.split_phases" "$(cat "$L2/.sdlc/config.json")" '"split_phases": true'
-# a max-turns stop leaves a resume file so the next run continues that session
-cat > "$STUB/claude" <<'CL'
-#!/bin/bash
-printf '%s\n' "$*" >> "$CL_STUB_LOG"
-echo '{"type":"result","is_error":true,"subtype":"error_max_turns","session_id":"sid-mt","total_cost_usd":0.2,"num_turns":120,"usage":{},"result":""}'
-exit 1
-CL
-chmod +x "$STUB/claude"; mk3 m-turns; git_commit "$L3" more3 "2026-03-05T00:00:00Z"
-out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items m-turns --max-items 1 --no-self-check --claude-bin "$STUB/claude" 2>&1)
-check "a max-turns stop records the session for resume" "$([ "$(cat "$L3/.sdlc/state/loop-resume/m-turns" 2>/dev/null)" = sid-mt ] && echo true || echo false)" "$out"
-# a stopped session that leaves uncommitted changes on its branch: the next run resumes it right there, nothing to commit
-cat > "$STUB/claude" <<'CL'
-#!/bin/bash
-printf '%s\n' "$*" >> "$CL_STUB_LOG"
-case "$*" in
-  *"--resume sid-ns"*)
-    printf 'resumed on %s with %s\n' "$(git branch --show-current)" "$(cat half.txt 2>/dev/null)" >> "$CL_STUB_LOG"
-    mkdir -p plan; printf -- '---\ntype: plan\nslug: n-stop\nstatus: approved\n---\n' > plan/n-stop.md; git add -A >/dev/null; git commit -qm "plan(n-stop)" >/dev/null 2>&1
-    echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-ns","total_cost_usd":0.3,"num_turns":10,"usage":{},"result":"SDLC_GO_PLANNED"}';;
-  *"--stop-after plan"*)
-    git checkout -q -b sdlc/n-stop; echo half > half.txt
-    echo '{"type":"result","is_error":true,"subtype":"error_max_turns","session_id":"sid-ns","total_cost_usd":0.2,"num_turns":500,"usage":{},"result":""}'; exit 1;;
-  *"--hand-off"*) echo n-stop >> "$GH_STUB_STATE/built"; echo '{"type":"result","is_error":false,"subtype":"success","session_id":"sid-nb","total_cost_usd":1.0,"num_turns":20,"usage":{},"result":"SDLC_GO_PR 9"}';;
-esac
-exit 0
-CL
-chmod +x "$STUB/claude"; mk3 n-stop; git_commit "$L3" more4 "2026-03-06T00:00:00Z"
-out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items n-stop --no-self-check --claude-bin "$STUB/claude" 2>&1)
-has "a stopped session's uncommitted changes stop the run with a resume note" "$out" "the next run resumes that session right here"
-check "the half-done change stays on the item branch" "$([ -f "$L3/half.txt" ] && [ "$(git -C "$L3" branch --show-current)" = sdlc/n-stop ] && echo true || echo false)" ""
-out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items n-stop --no-self-check --claude-bin "$STUB/claude" 2>&1)
-lacks "the next run does not refuse that tree" "$out" "not clean"
-has "it resumes the session on its branch with the changes in place" "$(cat "$WORK/cl3.log")" "resumed on sdlc/n-stop with half"
-has "the resumed item finishes" "$out" "RESULT  n-stop → merged"
-printf 'y\n' > "$L3/stray2.txt"; out=$(env $e3 bash "$SCRIPTS/run-loop.sh" --dir "$L3" --items n-stop --no-self-check --dry-run --claude-bin "$STUB/claude" 2>&1)
-has "a dirty tree that no stopped session left is still refused" "$out" "not clean"; rm -f "$L3/stray2.txt"
+  fi
+}
+# mp_entry <marketplace.json> <plugin name> <field> → that field of the plugin's entry ("" when there is none; a non-string comes back as JSON)
+mp_entry() {
+  if $HAVE_JQ; then
+    jq -r --arg n "$2" --arg f "$3" '[.plugins[]? | select(.name == $n)][0] | .[$f] // empty | if type == "string" then . else tojson end' "$1" 2>/dev/null
+  else
+    python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1]))
+for p in d.get('plugins') or []:
+    if isinstance(p, dict) and p.get('name') == sys.argv[2]:
+        v = p.get(sys.argv[3])
+        print(v if isinstance(v, str) else ('' if v is None else json.dumps(v)))
+        break
+PY
+  fi
+}
+# hook_rows <hooks.json> → one line per hook command: event US matcher US onFailure US command
+hook_rows() {
+  if $HAVE_JQ; then
+    jq -r '(.hooks // {}) | to_entries[] | .key as $e | (.value // [])[] | (.matcher // "") as $m | (.hooks // [])[] | [$e, $m, (.onFailure // ""), (.command // "")] | join("\u001f")' "$1" 2>/dev/null
+  else
+    python3 - "$1" <<'PY' 2>/dev/null
+import json, sys
+for ev, entries in (json.load(open(sys.argv[1])).get('hooks') or {}).items():
+    for ent in entries or []:
+        for h in ent.get('hooks') or []:
+            print('\x1f'.join([ev, ent.get('matcher') or '', str(h.get('onFailure') or ''), str(h.get('command') or '')]))
+PY
+  fi
+}
+# fm_get <file> <key> → the value of a top-level `key:` in the leading --- block: quotes and a trailing # comment removed,
+# a block scalar (| >) or a list joined with spaces; empty when the file has no frontmatter or the key is absent
+fm_get() {
+  [ -f "$1" ] || return 0
+  awk -v key="$2" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    NR == 1 { if ($0 !~ /^---[ \t\r]*$/) exit; next }
+    /^---[ \t\r]*$/ { exit }
+    cap { if ($0 ~ /^[ \t]/ || $0 ~ /^-[ \t]/ || $0 ~ /^[ \t\r]*$/) { t = trim($0); sub(/^-[ \t]+/, "", t); if (t != "") val = (val == "" ? t : val " " t); next } exit }
+    {
+      line = $0; sub(/\r$/, "", line); n = length(key) + 1
+      if (substr(line, 1, n) != key ":") next
+      v = trim(substr(line, n + 1))
+      if (v == "" || v ~ /^[|>][+-]?[ \t]*(#.*)?$/) { cap = 1; next }
+      q = substr(v, 1, 1)
+      if (q == "\"" || q == "\047") { v = substr(v, 2); j = index(v, q); if (j > 0) v = substr(v, 1, j - 1) }
+      else sub(/[ \t]+#.*$/, "", v)
+      val = v; exit
+    }
+    END { print val }' "$1"
+}
+# group_hits  (stdin: grep -n -o lines "file:line:match") → file TAB distinct matches TAB line numbers, one row per file
+group_hits() {
+  awk '{ i = index($0, ":"); f = substr($0, 1, i - 1); r = substr($0, i + 1); j = index(r, ":"); l = substr(r, 1, j - 1); m = substr(r, j + 1)
+         if (!(f in seen)) { seen[f] = 1; order[++n] = f }
+         if (index(" " ml[f] " ", " " m " ") == 0) ml[f] = ml[f] (ml[f] == "" ? "" : " ") m
+         if (!((f, l) in lseen)) { lseen[f, l] = 1; ll[f] = ll[f] (ll[f] == "" ? "" : ",") l } }
+       END { for (k = 1; k <= n; k++) { f = order[k]; printf "%s\t%s\t%s\n", f, ml[f], ll[f] } }'
+}
 
+echo "== sdlc structural tests  (plugin: $PLUGIN, work: $WORK, jq: $($HAVE_JQ && echo yes || echo no), python3: $($HAVE_PY && echo yes || echo no))"
+
+# ---------------------------------------------------------------- manifests
+echo "-- manifests"
+PJ="$PLUGIN/.claude-plugin/plugin.json"; MJ="$REPO/.claude-plugin/marketplace.json"
+for f in "$PJ" "$MJ"; do
+  if json_ok "$f"; then ok "${f#"$REPO"/} parses as JSON"; else bad "${f#"$REPO"/} parses as JSON" "missing or not valid JSON: $f"; fi
+done
+pver=$(json_field "$PJ" .version)
+eq "plugin.json: name is sdlc" "$(json_field "$PJ" .name)" sdlc
+case "$pver" in [0-9]*.[0-9]*.[0-9]*) ok "plugin.json: version is x.y.z" "$pver";; *) bad "plugin.json: version is x.y.z" "got '$pver'";; esac
+if grep -q 'hooks/hooks\.json' "$PJ" 2>/dev/null; then bad "plugin.json does not name hooks/hooks.json" "hooks/hooks.json loads by itself; naming it makes the plugin fail with 'duplicate hooks file'"
+else ok "plugin.json does not name hooks/hooks.json (it loads by itself)"; fi
+eq "marketplace.json lists the plugin sdlc" "$(mp_entry "$MJ" sdlc name)" sdlc
+msrc=$(mp_entry "$MJ" sdlc source)
+case "$msrc" in
+  ./*|../*) eq "marketplace entry sdlc: source is this plugin's directory" "$(cd "$REPO/$msrc" 2>/dev/null && pwd)" "$PLUGIN" "$msrc";;
+  "")       bad "marketplace entry sdlc: has a source" "the entry names none";;
+  *)        ok "marketplace entry sdlc: source is not a relative path, not checked" "$msrc";;
+esac
+mver=$(mp_entry "$MJ" sdlc version)
+if [ -z "$mver" ]; then ok "marketplace entry sdlc: carries no version, nothing to compare"
+else eq "marketplace entry sdlc: version equals plugin.json's" "$mver" "$pver"; fi
+
+# ---------------------------------------------------------------- skills
+echo "-- skills"
+SKILLS="go init run status"
+holds_exactly "$PLUGIN/skills" $SKILLS
+for d in "$PLUGIN"/skills/*/; do
+  [ -d "$d" ] || continue
+  s=$(basename "$d"); f="$d/SKILL.md"
+  if [ ! -f "$f" ]; then bad "skill $s: has a SKILL.md" "no $(rel "$f")"; continue; fi
+  eq "skill $s: frontmatter name equals its directory" "$(fm_get "$f" name)" "$s"
+  nonempty "skill $s: description is non-empty" "$(fm_get "$f" description)"
+done
+
+# every references/<file>.md a skill mentions is in a references/ directory: its own, or the one of the skill whose path it spells out
+n=0; miss=0
+for d in "$PLUGIN"/skills/*/; do
+  [ -d "$d" ] || continue
+  s=$(basename "$d")
+  hits=$(cd "$d" && grep -rIoHE '([A-Za-z0-9_${}./-]*/)?references/[A-Za-z0-9_.-]+\.md' . 2>/dev/null | LC_ALL=C sort -u)
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    from="${line%%:*}"; tok="${line#*:}"
+    case "$tok" in
+      '${CLAUDE_PLUGIN_ROOT}/'*) continue ;;                  # the path check below resolves these
+      *skills/*) target="$PLUGIN/skills/${tok#*skills/}" ;;   # another skill's reference, spelled with its path
+      *)         target="$d/$tok" ;;
+    esac
+    n=$((n+1))
+    [ -f "$target" ] || { miss=$((miss+1)); bad "skill $s: $tok (mentioned in ${from#./}) exists" "no file $(rel "$target")"; }
+  done <<< "$hits"
+done
+[ "$miss" -eq 0 ] && ok "every references/<file>.md a skill mentions exists ($n mentions)"
+
+# every ${CLAUDE_PLUGIN_ROOT}/<path> named in skills, agents, hooks or templates exists; <placeholder> segments and * match any name
+refs=$(cd "$PLUGIN" && grep -rIoHE '\$\{CLAUDE_PLUGIN_ROOT\}/[A-Za-z0-9_./<>*-]+' skills agents hooks templates 2>/dev/null \
+  | awk '{ m = ":${CLAUDE_PLUGIN_ROOT}/"; i = index($0, m); printf "%s\t%s\n", substr($0, 1, i - 1), substr($0, i + length(m)) }' | LC_ALL=C sort -u)
+n=0; miss=0
+while IFS="$TAB" read -r f p; do
+  [ -n "$p" ] || continue
+  while [ "${p%.}" != "$p" ]; do p="${p%.}"; done            # the full stop that ends a sentence is not part of the path
+  p=$(printf '%s' "$p" | sed 's/<[^>]*>/*/g')
+  n=$((n+1)); found=false
+  case "$p" in
+    *'*'*) ( cd "$PLUGIN" && for m in $p; do [ -e "$m" ] && exit 0; done; exit 1 ) && found=true ;;
+    *)     [ -e "$PLUGIN/$p" ] && found=true ;;
+  esac
+  $found || { miss=$((miss+1)); bad "\${CLAUDE_PLUGIN_ROOT}/$p (named in $f) exists" "nothing at $PLUGIN/$p"; }
+done <<< "$refs"
+[ "$miss" -eq 0 ] && ok "every \${CLAUDE_PLUGIN_ROOT}/<path> in skills, agents, hooks and templates exists ($n paths)"
+
+# ---------------------------------------------------------------- agents
+echo "-- agents"
+AGENTS="sdlc-builder sdlc-researcher sdlc-reviewer sdlc-simplifier sdlc-verifier"
+holds_exactly "$PLUGIN/agents" $(for a in $AGENTS; do echo "$a.md"; done)
+for f in "$PLUGIN"/agents/*.md; do
+  [ -f "$f" ] || continue
+  a=$(basename "$f" .md)
+  eq "agent $a: frontmatter name equals the file name" "$(fm_get "$f" name)" "$a"
+  nonempty "agent $a: description is non-empty" "$(fm_get "$f" description)"
+  nonempty "agent $a: tools is non-empty" "$(fm_get "$f" tools)"
+  nonempty "agent $a: effort is non-empty" "$(fm_get "$f" effort)"
+  model=$(fm_get "$f" model)
+  case "$model" in
+    haiku|sonnet|opus) ok "agent $a: model is an alias" "$model" ;;
+    *) bad "agent $a: model is an alias (haiku, sonnet or opus)" "got '$model' — a full model id pins the plugin to one model generation" ;;
+  esac
+done
+
+# ---------------------------------------------------------------- hooks
+echo "-- hooks"
+HJ="$PLUGIN/hooks/hooks.json"
+if json_ok "$HJ"; then ok "hooks/hooks.json parses as JSON"; else bad "hooks/hooks.json parses as JSON" "missing or not valid JSON: $HJ"; fi
+rows=$(hook_rows "$HJ")
+nrows=0; nscripts=0; miss=0
+while IFS="$US" read -r ev matcher onfail cmd; do
+  [ -n "$cmd" ] || continue
+  nrows=$((nrows+1))
+  p=$(printf '%s' "$cmd" | grep -oE '\$\{CLAUDE_PLUGIN_ROOT\}/[A-Za-z0-9_./-]+' | head -1); p="${p#\$\{CLAUDE_PLUGIN_ROOT\}/}"
+  [ -n "$p" ] || continue
+  nscripts=$((nscripts+1))
+  [ -f "$PLUGIN/$p" ] || { miss=$((miss+1)); bad "hooks.json $ev: the script $p exists" "no file $PLUGIN/$p (command: $cmd)"; }
+done <<< "$rows"
+if [ "$nrows" -eq 0 ]; then bad "hooks.json registers hook commands" "no hook command found in $HJ"
+elif [ "$miss" -eq 0 ]; then ok "every script hooks.json runs exists ($nscripts scripts in $nrows hook commands)"; fi
+# the two guards must run before the tool call (PreToolUse), cover every tool they protect, and fail closed
+for g in guard-edit guard-bash; do
+  case "$g" in guard-edit) need="Edit Write MultiEdit NotebookEdit";; *) need="Bash";; esac
+  gn=0; gblock=0; gpre=0; gmatchers=""
+  while IFS="$US" read -r ev matcher onfail cmd; do
+    case "$cmd" in
+      *"/scripts/hooks/$g.sh"*)
+        gn=$((gn+1)); [ "$onfail" = block ] && gblock=$((gblock+1))
+        if [ "$ev" = PreToolUse ]; then gpre=$((gpre+1)); gmatchers="$gmatchers|$matcher"; fi ;;
+    esac
+  done <<< "$rows"
+  gmiss=""; for t in $need; do case "$gmatchers|" in *"|$t|"*) ;; *) gmiss="$gmiss $t";; esac; done   # gmatchers is |m1|m2…: a matcher is a|b|c
+  if [ "$gn" -eq 0 ]; then bad "hooks.json registers $g.sh" "no hook command runs scripts/hooks/$g.sh"
+  elif [ "$gpre" -ne "$gn" ]; then bad "$g.sh runs on PreToolUse" "$gn registration(s), $gpre under PreToolUse"
+  elif [ -n "$gmiss" ]; then bad "$g.sh's matcher covers $need" "not matched:$gmiss (matchers: $gmatchers)"
+  else ok "$g.sh runs on PreToolUse and matches $need" "matcher: ${gmatchers#|}"; fi
+  if [ "$gn" -gt 0 ]; then
+    if [ "$gblock" -eq "$gn" ]; then ok "$g.sh carries \"onFailure\": \"block\" (fails closed)" "$gn registration(s)"
+    else bad "$g.sh carries \"onFailure\": \"block\" (fails closed)" "$gblock of $gn registration(s) carry it; without it a guard that crashes or times out lets the tool call through"; fi
+  fi
+done
+
+# ---------------------------------------------------------------- templates
+echo "-- templates"
+T="$PLUGIN/templates"
+LANG_TEMPLATES="CLAUDE.sections.md REVIEW.md work-README.md work.md"            # in templates/en and in templates/ko
+CONFIG_TEMPLATES="frozen-paths.txt settings.project.json"   # in templates/config (init builds config.json and the .gitignore lines in code)
+holds_exactly "$T" config en ko
+holds_exactly "$T/en" $LANG_TEMPLATES
+holds_exactly "$T/ko" $LANG_TEMPLATES
+holds_exactly "$T/config" $CONFIG_TEMPLATES
+for f in settings.project.json; do
+  if json_ok "$T/config/$f"; then ok "templates/config/$f parses as JSON"; else bad "templates/config/$f parses as JSON" "missing or not valid JSON"; fi
+done
+eq "templates/en and templates/ko hold the same file names" "$(names "$T/en" | oneline)" "$(names "$T/ko" | oneline)"
+# a template is read when some script, skill, agent or hook names the file. The repository being adopted has its own .sdlc/<name>
+# (config.json, frozen-paths.txt); mentions of that one are not references to the template.
+template_read() {
+  local base="$1" esc
+  esc="${base//./\\.}"
+  ( cd "$PLUGIN" && grep -rIhF --exclude-dir=__pycache__ -e "$base" scripts skills agents hooks 2>/dev/null ) \
+    | sed -e "s|\\.sdlc/$esc||g" -e "s|\"\\.sdlc\", \"$esc\"||g" | grep -qF -e "$base"
+}
+while IFS= read -r base; do
+  [ -n "$base" ] || continue
+  if template_read "$base"; then ok "template $base is read by code or a skill"
+  else bad "template $base is read by code or a skill" "no file under scripts/, skills/, agents/ or hooks/ names '$base' — delete the template, or make the code read it"; fi
+done <<< "$(find "$T" -type f -not -name '.*' 2>/dev/null | sed 's|.*/||' | LC_ALL=C sort -u)"
+
+# ---------------------------------------------------------------- stale 0.x references
+echo "-- no dangling 0.x references"
+# scripts/sdlclib/init.py is exempt: it recognises old command mentions in a user's CLAUDE.md on purpose; tests/ are not scanned
+SCOPE="skills agents hooks templates scripts"
+REMOVED_CMDS="intent spec plan verify review release monitor triage postmortem metrics evals lesson policy scan doctor"
+DELETED_SCRIPTS="run-loop.sh init.sh status.sh doctor.sh metrics.py monitor.py run-evals.sh review-gate.sh"
+found=$(cd "$PLUGIN" && grep -rInoE '/sdlc:[a-z][a-z0-9_-]*' $SCOPE --exclude-dir=__pycache__ 2>/dev/null \
+  | grep -v '^scripts/sdlclib/init\.py:' \
+  | awk -v names="$REMOVED_CMDS" 'BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) del["/sdlc:" a[i]] = 1 }
+      { i = index($0, ":"); r = substr($0, i + 1); j = index(r, ":"); if (substr(r, j + 1) in del) print }' | group_hits)
+if [ -z "$found" ]; then ok "no removed command (/sdlc:$(printf '%s' "$REMOVED_CMDS" | tr ' ' '|')) is mentioned"
+else while IFS="$TAB" read -r f m l; do bad "$f mentions removed commands" "$m (lines $l)"; done <<< "$found"; fi
+# a file name counts whole: run-loop.sh, but not my-run-loop.sh or run-loop.shx (the match carries its closing character; awk cuts it off)
+found=$(cd "$PLUGIN" && grep -rInoE '[A-Za-z0-9_./-]+\.(sh|py)([^A-Za-z0-9_.-]|\.([^A-Za-z0-9_-]|$)|$)' $SCOPE --exclude-dir=__pycache__ 2>/dev/null \
+  | grep -v '^scripts/sdlclib/init\.py:' \
+  | awk -v names="$DELETED_SCRIPTS" 'BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) del[a[i]] = 1 }
+      { i = index($0, ":"); f = substr($0, 1, i - 1); r = substr($0, i + 1); j = index(r, ":"); l = substr(r, 1, j - 1); m = substr(r, j + 1)
+        if (!match(m, "[A-Za-z0-9_./-]+\\.(sh|py)")) next
+        k = split(substr(m, RSTART, RLENGTH), parts, "/"); if (parts[k] in del) print f ":" l ":" parts[k] }' | group_hits)
+if [ -z "$found" ]; then ok "no deleted script ($DELETED_SCRIPTS) is mentioned"
+else while IFS="$TAB" read -r f m l; do bad "$f mentions deleted scripts" "$m (lines $l)"; done <<< "$found"; fi
+
+# ---------------------------------------------------------------- shell syntax
+echo "-- shell syntax"
+n=0; miss=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  n=$((n+1))
+  if ! err=$(bash -n "$f" 2>&1); then miss=$((miss+1)); bad "bash -n $(rel "$f")" "$err"; fi
+done <<< "$(find "$PLUGIN" -name '*.sh' -type f -not -path '*/.git/*' 2>/dev/null | LC_ALL=C sort)"
+[ "$miss" -eq 0 ] && ok "bash -n passes for every *.sh in the plugin ($n files)"
+
+# ---------------------------------------------------------------- secret-scan.sh
+echo "-- secret-scan.sh"
+SS="$SCRIPTS/secret-scan.sh"
+FAKE_KEY="AKIA""$(printf 'Q%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)"   # AWS-key shaped, assembled at run time: this file holds no secret literal
+DOC_KEY="AKIA""IOSFODNN7""EXAMPLE"                                          # AWS's documentation key; the word EXAMPLE puts it on the allowlist
+# no_leak <name> <scanner output> → PASS when neither the fake credential nor a run of its filler is in the output (a failure never echoes it)
+no_leak() { case "$2" in *"$FAKE_KEY"*|*QQQQQQQQ*) bad "$1" "the scanner printed (part of) the credential";; *) ok "$1";; esac; }
+
+out=$(printf 'aws_access_key_id = %s\n' "$FAKE_KEY" | bash "$SS" --text 2>&1); rc=$?
+eq  "--text: a credential-shaped string exits 1" "$rc" 1
+has "--text: the hit names the pattern, not the value" "$out" "pattern#"
+no_leak "--text: the credential is never printed" "$out"
+out=$(printf 'nothing to see here\nconst answer = 42\n' | bash "$SS" --text 2>&1); rc=$?
+eq "--text: clean text exits 0" "$rc" 0
+eq "--text: clean text prints nothing" "$out" ""
+out=$(printf 'aws_access_key_id = %s\n' "$DOC_KEY" | bash "$SS" --text 2>&1); rc=$?
+eq "--text: a placeholder on the allowlist (EXAMPLE) exits 0" "$rc" 0
+out=$(printf '' | bash "$SS" --text 2>&1); rc=$?
+eq "--text: empty input exits 0" "$rc" 0
+X="$WORK/extra"; mkdir -p "$X/.sdlc"; printf '{"version": 2, "secrets": {"extra_patterns": ["ACME-[0-9]{8}"]}}\n' > "$X/.sdlc/config.json"
+out=$(printf 'ticket token ACME-12345678\n' | bash "$SS" --text "$X" 2>&1); rc=$?
+eq "--text <root>: secrets.extra_patterns of .sdlc/config.json apply" "$rc" 1
+out=$(printf 'ticket token ACME-12345678\n' | bash "$SS" --text "$WORK" 2>&1); rc=$?
+eq "--text <root>: no extra patterns outside an initialized project" "$rc" 0
+out=$(bash "$SS" 2>&1); rc=$?;            eq "no mode: usage error, exit 2" "$rc" 2
+out=$(bash "$SS" --staged 2>&1); rc=$?;   eq "--staged without a root: usage error, exit 2" "$rc" 2
+out=$(bash "$SS" --bogus 2>&1); rc=$?;    eq "an unknown mode: usage error, exit 2" "$rc" 2
+
+# --staged runs on throwaway repositories below $WORK, one per case; each starts with a clean README committed
+new_repo() {   # <name> → $R, a repository holding one clean commit
+  R="$WORK/$1"; mkdir -p "$R"
+  git -C "$R" init -q . >/dev/null 2>&1; printf 'hello\n' > "$R/README.md"
+  git -C "$R" add README.md >/dev/null 2>&1; g "$R" commit -q -m base >/dev/null 2>&1
+}
+g()    { local d="$1"; shift; git -C "$d" -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+scan() { SCAN_OUT=$(bash "$SS" --staged "$R" "$@" 2>&1); SCAN_RC=$?; }
+
+new_repo staged-secret; mkdir -p "$R/src"; printf 'key = %s\n' "$FAKE_KEY" > "$R/src/app.txt"; g "$R" add src/app.txt >/dev/null 2>&1; scan
+eq  "--staged: a credential added to a staged file exits 1" "$SCAN_RC" 1
+has "--staged: the hit names the pattern" "$SCAN_OUT" "pattern#"
+no_leak "--staged: the credential is never printed" "$SCAN_OUT"
+
+new_repo staged-evals; mkdir -p "$R/evals/fixtures"; printf 'key = %s\n' "$FAKE_KEY" > "$R/evals/fixtures/creds.txt"; g "$R" add evals/fixtures/creds.txt >/dev/null 2>&1; scan
+eq  "--staged: a credential staged under evals/ is flagged too (no directory is exempt)" "$SCAN_RC" 1
+no_leak "--staged: …and not printed" "$SCAN_OUT"
+
+new_repo staged-lookalike; printf '++ %s\n' "$FAKE_KEY" > "$R/notes.txt"; g "$R" add notes.txt >/dev/null 2>&1; scan
+eq "--staged: an added line that starts with '++ ' is scanned, not mistaken for a file header" "$SCAN_RC" 1
+
+new_repo staged-clean; printf 'more text\n' >> "$R/README.md"; printf 'doc key = %s\n' "$DOC_KEY" > "$R/doc.txt"; g "$R" add README.md doc.txt >/dev/null 2>&1; scan
+eq "--staged: clean and allowlisted additions exit 0" "$SCAN_RC" 0
+eq "--staged: …and print nothing" "$SCAN_OUT" ""
+
+new_repo staged-removed; printf 'key = %s\n' "$FAKE_KEY" > "$R/old.txt"; printf 'key = %s\n' "$FAKE_KEY" > "$R/gone.txt"
+g "$R" add old.txt gone.txt >/dev/null 2>&1; g "$R" commit -q -m "add the credential" >/dev/null 2>&1
+printf 'key = read from the environment\n' > "$R/old.txt"; g "$R" add old.txt >/dev/null 2>&1; g "$R" rm -q gone.txt >/dev/null 2>&1; scan
+eq "--staged: a credential that is only removed (edited out, file deleted) exits 0" "$SCAN_RC" 0
+eq "--staged: …and prints nothing" "$SCAN_OUT" ""
+
+new_repo staged-all; printf 'key = %s\n' "$FAKE_KEY" >> "$R/README.md"; scan
+eq "--staged: a credential that is not staged is not scanned" "$SCAN_RC" 0
+scan --all
+eq "--staged --all: …but an unstaged change to a tracked file is (what commit -a would take)" "$SCAN_RC" 1
+no_leak "--staged --all: the credential is never printed" "$SCAN_OUT"
 
 echo "== $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

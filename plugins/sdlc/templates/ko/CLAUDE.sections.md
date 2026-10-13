@@ -18,7 +18,7 @@
 
 <!-- sdlc:begin mistakes -->
 ## Things Claude gets wrong (Claude 가 반복하는 실수)
-- (같은 실수가 두 번째로 나타나면 여기에 한 줄을 추가한다. `/sdlc:lesson` 이 이 일을 한다)
+- (같은 실수가 두 번째로 나타나면 여기에 한 줄을 추가한다)
 <!-- sdlc:end mistakes -->
 
 <!-- sdlc:begin verifying -->
@@ -29,5 +29,5 @@
 
 작업 완료를 보고하기 전에 위 세 가지를 모두 실행하고 출력을 그대로 붙인다.
 테스트가 실패하면 테스트가 아니라 코드를 고친다.
-모든 변경은 커밋된 plan.md 에서 시작한다(`/sdlc:go` 가 작성·커밋하고, 단계별로는 `/sdlc:plan`).
+모든 변경에는 작업 문서(`work/<slug>.md`: 목표·인수 조건·계획·증명)가 있다. `/sdlc:go` 가 작성한다.
 <!-- sdlc:end verifying -->

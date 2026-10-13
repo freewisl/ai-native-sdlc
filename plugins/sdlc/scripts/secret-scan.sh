@@ -2,6 +2,7 @@
 # sdlc plugin — secret scanner (design §6).
 #   secret-scan.sh --text [<root>]            scan text from stdin
 #   secret-scan.sh --staged <root> [--all]    scan added lines of `git diff --cached` (with --all: `git diff HEAD`, what `commit -a` would take)
+#                                             every added line of every file counts; no directory is exempt
 # Patterns: scripts/secret-patterns.txt (+ secrets.extra_patterns from <root>/.sdlc/config.json when <root> is initialized).
 # Output: one line per hit, "pattern#<n>\t<label>" — the matched secret itself is NEVER printed.
 # Exit: 0 clean, 1 hit(s), 2 usage error. Allowlist tokens come from the pattern file header; template references (${…}, {{…}}) are also skipped.
@@ -47,16 +48,18 @@ if [ "$mode" = "--text" ]; then
   text=$(cat)
 else
   git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
-  evals_dir=$(cfg "$root" .paths.evals evals)
   if $all && git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
     diff=$(git -C "$root" diff HEAD --no-color --unified=0 --diff-filter=ACMR 2>/dev/null)
   else
     diff=$(git -C "$root" diff --cached --no-color --unified=0 --diff-filter=ACMR 2>/dev/null)
   fi
-  # added lines only; files under the evals fixture dir are exempt (they hold intentionally fake secrets)
-  text=$(printf '%s\n' "$diff" | awk -v skip="${evals_dir%/}/" '
-    /^\+\+\+ / { f=$0; sub(/^\+\+\+ b\//,"",f); cur=f; next }
-    /^\+/      { if (index(cur, skip) == 1) next; print substr($0, 2) }')
+  # every added line of every file, no path exempt: a directory of fixtures is not a reason to wave real credentials through.
+  # The per-file header (diff … up to the first @@) is skipped by state, so an added line that itself starts with "++ " is still scanned.
+  text=$(printf '%s\n' "$diff" | awk '
+    /^diff /   { hdr = 1; next }
+    /^@@ /     { hdr = 0; next }
+    hdr        { next }
+    /^\+/      { print substr($0, 2) }')
 fi
 [ -n "$(printf '%s' "$text" | tr -d '[:space:]')" ] || exit 0
 
