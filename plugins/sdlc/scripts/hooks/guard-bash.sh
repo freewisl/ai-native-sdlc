@@ -1,11 +1,16 @@
 #!/bin/bash
-# PreToolUse Bash — in order: (1) production deploy gate (one tier: a command matching protect.deploy_patterns needs the
+# PreToolUse Bash — in order: (1) production deploy gate (one tier: a simple command matching protect.deploy_patterns needs the
 # env var protect.deploy_approval_env), (2) no direct push to the default branch, (3) what the command writes, with the same
 # two rules as guard-edit: during sdlc work (an active work doc applies) an existing test file stays untouched while it is
 # locked — outside sdlc work no test is locked — and while the active work doc is ready or proposed (design first) nothing
 # outside the work dir and .sdlc/ is written — rm, mv, cp, sed -i, redirects, tee, git rm/checkout/restore …; (4) secret scan
 # on `git commit`: the staged diff, or — with a `git add` earlier in the command line or -a/--all — what the commit could take.
 # Uninitialized project → only (1), with the built-in patterns.
+# (1) matches the patterns against each simple command, not the whole text: its words with quotes resolved, heredoc bodies and
+# comments left out. A quoted argument counts (bash -c "deploy prod", ssh host 'release production'); text tools (echo, cat, grep …),
+# git commands that only read or record (commit, log, diff …) and the body of a heredoc whose command is not a shell are text, not
+# checked — a text tool or git only while nothing on the line makes it run a program (rg --pre, sort --compress-program, git -c,
+# --exec, an env prefix …). A command line it cannot split is matched as plain text, as before.
 # (3) and (4) are best effort: the hook reads the command line, it does not run it — a program that writes on its own (python -c,
 # patch, git apply, make, a package manager, curl -o …) or a path built from a variable or brace expansion is not seen.
 # Reads: protect.{deploy_patterns,deploy_approval_env,block_direct_push,default_branch,protect_tests,test_paths}, paths.work,
@@ -24,16 +29,409 @@ cmd=$(json_get "$input" .tool_input.command)
 cmd_short=$(trunc "$(one_line "$cmd")" 100)
 initialized=false; sdlc_initialized "$root" && initialized=true
 
+# The command line as simple commands — (1) and (3) both read it through one tokenizer (awk) that turns it into records: W<word>
+# (quotes and escapes resolved), O<path> (the target of an output redirection) and C (end of a simple command: ; & | && || newline
+# ( ) `) — heredoc bodies and comments skipped. Only (1) asks for more (awk -v bodies=1 -v cap=<n>): P (the command's output is
+# piped on), R<file> (its input is a here-string — no file — or the file), N<kind> followed by one record of text, newlines as
+# \001 — kind X: a command substitution inside double quotes or inside an unquoted heredoc body (a command of its own), kind B<n>:
+# the body of a heredoc whose command, simple command number n, names a shell — and ! (more than <n> records: stopped there).
+# Plain text, white space and quoted text are read a chunk at a time: substr in macOS awk measures the whole command line on every
+# call, so a character-by-character scan is quadratic in its length. awk runs as LC_ALL=C — it reads bytes, whatever the locale: in a
+# UTF-8 locale macOS awk stops dead on a regular expression over half a character (a chunk that ends inside one, the text after a
+# backslash that escapes its first byte), and everything after that point is never seen.
+TL_AWK='
+BEGIN {
+  RS = "\001"; SQ = "\047"; DQ = "\042"; BQ = "\140"; DOL = "\044"; cl = 0
+  PLAINRE = "^[^ \t\r\n;|&()<>" BQ DQ SQ "\\\\]+"                 # a run of characters that need no attention (not stop, quote or backslash)
+  DQRE = bodies ? "[\"\\\\$`]" : "[\"\\\\]"
+  if (bodies) { m = split(shells, a, " "); for (k = 1; k <= m; k++) SH[a[k]] = 1 }
+}
+function stop(c) {
+  return c == " " || c == "\t" || c == "\r" || c == "\n" || c == ";" || c == "|" || c == "&" || c == "(" || c == ")" || c == "<" || c == ">" || c == "`"
+}
+function tick() { if (cap && ++nrec > cap) { print "!"; exit } }                  # (bodies only) too many records: the caller matches the text instead
+function cend() { tick(); print "C"; cl++ }
+function nest(kind, x) { tick(); gsub(/\n/, "\001", x); print "N" kind; print x }
+function pclose(t, p,   nt, dep, rest, j, c) {              # the ) that closes a $( — p is just past the $(
+  nt = length(t); dep = 1
+  while (p <= nt) {
+    rest = substr(t, p, 256)
+    j = match(rest, /[()\\]/)
+    if (j == 0) { p += length(rest); continue }
+    p += j - 1
+    c = substr(t, p, 1)
+    if (c == "\\") { p += 2; continue }
+    if (c == "(") dep++
+    else if (--dep == 0) return p
+    p++
+  }
+  return nt + 1
+}
+function bclose(t, p,   nt, rest, j) {                       # the backtick that closes one — p is just past the opening one
+  nt = length(t)
+  while (p <= nt) {
+    rest = substr(t, p, 256)
+    j = match(rest, /[`\\]/)
+    if (j == 0) { p += length(rest); continue }
+    p += j - 1
+    if (substr(t, p, 1) == "\\") { p += 2; continue }
+    return p
+  }
+  return nt + 1
+}
+function substs(t,   p, nt, rest, j, c, q) {                 # the command substitutions an unquoted heredoc body expands
+  if (index(t, "$(") == 0 && index(t, BQ) == 0) return
+  nt = length(t); p = 1
+  while (p <= nt) {
+    rest = substr(t, p, 256)
+    j = match(rest, /[\\$`]/)
+    if (j == 0) { p += length(rest); continue }
+    p += j - 1
+    c = substr(t, p, 1)
+    if (c == "\\") { p += 2; continue }
+    if (c == DOL) {
+      if (substr(t, p + 1, 1) != "(") { p++; continue }
+      q = pclose(t, p + 2); nest("X", substr(t, p + 2, q - p - 2)); p = q + 1
+    } else {
+      q = bclose(t, p + 1); nest("X", substr(t, p + 1, q - p - 1)); p = q + 1
+    }
+  }
+}
+function readword(   w, c, d, e, rest, j, q, k0) {
+  w = ""
+  while (i <= n) {
+    rest = substr(s, i, 256)
+    if (match(rest, PLAINRE)) { w = w substr(rest, 1, RLENGTH); i += RLENGTH; continue }
+    c = substr(rest, 1, 1)
+    if (stop(c)) break
+    if (c == "\\") {
+      d = substr(s, i + 1, 1)
+      if (d == "\n") { i += 2; continue }
+      w = w d; i += 2; continue
+    }
+    if (c == SQ) {
+      i++
+      rest = substr(s, i); j = index(rest, SQ)
+      if (j == 0) { w = w rest; i = n + 1 } else { w = w substr(rest, 1, j - 1); i += j }
+      continue
+    }
+    if (c == DQ) {
+      i++
+      while (i <= n) {
+        rest = substr(s, i, 256)                        # plain text is taken a chunk at a time
+        j = match(rest, DQRE)
+        if (j == 0) { w = w rest; i += length(rest); continue }
+        w = w substr(rest, 1, j - 1); i += j - 1
+        d = substr(s, i, 1)
+        if (d == DQ) break
+        if (d == DOL || d == BQ) {                      # (bodies only) a command substitution inside the quotes is a command of its own
+          if (d == BQ) { k0 = i + 1; q = bclose(s, k0) }
+          else if (substr(s, i + 1, 1) == "(") { k0 = i + 2; q = pclose(s, k0) }
+          else { w = w d; i++; continue }
+          nest("X", substr(s, k0, q - k0))
+          w = w substr(s, i, q - i + 1); i = q + 1; continue
+        }
+        e = substr(s, i + 1, 1)
+        if (e == "\n") { i += 2; continue }
+        if (e == "$" || e == "`" || e == DQ || e == "\\") { w = w e; i += 2; continue }
+        w = w d; i++
+      }
+      i++; continue
+    }
+    w = w c; i++
+  }
+  gsub(/\n/, " ", w)
+  return w
+}
+function skipws(   rest) {                                  # a run of white space, a chunk at a time
+  while (i <= n) {
+    rest = substr(s, i, 256)
+    if (!match(rest, /^[ \t\r]+/)) return
+    i += RLENGTH
+  }
+}
+function emit(k, b) {                                       # (bodies only) a heredoc body: a script when its command is a shell, plus the $( ) of an unquoted one
+  if (!bodies) return
+  if (shw[hown[k]]) nest("B" hown[k], b)
+  if (!hq[k]) substs(b)
+}
+function skipbodies(   k, d, wrapped, j, b, from, rs, rl) {
+  for (k = 1; k <= nh; k++) {
+    if (i > n) break
+    d = hd[k]; from = i
+    wrapped = "\n" substr(s, i) "\n"
+    if (!hdash[k]) {
+      j = index(wrapped, "\n" d "\n")
+      if (j > 0) { emit(k, substr(s, from, j - 1)); i = i + j + length(d); continue }
+    } else if (d ~ /^[A-Za-z0-9_]+$/) {
+      if (match(wrapped, "\n\t*" d "\n")) { rs = RSTART; rl = RLENGTH; emit(k, substr(s, from, rs - 1)); i = i + rs + rl - 2; continue }
+    } else {
+      b = ""
+      while (i <= n) {
+        j = index(substr(s, i), "\n")
+        if (j == 0) { wrapped = substr(s, i); i = n + 1 } else { wrapped = substr(s, i, j - 1); i += j }
+        sub(/^\t+/, "", wrapped)
+        if (wrapped == d) break
+        b = b wrapped "\n"
+      }
+      emit(k, b)
+      continue
+    }
+    emit(k, substr(s, from)); i = n + 1
+  }
+  nh = 0
+}
+{
+  s = $0; n = length(s); i = 1; nh = 0
+  while (i <= n) {
+    rest = substr(s, i, 256)
+    if (match(rest, /^[ \t\r]+/)) { i += RLENGTH; continue }
+    c = substr(rest, 1, 1)
+    if (c == "\n") { i++; cend(); if (nh > 0) skipbodies(); continue }
+    if (c == "#") { j = index(substr(s, i), "\n"); if (j == 0) i = n + 1; else i += j - 1; continue }
+    if (c == ";" || c == "(" || c == ")" || c == "`") { i++; cend(); continue }
+    if (c == "|") {
+      i++; d = substr(s, i, 1)
+      if (d == "|") i++
+      else { if (d == "&") i++; if (bodies) print "P" }
+      cend(); continue
+    }
+    if (c == "&") {
+      d = substr(s, i + 1, 1)
+      if (d == ">") {
+        i += 2; if (substr(s, i, 1) == ">") i++
+        skipws(); t = readword(); print "O" t; continue
+      }
+      i++; if (d == "&") i++
+      cend(); continue
+    }
+    if (c == ">") {
+      i++; d = substr(s, i, 1)
+      if (d == ">" || d == "|") i++
+      else if (d == "&") {
+        e = substr(s, i + 1, 1)
+        if (e ~ /[0-9-]/) { i++; while (i <= n && substr(s, i, 1) ~ /[0-9-]/) i++; continue }
+        i++
+      }
+      else if (d == "(") continue
+      skipws(); t = readword(); print "O" t; continue
+    }
+    if (c == "<") {
+      i++; d = substr(s, i, 1)
+      if (d == "<") {
+        i++
+        if (substr(s, i, 1) == "<") { i++; skipws(); t = readword(); if (bodies) print "R"; continue }
+        dash = 0; if (substr(s, i, 1) == "-") { dash = 1; i++ }
+        skipws(); hp = i; t = readword()
+        nh++; hd[nh] = t; hdash[nh] = dash; hown[nh] = cl
+        q = substr(s, hp, i - hp); hq[nh] = (index(q, DQ) > 0 || index(q, SQ) > 0 || index(q, "\\") > 0)
+        continue
+      }
+      if (d == "(") continue
+      if (d == "&") i++
+      skipws(); t = readword(); if (bodies && d != "&") print "R" t; continue
+    }
+    p = i
+    w = readword()
+    if (i == p) { i++; continue }
+    d = substr(s, i, 1)
+    if (w ~ /^[0-9]+$/ && (d == ">" || d == "<")) continue
+    if (bodies) { b = w; sub(/^.*\//, "", b); if (b in SH) shw[cl] = 1 }
+    tick(); print "W" w
+  }
+}
+'
+# What can deploy. A text tool only prints or searches its arguments, so words that look like a deploy there are text — unless an option
+# makes it run a program (deploy_text_runs); less and more are not on the list, they run what a ! line or LESSOPEN says. Of git, the
+# commands in SDLC_GIT_LOCAL only read or record — and only while nothing on the line makes git run a program (deploy_git_reads);
+# push, anything else (`git deploy`, an alias) and the commands that run what they are given (rebase --exec, bisect run, submodule
+# foreach, difftool, mergetool, config alias.x '!cmd') are checked like any command. What git may be given without that is listed in
+# SDLC_GIT_C_INERT (the settings of a -c: they name the committer) and SDLC_ENV_INERT (the VAR=value in front of git: language, time
+# zone, terminal and colour settings, who the author and committer are, a pager that is cat or empty — git starts none) — patterns,
+# matched against the whole word.
+# A shell runs what it is given: the words of its command line, the body of a heredoc, and — where the tokenizer cannot follow
+# it — whatever a pipe, a here-string or a file feeds it.
+SDLC_TEXT_TOOLS="echo printf cat grep egrep fgrep rg ag ack head tail wc sort uniq cut tr diff jq"
+SDLC_SHELLS="sh bash zsh dash ksh ssh"
+SDLC_GIT_LOCAL="commit log show diff grep checkout switch branch tag status add rm mv merge fetch pull stash remote cherry-pick restore reset revert blame clean describe ls-files rev-parse rev-list shortlog worktree apply am archive bundle clone init notes reflog format-patch cat-file show-ref name-rev for-each-ref diff-tree range-diff cherry show-branch gc fsck prune maintenance sparse-checkout"
+SDLC_GIT_C_INERT="user.name=* user.email=*"
+SDLC_ENV_INERT="LANG=* LC_*=* TZ=* TERM=* NO_COLOR=* COLUMNS=* GIT_PAGER=cat GIT_PAGER= PAGER=cat PAGER= GIT_AUTHOR_NAME=* GIT_AUTHOR_EMAIL=* GIT_AUTHOR_DATE=* GIT_COMMITTER_NAME=* GIT_COMMITTER_EMAIL=* GIT_COMMITTER_DATE=*"
+DEPLOY_MAX_REC=4000                                        # records the tokenizer prints before it stops (a word, a simple command's end, a substitution each count one)
+DEPLOY_MAX_OUT=40000                                       # more tokenizer output than this is matched as plain text instead
+DEPLOY_WORK_MAX=1000                                       # simple commands looked at per command line — what is left is matched as plain text
+DEPLOY_NESTED_MAX=16                                       # command substitutions and shell heredoc bodies looked into per command line (one awk each)
+DEPLOY_WORK=0; DEPLOY_NESTED=0; DEPLOY_CAND=""; TL_K=0; SDLC_DEPLOY_PATTERN=""; SDLC_DEPLOY_PART=""
+
+# tl_cmdword → TL_K: the index in W[] of the command word — past VAR=value prefixes, shell keywords and wrappers (sudo, env, time,
+# nice … — also with a path) and their options; ${#W[@]} when the simple command has none
+tl_cmdword() {
+  local nw=${#W[@]} w b wrap=0 tool=""
+  TL_K=0
+  while [ "$TL_K" -lt "$nw" ]; do
+    w="${W[$TL_K]}"
+    case "$w" in
+      -*) [ "$wrap" -ge 1 ] || break
+          case "$tool" in                        # an option that takes the next word as its argument (-u root, -n 5 …)
+            sudo) case "$w" in -[ughpCrtTUDR]|--user|--group|--host|--prompt|--close-from|--role|--type|--command-timeout|--other-user|--chdir|--chroot) TL_K=$((TL_K + 1));; esac;;
+            doas) case "$w" in -[uC]) TL_K=$((TL_K + 1));; esac;;
+            env) case "$w" in -[uCS]|--unset|--chdir|--split-string) TL_K=$((TL_K + 1));; esac;;
+            nice) case "$w" in -n|--adjustment) TL_K=$((TL_K + 1));; esac;;
+            stdbuf) case "$w" in -[ioe]|--input|--output|--error) TL_K=$((TL_K + 1));; esac;;
+            timeout) case "$w" in -[sk]|--signal|--kill-after) TL_K=$((TL_K + 1));; esac;;
+            time) case "$w" in -[fo]|--format|--output) TL_K=$((TL_K + 1));; esac;;
+            exec) case "$w" in -a) TL_K=$((TL_K + 1));; esac;;
+          esac;;
+      *=*) valid_ident "${w%%=*}" || break;;
+      '!'|'{'|'}'|if|then|else|elif|fi|do|done|while|until) wrap=0;;
+      *) b="${w##*/}"
+         case "$b" in
+           time|command|builtin|exec|nohup|sudo|doas|env|nice|setsid|stdbuf) wrap=1; tool="$b";;
+           timeout) wrap=2; tool="$b";;
+           *) if [ "$wrap" = 2 ]; then wrap=1; else break; fi;;
+         esac;;
+    esac
+    TL_K=$((TL_K + 1))
+  done
+}
+# deploy_cand_add <text> → one more line for DEPLOY_CAND, the text the deploy patterns are matched against
+deploy_cand_add() { [ -z "$1" ] || DEPLOY_CAND="$DEPLOY_CAND$1"$'\n'; }
+# in_globs <patterns, separated by spaces> <text> → 0 when the whole of <text> matches one of the patterns (* is any text)
+in_globs() {
+  local rest="$1 " p
+  while [ -n "$rest" ]; do
+    p="${rest%% *}"; rest="${rest#* }"
+    case "$2" in $p) return 0;; esac
+  done
+  return 1
+}
+# deploy_text_runs → 0 when a word of the text tool in W[] (its name at TL_K) makes it run a program: rg --pre and --hostname-bin,
+# ag and ack --pager, sort --compress-program (also with =) — then it is checked like any command
+deploy_text_runs() {
+  local k=$((TL_K + 1)) nw=${#W[@]}
+  while [ "$k" -lt "$nw" ]; do
+    case "${W[$k]}" in --pre|--pre=*|--pager|--pager=*|--compress-program|--compress-program=*|--hostname-bin|--hostname-bin=*) return 0;; esac
+    k=$((k + 1))
+  done
+  return 1
+}
+# deploy_git_reads → 0 when the git command in W[] (its name at TL_K) only reads or records: its subcommand, past the global options
+# (the ones tl_git skips), is in SDLC_GIT_LOCAL and nothing on the line makes git run a program —
+#   - no VAR=value in front of git, also behind env or sudo (GIT_SSH_COMMAND, GIT_PAGER, GIT_CONFIG_* … configure git too) — but
+#     those of SDLC_ENV_INERT,
+#   - no -c / --config-env among the global options (an alias, a pager, an ssh command … set on the line) — but a -c whose setting
+#     is one of SDLC_GIT_C_INERT,
+#   - no --upload-pack / --receive-pack / --exec among the words (fetch, pull, clone and archive run that command),
+#   - no -u, -c or --config of clone (the clone's own ssh command) and no -O / --open-files-in-pager of grep (a pager).
+deploy_git_reads() {
+  local k=0 nw=${#W[@]} a sub=""
+  while [ "$k" -lt "$TL_K" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in *=*) if valid_ident "${a%%=*}" && ! in_globs "$SDLC_ENV_INERT" "$a"; then return 1; fi;; esac
+  done
+  k=$((TL_K + 1))
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      -c) if [ "$k" -ge "$nw" ] || ! in_globs "$SDLC_GIT_C_INERT" "${W[$k]}"; then return 1; fi
+          k=$((k + 1));;
+      --config-env|--config-env=*) return 1;;
+      -C|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix) k=$((k + 1));;
+      -*) ;;
+      *) sub="$a"; break;;
+    esac
+  done
+  case " $SDLC_GIT_LOCAL " in *" $sub "*) ;; *) return 1;; esac
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in --upload-pack|--upload-pack=*|--receive-pack|--receive-pack=*|--exec|--exec=*) return 1;; esac
+    case "$sub" in
+      clone) case "$a" in -u*|-c*|--config|--config=*) return 1;; esac;;
+      grep) case "$a" in -O*|--open-files-in-pager|--open-files-in-pager=*) return 1;; esac;;
+    esac
+  done
+  return 0
+}
+# deploy_clause — the simple command in W[]: its words, joined by single spaces (and "< file" for the file its input is read from),
+# join DEPLOY_CAND unless its command is a text tool or a git command that only reads or records and runs no program (deploy_text_runs,
+# deploy_git_reads) (reads cl, PIN, RIN, RF, SHELL_SER and raw of deploy_collect, which calls it)
+deploy_clause() {
+  local nw=${#W[@]} base="" skip=0 shell=0 text IFS=' '
+  [ "$nw" -gt 0 ] || return 0
+  DEPLOY_WORK=$((DEPLOY_WORK + 1))
+  tl_cmdword
+  if [ "$TL_K" -lt "$nw" ]; then
+    base="${W[$TL_K]##*/}"
+    case " $SDLC_TEXT_TOOLS " in *" $base "*) deploy_text_runs || skip=1;; esac
+    case " $SDLC_SHELLS " in *" $base "*) shell=1;; esac
+    if [ "$base" = git ] && deploy_git_reads; then skip=1; fi
+  fi
+  if [ "$shell" = 1 ]; then
+    SHELL_SER="$SHELL_SER$cl "
+    if [ "$PIN" = 1 ] || [ "$RIN" = 1 ]; then deploy_cand_add "$raw"; fi      # what the shell reads is not in the words
+  fi
+  if [ "$skip" = 0 ]; then text="${W[*]}"; [ -z "$RF" ] || text="$text <$RF"; deploy_cand_add "$text"; fi
+  return 0
+}
+# deploy_collect <text> — adds the simple commands of <text> that could deploy to DEPLOY_CAND: through the tokenizer, and into
+# what runs on its own (a heredoc body for a shell, a command substitution). Whatever it cannot split — the tokenizer fails,
+# prints nothing or too much, or the command line has too many words or commands or nests too much — is added as plain text,
+# which is how the gate matched before.
+deploy_collect() {
+  local raw="$1" out rc rec kind="" cl=0 PIN=0 POUT=0 RIN=0 RF="" SHELL_SER=" "
+  local -a W=()
+  if [ "$DEPLOY_WORK" -ge "$DEPLOY_WORK_MAX" ]; then deploy_cand_add "$raw"; return 0; fi
+  out=$(printf '%s' "$raw" | LC_ALL=C awk -v bodies=1 -v cap="$DEPLOY_MAX_REC" -v shells="$SDLC_SHELLS" "$TL_AWK" 2>/dev/null); rc=$?
+  if [ "$rc" != 0 ] || [ -z "$out" ] || [ "${#out}" -gt "$DEPLOY_MAX_OUT" ]; then deploy_cand_add "$raw"; return 0; fi
+  while IFS= read -r rec; do
+    if [ -n "$kind" ]; then                              # the text record after an N header
+      case "$kind" in B*) case "$SHELL_SER" in *" ${kind#B} "*) ;; *) kind=""; continue;; esac;; esac
+      kind=""; deploy_nested "$rec"; continue
+    fi
+    case "$rec" in
+      W*) W[${#W[@]}]="${rec#W}";;
+      P) POUT=1;;
+      R*) RIN=1; [ "$rec" = R ] || RF="$RF ${rec#R}";;
+      N*) kind="${rec#N}";;
+      '!') deploy_cand_add "$raw"; return 0;;                # the tokenizer stopped: too many records
+      C) deploy_clause; W=(); RIN=0; RF=""; PIN=$POUT; POUT=0; cl=$((cl + 1))
+         if [ "$DEPLOY_WORK" -ge "$DEPLOY_WORK_MAX" ]; then deploy_cand_add "$raw"; return 0; fi;;
+    esac
+  done <<< "$out"
+  deploy_clause
+}
+# deploy_nested <text, newlines as \001> — a command substitution or heredoc body, looked into as a command line of its own
+# (the decoding is tr, not ${//}: bash 3.2 needs minutes for a few thousand replacements in a long string)
+deploy_nested() {
+  local body="$1"
+  case "$body" in *$'\001'*) body=$(printf '%s' "$body" | tr '\001' '\n');; esac
+  if [ "$DEPLOY_NESTED" -ge "$DEPLOY_NESTED_MAX" ]; then deploy_cand_add "$body"; return 0; fi
+  DEPLOY_NESTED=$((DEPLOY_NESTED + 1))
+  deploy_collect "$body"
+}
+# deploy_hit <command> → 0 when a simple command of it matches a deploy pattern: SDLC_DEPLOY_PATTERN is the pattern and
+# SDLC_DEPLOY_PART the text it matched (that simple command, words joined by single spaces)
+deploy_hit() {
+  SDLC_DEPLOY_PATTERN=""; SDLC_DEPLOY_PART=""; DEPLOY_CAND=""; DEPLOY_WORK=0; DEPLOY_NESTED=0
+  [ -n "$SDLC_DEPLOY_PATTERNS" ] || return 1
+  deploy_collect "$1"
+  [ -n "$DEPLOY_CAND" ] || return 1
+  SDLC_DEPLOY_PATTERN=$(deploy_match "$DEPLOY_CAND") || return 1
+  SDLC_DEPLOY_PART=$(printf '%s\n' "$DEPLOY_CAND" | grep -E -i -m 1 -e "$SDLC_DEPLOY_PATTERN" 2>/dev/null)
+  return 0
+}
+
 # (1) production deploy gate — one tier, no per-environment autonomy and no rollback exemption
 deploy_gate_config "$root"
-if matched=$(deploy_match "$cmd"); then
+if deploy_hit "$cmd"; then
+  matched="$SDLC_DEPLOY_PATTERN"; part_short=$(trunc "$(one_line "$SDLC_DEPLOY_PART")" 100)
   approval_env="$SDLC_DEPLOY_ENV"; approval="${!approval_env:-}"
-  detail="{\"pattern\":$(json_escape "$matched"),\"cmd\":$(json_escape "$cmd_short")}"
+  detail="{\"pattern\":$(json_escape "$matched"),\"part\":$(json_escape "$part_short"),\"cmd\":$(json_escape "$cmd_short")}"
   if [ -n "$approval" ]; then
     log_event "$root" hook.gate allow "production: approved via $approval_env" "$detail"
   else
     log_event "$root" hook.gate deny "production: no $approval_env" "$detail"
-    block "'$cmd_short' matches a production deploy pattern ('$matched'). Why: production deploys need a release authorization (protect.deploy_patterns). To proceed: set $approval_env=<ticket> (release manager) and retry. If this command only reads (grep/cat/log), rephrase it or narrow protect.deploy_patterns in .sdlc/config.json."
+    where=""; [ "$part_short" = "$cmd_short" ] || where=", in '$part_short'"
+    block "'$cmd_short' matches a production deploy pattern ('$matched'$where). Why: production deploys need a release authorization (protect.deploy_patterns). To proceed: set $approval_env=<ticket> (release manager) and retry. If this is not a deploy, the words only look like one — they are checked in every command except text tools (echo, cat, grep …), git commands that only read or record (commit, log, diff …) and heredoc text — and a text tool or git is checked too when it runs a program (--pre, --pager, git -c, --exec, an env prefix …): rephrase it, or narrow protect.deploy_patterns in .sdlc/config.json."
   fi
 fi
 
@@ -94,132 +492,12 @@ fi
 #     (already on the default branch) stay untouched while they are locked, a test this change adds is free; and while the
 #     active work doc is ready or proposed, a path inside the project but outside the work dir and .sdlc/ is off limits (design
 #     first). The environment the hook runs in decides SDLC_ALLOW_TEST_EDIT, never an assignment inside the command line.
-#     A tokenizer (awk) turns the command line into records — W<word> (quotes and escapes resolved), O<path> (the target of an
-#     output redirection) and C (end of a simple command: ; & | && || newline ( ) `) — heredoc bodies and comments skipped.
+#     The tokenizer above splits the command line into simple commands.
 #     Each simple command is then read for its write targets: redirections, tee, the destination of cp/mv/ln/install, the
 #     sources of mv, sed -i / perl -i, truncate, rm, dd of=, git rm/mv, git checkout -- <file>, git restore. Best effort, not a
 #     shell: no variables (a target with $VAR or a backtick is skipped), no brace expansion, no `find -exec`/`xargs`, nothing
 #     that runs another program that writes (python -c, patch, git apply, make, package managers, curl -o). A path outside the
 #     project is never refused; for the test lock a path that does not exist yet is allowed too.
-TL_AWK='
-BEGIN { RS = "\001"; SQ = "\047"; DQ = "\042" }
-function ws(c) { return c == " " || c == "\t" || c == "\r" }
-function stop(c) {
-  return c == " " || c == "\t" || c == "\r" || c == "\n" || c == ";" || c == "|" || c == "&" || c == "(" || c == ")" || c == "<" || c == ">" || c == "`"
-}
-function readword(   w, c, d, e, rest, j) {
-  w = ""
-  while (i <= n) {
-    c = substr(s, i, 1)
-    if (stop(c)) break
-    if (c == "\\") {
-      d = substr(s, i + 1, 1)
-      if (d == "\n") { i += 2; continue }
-      w = w d; i += 2; continue
-    }
-    if (c == SQ) {
-      i++
-      rest = substr(s, i); j = index(rest, SQ)
-      if (j == 0) { w = w rest; i = n + 1 } else { w = w substr(rest, 1, j - 1); i += j }
-      continue
-    }
-    if (c == DQ) {
-      i++
-      while (i <= n) {
-        rest = substr(s, i, 256)                        # plain text is taken a chunk at a time
-        j = match(rest, /["\\]/)
-        if (j == 0) { w = w rest; i += length(rest); continue }
-        w = w substr(rest, 1, j - 1); i += j - 1
-        d = substr(s, i, 1)
-        if (d == DQ) break
-        e = substr(s, i + 1, 1)
-        if (e == "\n") { i += 2; continue }
-        if (e == "$" || e == "`" || e == DQ || e == "\\") { w = w e; i += 2; continue }
-        w = w d; i++
-      }
-      i++; continue
-    }
-    w = w c; i++
-  }
-  gsub(/\n/, " ", w)
-  return w
-}
-function skipws() { while (i <= n && ws(substr(s, i, 1))) i++ }
-function skipbodies(   k, d, wrapped, j) {
-  for (k = 1; k <= nh; k++) {
-    if (i > n) break
-    d = hd[k]
-    wrapped = "\n" substr(s, i) "\n"
-    if (!hdash[k]) {
-      j = index(wrapped, "\n" d "\n")
-      if (j > 0) { i = i + j + length(d); continue }
-    } else if (d ~ /^[A-Za-z0-9_]+$/) {
-      if (match(wrapped, "\n\t*" d "\n")) { i = i + RSTART + RLENGTH - 2; continue }
-    } else {
-      while (i <= n) {
-        j = index(substr(s, i), "\n")
-        if (j == 0) { wrapped = substr(s, i); i = n + 1 } else { wrapped = substr(s, i, j - 1); i += j }
-        sub(/^\t+/, "", wrapped)
-        if (wrapped == d) break
-      }
-      continue
-    }
-    i = n + 1
-  }
-  nh = 0
-}
-{
-  s = $0; n = length(s); i = 1; nh = 0
-  while (i <= n) {
-    c = substr(s, i, 1)
-    if (ws(c)) { i++; continue }
-    if (c == "\n") { i++; print "C"; if (nh > 0) skipbodies(); continue }
-    if (c == "#") { j = index(substr(s, i), "\n"); if (j == 0) i = n + 1; else i += j - 1; continue }
-    if (c == ";" || c == "(" || c == ")" || c == "`") { i++; print "C"; continue }
-    if (c == "|") { i++; d = substr(s, i, 1); if (d == "|" || d == "&") i++; print "C"; continue }
-    if (c == "&") {
-      d = substr(s, i + 1, 1)
-      if (d == ">") {
-        i += 2; if (substr(s, i, 1) == ">") i++
-        skipws(); t = readword(); print "O" t; continue
-      }
-      i++; if (d == "&") i++
-      print "C"; continue
-    }
-    if (c == ">") {
-      i++; d = substr(s, i, 1)
-      if (d == ">" || d == "|") i++
-      else if (d == "&") {
-        e = substr(s, i + 1, 1)
-        if (e ~ /[0-9-]/) { i++; while (i <= n && substr(s, i, 1) ~ /[0-9-]/) i++; continue }
-        i++
-      }
-      else if (d == "(") continue
-      skipws(); t = readword(); print "O" t; continue
-    }
-    if (c == "<") {
-      i++; d = substr(s, i, 1)
-      if (d == "<") {
-        i++
-        if (substr(s, i, 1) == "<") { i++; skipws(); t = readword(); continue }
-        dash = 0; if (substr(s, i, 1) == "-") { dash = 1; i++ }
-        skipws(); t = readword()
-        nh++; hd[nh] = t; hdash[nh] = dash
-        continue
-      }
-      if (d == "(") continue
-      if (d == "&") i++
-      skipws(); t = readword(); continue
-    }
-    p = i
-    w = readword()
-    if (i == p) { i++; continue }
-    d = substr(s, i, 1)
-    if (w ~ /^[0-9]+$/ && (d == ">" || d == "<")) continue
-    print "W" w
-  }
-}
-'
 TL_BASE=""; TL_ROOT=""; TL_ROOT_PHYS=""; TL_READY=""; TL_ON=0; TL_ACTION=""; TL_REL=""; TL_GLOBS=0; TL_NEW_CHECKS=0; NORM=""; ABS=""; REL=""; OPS=(); OPS_DD=0
 TL_DESIGN=0; TL_NODESIGN=0; TL_WDIR=""; TL_KIND=""      # design first: on while the active work doc is ready/proposed; TL_KIND = tests|design, what refused the command
 TL_MAX_GLOB_WORDS=20; TL_MAX_GLOB_FAST=2000; TL_MAX_GLOB_SLOW=300     # bounds: a command line costs the same whatever a glob expands to
@@ -461,23 +739,12 @@ tl_git() {
 }
 # tl_clause <depth> — one simple command (words W[], redirection targets R[]); 0 = it changes an existing locked test file
 tl_clause() {
-  local depth="$1" nw=${#W[@]} k=0 r=0 w base wrap=0 i str
+  local depth="$1" nw=${#W[@]} k r=0 base i str
   while [ "$r" -lt "${#R[@]}" ]; do
     if tl_hit "output redirection" "${R[$r]}" 0 1; then return 0; fi
     r=$((r + 1))
   done
-  while [ "$k" -lt "$nw" ]; do                   # skip VAR=value prefixes, shell keywords and wrappers (sudo, env, time …)
-    w="${W[$k]}"
-    case "$w" in
-      '!'|'{'|'}'|if|then|else|elif|fi|do|done|while|until|time) wrap=0;;
-      command|builtin|exec|nohup|sudo|doas|env|nice|setsid|stdbuf) wrap=1;;
-      timeout) wrap=2;;
-      -*) [ "$wrap" -ge 1 ] || break;;
-      *=*) valid_ident "${w%%=*}" || break;;
-      *) if [ "$wrap" = 2 ]; then wrap=1; else break; fi;;
-    esac
-    k=$((k + 1))
-  done
+  tl_cmdword; k=$TL_K                            # past VAR=value prefixes, shell keywords and wrappers (sudo, env, time …)
   [ "$k" -lt "$nw" ] || return 1
   base="${W[$k]##*/}"; k=$((k + 1))
   case "$base" in
@@ -522,7 +789,7 @@ tl_scan() {
       O*) R[${#R[@]}]="${rec#O}";;
       C) if tl_clause "$depth"; then return 0; fi; W=(); R=();;
     esac
-  done <<< "$(printf '%s' "$1" | awk "$TL_AWK" 2>/dev/null)"
+  done <<< "$(printf '%s' "$1" | LC_ALL=C awk "$TL_AWK" 2>/dev/null)"
   tl_clause "$depth"
 }
 

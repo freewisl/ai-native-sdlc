@@ -465,7 +465,7 @@ assert_true "dev deploy is silent" "$([ -z "$OUT$ERR" ] && echo true || echo fal
 run_hook guard-bash "$P" "$(j_bash "$P" "ls -la && git status")"
 assert_rc "ordinary command allowed" 0
 run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'release notes for production launch'")"
-assert_rc "commit message mentioning production is a gate false positive (documented)" 2
+assert_rc "a commit message mentioning production is text, not a deploy (git without push is not checked)" 0
 set_cfg "$P" commands.rollback '"./scripts/rollback.sh"'
 run_hook guard-bash "$P" "$(j_bash "$P" "./scripts/rollback.sh --deploy-target production")"
 assert_rc "no rollback exemption any more, even with commands.rollback set" 2
@@ -497,6 +497,540 @@ run_hook guard-bash "$R" "$(j_bash "$R" "ship-it now")"
 assert_rc "an invalid pattern does not disable the valid ones" 2
 run_hook guard-bash "$R" "$(j_bash "$R" "echo hello")"
 assert_rc "an invalid pattern never blocks unrelated commands" 0
+
+# ======================================================================
+echo "-- guard-bash: the deploy gate reads simple commands, not the whole text"
+GP=$(fresh)
+gate_pass()  { local c="$1"; shift; run_hook guard-bash "$GP" "$(j_bash "$GP" "$c")" "$@"; assert_rc "deploy gate passes: $(short "$c")" 0; }
+gate_block() { local c="$1"; shift; run_hook guard-bash "$GP" "$(j_bash "$GP" "$c")" "$@"; assert_rc "deploy gate blocks: $(short "$c")" 2; }
+# the word lists are the contract: a change to one of them shows up here (the behavior tests below pin both sides of each list)
+TEXT_TOOLS="echo printf cat grep egrep fgrep rg ag ack head tail wc sort uniq cut tr diff jq"      # not less and more: they run what a ! line or LESSOPEN says
+SHELL_CMDS="sh bash zsh dash ksh ssh"
+GIT_LOCAL="commit log show diff grep checkout switch branch tag status add rm mv merge fetch pull stash remote cherry-pick restore reset revert blame clean describe ls-files rev-parse rev-list shortlog worktree apply am archive bundle clone init notes reflog format-patch cat-file show-ref name-rev for-each-ref diff-tree range-diff cherry show-branch gc fsck prune maintenance sparse-checkout"
+GIT_RUNS="rebase bisect submodule difftool mergetool config"       # they run what they are given (--exec, run, foreach, a tool, an alias): not on the list
+GIT_C_INERT="user.name=* user.email=*"                              # the -c settings that run nothing: they name the committer
+ENV_INERT="LANG=* LC_*=* TZ=* TERM=* NO_COLOR=* COLUMNS=* GIT_PAGER=cat GIT_PAGER= PAGER=cat PAGER= GIT_AUTHOR_NAME=* GIT_AUTHOR_EMAIL=* GIT_AUTHOR_DATE=* GIT_COMMITTER_NAME=* GIT_COMMITTER_EMAIL=* GIT_COMMITTER_DATE=*"      # language, time zone, terminal; a pager that is cat or empty; author and committer
+assert_eq "the text tools the gate skips are exactly the specified ones" "$(sed -n 's/^SDLC_TEXT_TOOLS="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$TEXT_TOOLS"
+assert_eq "the shells whose heredoc bodies the gate reads are exactly the specified ones" "$(sed -n 's/^SDLC_SHELLS="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$SHELL_CMDS"
+assert_eq "the git commands the gate skips are exactly the listed ones (push is not among them)" "$(sed -n 's/^SDLC_GIT_LOCAL="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$GIT_LOCAL"
+assert_eq "the -c settings a git command may carry and still be skipped are exactly the listed ones" "$(sed -n 's/^SDLC_GIT_C_INERT="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$GIT_C_INERT"
+assert_eq "the variables that may stand in front of a skipped git command are exactly the listed ones" "$(sed -n 's/^SDLC_ENV_INERT="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$ENV_INERT"
+
+# what the whole-text match refused although nothing was deployed
+FALSE_POSITIVES=(
+  'git commit -m "fix deploy to production docs"'
+  'grep -r deploy config/production.yml'
+  'echo "release to prod"'
+  $'cat > notes.md <<EOF\nrelease notes: the deploy goes to production\nand the rollout to live follows\nEOF'
+  $'python3 - <<\'EOF\'\nimport json\ndeploy_patterns = ["production"]\nprint(json.dumps(deploy_patterns))\nEOF'
+  'git log --grep=deploy -- prod/'
+  'git checkout -b release-prod'
+  'rg "promote.*live"'
+  "printf 'deploy prod\\n' > x.txt"
+  'ls # deploy to prod'
+  $'ls\n# deploy to production\nls'
+  './gen.sh > prod-deploy.log'
+  'cat deploy.log | grep prod | head'
+  'git status && git diff release..prod -- deploy/'
+  $'git commit -m "$(cat <<\'EOF\'\nFix the deploy script for production (see #12)\n\nCo-Authored-By: someone\nEOF\n)"'
+  $'git commit -m "$(cat <<\'EOF\'\nthe user\'s "release" to prod :)\nEOF\n)" && git status'
+  'git commit -m "document \`./deploy.sh prod\` usage"'
+  'echo "release $(date) to prod"'
+  "echo '\$(./deploy prod)'"
+  'FOO=release-prod echo hi'
+  'wc -l < prod/deploy.log'
+  'sort < deploy-prod.txt | uniq'
+  'kubectl apply -f - < k8s/staging/app.yaml > prod.log'
+)
+for c in "${FALSE_POSITIVES[@]}"; do gate_pass "$c"; done
+
+# commands, tools and the ways to wrap them: still gated
+for c in './scripts/deploy.sh production' 'make deploy ENV=prod' 'npm run deploy:prod' 'kubectl apply -f k8s/prod/' \
+         'helm upgrade app ./chart -f values-production.yaml' 'terraform apply -var env=prod' 'make deploy-prod' 'npm run release:production' \
+         'gh workflow run deploy.yml -f env=production' 'docker compose -f prod.yml up deploy' './DEPLOY.sh PROD' 'bash scripts/deploy-prod.sh' \
+         'source ./deploy-prod.sh' '. ./deploy-prod.sh' 'eval "./deploy prod"' 'xargs -a prod-hosts.txt ./deploy.sh' \
+         'find . -name x -exec ./deploy.sh prod {} \;' 'python3 -c "import os; os.system(\"./deploy prod\")"' \
+         'bash -c "deploy prod"' "ssh host 'release production'" 'sudo ./deploy.sh prod' 'cd x && ./deploy prod' '$(./deploy prod)' \
+         '`./deploy prod`' 'echo hi; ./deploy prod' 'true && ./deploy prod' 'false || ./deploy prod' 'echo x | ./deploy prod' \
+         './deploy prod &' 'nohup ./deploy prod > out.log 2>&1 &' '(./deploy prod)' '{ ./deploy prod; }' 'if ./deploy prod; then echo ok; fi' \
+         '! ./deploy prod' 'diff <(./deploy prod) b' 'x=$(./deploy prod)' 'x=`./deploy prod`' 'echo $(./deploy prod)' \
+         './deploy >out.log prod' '>out.log ./deploy prod' '"./deploy" prod' 'dep"loy" prod' 'd\eploy prod' 'ls a#b; ./deploy prod' \
+         $'ls\n./deploy prod' $'ls\r\n./deploy prod\r\n' $'# note\n./deploy prod' './deploy \
+ prod' $'kubectl apply \\\n  -f x.yaml \\\n  -n production' 'terraform   apply   -var env=prod' $'terraform\tapply\t-var env=prod' \
+         'git commit -m "x" && ./deploy prod' 'ls -la | ./deploy.sh production' \
+         'kubectl apply -f - < k8s/prod/app.yaml' 'kubectl apply -f - <k8s/prod/app.yaml' '< k8s/prod/app.yaml kubectl apply -f -' \
+         'kubectl apply -f - 0< k8s/prod/app.yaml' 'helm upgrade app ./chart -f - < values-production.yaml' 'terraform apply < prod.tfvars' \
+         'docker run --rm alpine echo release to prod' 'ssh host cat deploy-prod.log' 'xargs grep -l deploy prod/' 'sudo -u cat ./deploy prod' \
+         'make deploy ENV=prod head' \
+         'ENV=prod make deploy' 'DEPLOY_TARGET=production ./run.sh release' 'env ENV=production ./deploy.sh' 'sudo -u production ./release.sh'; do
+  gate_block "$c"
+done
+
+# the text tools: each one skipped, with and without a path, and every neighbor still checked
+for t in $TEXT_TOOLS; do
+  gate_pass "$t release to prod"
+  gate_pass "/usr/bin/$t deploy production"
+done
+for t in sed awk find ls xargs make npm yarn pnpm python python3 pytest node perl ruby tee gh curl kubectl docker rm mv cp ln touch mkdir chmod tar scp rsync \
+         pip go cargo mvn gradle open code vim cd export set test bash sh zsh dash ksh ssh less more; do
+  gate_block "$t release to prod"
+done
+# a pager is no text tool: it runs what a ! line or LESSOPEN says
+gate_block '/usr/bin/less deploy production'
+gate_block '/usr/bin/more deploy production'
+gate_block 'sudo less release to prod'
+gate_block 'git log | less +/deploy prod'
+gate_block "LESSOPEN='|./deploy-prod.sh %s' less x.txt"
+gate_pass 'git log --grep=deploy -- prod/ | less'                 # a pager at the end of a pipe is no part of the git command
+# a name that only contains a text tool, or is a piece of one, is not that tool
+for t in catalog echoes grepx rgrep wcx ech ec ca g r e jqq xjq headers tailor sorted uniqx diffstat; do
+  gate_block "$t release to prod"
+done
+
+# wrappers are looked through — for the text tool and for the deploy alike
+for w in 'sudo' 'sudo -n' 'sudo -u root' 'sudo -E env FOO=1 nice -n 5' 'env' 'env FOO=1' 'env -u FOO' 'time' 'time -p' 'nice' 'nice -n 5' 'command' \
+         'nohup' 'exec' 'timeout 60' 'timeout -k 5 60' 'stdbuf -o L' 'doas -u root' 'FOO=1' 'FOO=1 BAR=2' '/usr/bin/env'; do
+  gate_pass "$w grep -r deploy prod/"
+  gate_block "$w ./deploy.sh prod"
+done
+
+# …but a text tool that is told to run a program is checked like any command: rg --pre and --hostname-bin, ag and ack --pager,
+# sort --compress-program — as a separate word or after =, wherever in the line, in whatever wrapper
+for c in 'rg --pre ./deploy-prod.sh foo' 'rg --pre=./deploy-prod.sh foo' "rg --pre './deploy prod' foo" 'rg --hostname-bin ./deploy-prod.sh foo' \
+         'rg --hostname-bin=./deploy-prod.sh foo' 'ag --pager ./deploy-prod.sh foo' "ag --pager='./deploy prod' foo" 'ack --pager=./deploy-prod.sh foo' \
+         'sort --compress-program ./deploy-prod.sh big.txt' 'sort --compress-program=./deploy-prod.sh big.txt' 'rg foo --pre ./deploy-prod.sh' \
+         'rg -i foo src/ --pre=./deploy-prod.sh' 'sudo rg --pre ./deploy-prod.sh foo' '/usr/bin/rg --pre=./deploy-prod.sh foo' \
+         'LC_ALL=C rg --pre=./deploy-prod.sh foo' 'timeout 5 rg --pre ./deploy-prod.sh foo' 'env -i ag --pager ./deploy-prod.sh foo' \
+         'FOO=1 sort --compress-program=./deploy-prod.sh x' 'cat x.txt | rg --pre ./deploy-prod.sh foo'; do
+  gate_block "$c"
+done
+for t in $TEXT_TOOLS; do                                       # the option decides, not the tool: any text tool
+  gate_block "$t --pre ./deploy-prod.sh x"
+  gate_block "$t --pager=./deploy-prod.sh x"
+done
+gate_pass 'rg --pre ./deploy-prod.sh foo' RELEASE_APPROVAL=REL-4711                # with a release authorization it goes through
+for c in 'rg --pretty deploy prod/' "rg --pre-glob '*.gz' deploy prod/" 'rg --hostname deploy prod/' 'ag --pagers deploy prod/' \
+         'sort --compress deploy-prod.txt' 'sort --compress-programs deploy-prod.txt' 'sort -T /tmp deploy-prod.txt' "echo '--pre deploy prod'" \
+         'echo "use --pager to deploy prod"' 'LC_ALL=C grep -rn deploy prod/' 'grep -r --include=*.yml deploy prod/' 'head -n 5 deploy-prod.log'; do
+  gate_pass "$c"                                               # …and the same letters in another word, or inside one, are text
+done
+
+# git: what only reads or records is text; push, what runs the program it is given, and anything unknown are checked
+GIT_TEXT=('commit -m "release prod"' 'log --grep=release -- prod/' 'show HEAD:deploy/prod.yml' 'diff release..prod' 'grep -r deploy prod/' 'checkout -b release-prod'
+  'switch -c deploy-prod' 'branch release-prod' 'tag deploy-prod' 'status' 'stash push -m "deploy prod"' 'add deploy/prod.yml' 'rm deploy/prod.yml'
+  'mv deploy/prod.yml deploy/live.yml' 'merge release-prod' 'rebase main' 'fetch origin release/prod' 'pull origin release/prod'
+  'remote add deploy-prod https://example.test/r.git' 'cherry-pick deploy-prod' 'restore deploy/prod.yml' 'reset --hard release-prod' 'revert deploy-prod'
+  '-C deploy-prod status' '--no-pager log --grep=deploy -- prod/' '-C prod/x commit -m "deploy prod"'
+  'commit -m "deploy to production"' 'log --grep=production' 'log --grep="deploy to production"')
+for g in "${GIT_TEXT[@]}"; do gate_pass "git $g"; done
+for g in $GIT_LOCAL; do
+  gate_pass "git $g release to prod"
+  gate_pass "/usr/bin/git -C deploy-prod $g release to prod"
+done
+gate_pass 'git --version'
+gate_pass 'git help deploy'
+for g in deploy release ship publish promote rollout flow hf zzz comm rev ch st pul fet; do          # …and names that are only a piece of a listed one
+  gate_block "git $g release production"
+  gate_block "git -C x --no-pager $g deploy prod"
+  gate_block "git -C x -c a=b $g deploy prod"
+done
+gate_block 'git release prod'
+gate_block 'git push-prod release prod'
+gate_pass "git push origin feature/x"
+gate_pass "git push"
+for g in 'push origin release/production' 'push -u origin deploy-prod' 'push deploy-prod main' '-C prod-repo push origin deploy' 'push --tags origin release-live' \
+         '-c a=b push origin HEAD:release/prod' 'push origin :release/prod' 'push --force origin deploy/production'; do
+  gate_block "git $g"
+done
+
+# …and so are the git commands that run what they are given: those that are not on the list (--exec, run, foreach, a tool, an alias) …
+for g in $GIT_RUNS; do
+  gate_block "git $g release to prod"
+  gate_block "/usr/bin/git -C deploy-prod $g release to prod"
+done
+for g in "submodule foreach 'make deploy-prod'" 'rebase -i --exec "./deploy prod"' 'rebase --exec ./deploy-prod.sh main' 'bisect run ./release-production.sh' \
+         "config alias.d '!deploy prod'" 'config core.pager "./deploy prod"' 'difftool -x ./deploy-prod.sh' 'difftool --extcmd="./deploy prod"' \
+         'mergetool --tool=deploy-prod'; do
+  gate_block "git $g"
+done
+gate_pass 'git rebase main'
+gate_pass 'git rebase --exec ./deploy-prod.sh main' RELEASE_APPROVAL=REL-4711        # with a release authorization it goes through
+# … -c and --config-env before the subcommand (an alias, a pager, an ssh command … set on the line: any git command can run one) …
+for g in "-c core.pager='deploy prod' log" '-c core.pager=./deploy-prod.sh log' '-C prod/x -c a=b commit -m "deploy prod"' \
+         "-c alias.d='!deploy prod' d" '-c a=b commit -m "deploy to production"' '--config-env=core.pager=DEPLOY_PROD_PAGER log' \
+         '--config-env core.pager=DEPLOY_PROD_PAGER log'; do
+  gate_block "git $g"
+done
+gate_block 'git -c log log --grep=deploy -- prod/'             # what follows -c is its value, not the subcommand (even when it reads like one)
+gate_block 'git --config-env log log --grep=deploy -- prod/'
+gate_block 'git --exec-path=deploy-prod -c'                    # a -c with no value after it: checked (and no crash reading past the last word)
+# … except a -c that only sets who the committer is: user.name and user.email run nothing. Any other -c on the line still decides.
+for g in 'commit -m "release prod"' 'log --grep=deploy -- prod/' 'status deploy/prod' 'diff release..prod'; do
+  gate_pass "git -c user.name=x $g"
+  gate_pass "git -c user.email=a@b.test $g"
+  gate_pass "git -c user.name=x -c user.email=a@b.test $g"
+  gate_pass "git -c user.email=a@b.test -c user.name=x $g"
+done
+gate_pass 'git -c user.name="Deploy Prod" commit -m "x"'       # the value is a name, whatever it says
+gate_pass 'git -c user.name=release-prod log'
+gate_pass 'git -c user.name=x -c user.name=y commit -m "release prod"'
+gate_pass 'git -C deploy/prod -c user.name=x log'
+gate_pass 'git -c user.name=x -C deploy/prod log'
+gate_pass 'git -c user.name=x --no-pager log --grep=deploy -- prod/'
+gate_pass 'sudo git -c user.name=x log --grep=deploy -- prod/'
+gate_pass '/usr/bin/git -c user.email=x@y.test status deploy/prod'
+gate_pass 'if git -c user.name=x commit -m "release prod"; then ls; fi'
+for g in "-c user.name=x -c core.pager='./deploy prod' log" '-c core.pager=./deploy-prod.sh -c user.name=x log' "-c user.name=x -c alias.d='!deploy prod' d" \
+         '-c user.name=x -c user.email=y -c core.pager=./deploy-prod.sh log' '-c user.name=x -c a=b commit -m "deploy to production"' \
+         '-c user.name=x -c log log --grep=deploy -- prod/' '-c user.name log --grep=deploy -- prod/' '-c user.nameX=y log --grep=deploy -- prod/' \
+         '-c user.names=y log --grep=deploy -- prod/' '-c user.email.x=y log --grep=deploy -- prod/' '-c core.user.name=x log --grep=deploy -- prod/' \
+         '-c User.Name=x log --grep=deploy -- prod/' '-c user.signingkey=x commit -m "deploy to production"' \
+         '-c user.useConfigOnly=true commit -m "deploy to production"' '--config-env=user.name=NAME_VAR log --grep=deploy -- prod/' \
+         '--config-env user.name=NAME_VAR log --grep=deploy -- prod/' '-c user.name=x push origin deploy-prod' \
+         '-c user.name=x fetch --upload-pack ./deploy-prod.sh ./repo' '-c user.name=x rebase --exec ./deploy-prod.sh main' \
+         '-c user.name=x clone -u ./deploy-prod.sh ./a ./b'; do
+  gate_block "git $g"                                          # …and the line is still checked by everything else
+done
+gate_block "sudo git -c core.pager='./deploy prod' -c user.name=x log"
+for k in core.pager core.sshCommand core.editor core.fsmonitor core.hooksPath core.askPass alias.d alias.x gpg.program diff.external credential.helper \
+         protocol.ext.allow url.x.insteadOf http.proxy sequence.editor commit.gpgsign advice.detachedHead color.ui core.quotepath init.defaultBranch \
+         user.signingkey user.useConfigOnly; do
+  gate_block "git -c $k=x log --grep=deploy -- prod/"          # a listed subcommand: it is the setting that decides, whatever it sets
+done
+gate_pass 'git log -c --grep=deploy -- prod/'                  # the -c of a subcommand is not a global option, -C is not -c, --exec-path is not --exec
+gate_pass 'git commit -c HEAD -m "release prod"'
+gate_pass 'git grep -c deploy prod/'
+gate_pass 'git -C deploy/prod log --grep=deploy'
+gate_pass 'git --exec-path=/usr/lib/git-core log --grep=deploy -- prod/'
+gate_pass 'git --git-dir deploy/prod/.git log --oneline'       # the other global options take their value as the next word, or after =
+gate_pass 'git --work-tree deploy/prod status'
+gate_pass 'git --namespace deploy-prod log'
+gate_pass 'git --exec-path deploy/prod log'
+gate_pass 'git --super-prefix deploy/prod/ status'
+gate_pass 'git --git-dir=deploy/prod/.git --work-tree=deploy/prod status'
+# … --upload-pack, --receive-pack and --exec (fetch, pull, clone and archive run that program, on a local path), the config of a clone
+# (its own ssh command) and the pager of grep …
+for g in "fetch --upload-pack 'deploy prod' ./repo" "fetch --upload-pack='./deploy prod' ./repo" 'pull --upload-pack ./deploy-prod.sh ./repo' \
+         'pull --upload-pack=./deploy-prod.sh ./repo' 'clone --upload-pack="./deploy prod" ./a ./b' 'clone -u ./deploy-prod.sh ./a ./b' \
+         'clone -u./deploy-prod.sh ./a ./b' "fetch --receive-pack='./deploy prod' ./repo" 'fetch --receive-pack ./deploy-prod.sh ./repo' \
+         "archive --remote=./repo --exec='./deploy prod' HEAD" 'archive --exec ./deploy-prod.sh --remote=./r HEAD' \
+         'clone -c core.sshCommand=./deploy-prod.sh git@h:r.git' 'clone -ccore.sshCommand=./deploy-prod.sh git@h:r.git' \
+         "clone --config core.sshCommand='./deploy prod' x" 'clone --config=core.sshCommand=./deploy-prod.sh x' \
+         'grep -O./deploy-prod.sh foo' 'grep -O ./deploy-prod.sh foo' "grep --open-files-in-pager='./deploy prod' foo" \
+         'grep --open-files-in-pager ./deploy-prod.sh foo'; do
+  gate_block "git $g"
+done
+for g in 'fetch -u origin release/prod' 'pull -u origin release/prod' 'status -uno deploy/prod' 'commit -u -m "release prod"' 'grep -c "deploy.*prod" -- src/' \
+         'diff -O deploy/prod.order' 'log --execute release prod' 'clone git@github.com:acme/deploy-prod.git' \
+         'clone -q --depth 1 https://example.test/release-prod.git' 'archive -o deploy-prod.tar HEAD' 'commit -m "--exec release prod"' \
+         'log "--grep=--exec" -- prod/deploy'; do
+  gate_pass "git $g"                                           # …and the same letters elsewhere are text
+done
+# … and a VAR=value in front of git (GIT_SSH_COMMAND, GIT_PAGER, GIT_EXTERNAL_DIFF, GIT_CONFIG_* … configure it as well)
+for c in "GIT_SSH_COMMAND='./deploy prod' git fetch" "env GIT_PAGER='./deploy prod' git log" 'sudo GIT_EXTERNAL_DIFF=./deploy-prod.sh git diff' \
+         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0='./deploy prod' git log" 'FOO=1 git commit -m "deploy to production"' \
+         'FOO=1 BAR=2 /usr/bin/git status deploy/prod'; do
+  gate_block "$c"
+done
+for c in 'sudo --user=root git log --grep=deploy -- prod/' 'sudo -u root git commit -m "release prod"' 'env git log --grep=deploy -- prod/' \
+         'env -i git log --grep=deploy -- prod/' 'env -u FOO git log --grep=deploy -- prod/' 'time git commit -m "release prod"' \
+         'command git log --grep=deploy -- prod/' 'nice -n 5 git diff release..prod'; do
+  gate_pass "$c"                                               # …a wrapper and its options are no assignment
+done
+# … except one that runs nothing: a language, time zone, terminal or colour setting, who the author and committer are (and when), or a pager that is cat or empty (git starts none)
+for c in 'LANG=C' 'LANG=en_US.UTF-8' 'LC_ALL=C' 'LC_MESSAGES=C' 'LC_CTYPE=C.UTF-8' 'TZ=UTC' 'TERM=dumb' 'NO_COLOR=1' 'COLUMNS=200' 'GIT_PAGER=cat' \
+         'PAGER=cat' 'GIT_PAGER=' 'PAGER=' "GIT_PAGER=''" 'GIT_PAGER="cat"' 'LANG=C LC_ALL=C TZ=UTC' \
+         'LANG=C TERM=dumb NO_COLOR=1 COLUMNS=80 GIT_PAGER=cat PAGER=' 'env LC_ALL=C' 'sudo LANG=C' 'env -i LANG=C' 'env LANG=C PAGER=cat'; do
+  gate_pass "$c git log --grep=deploy -- prod/"
+done
+gate_pass 'LANG=C git commit -m "deploy to production" && ls'
+gate_pass 'if LANG=C git log --grep=deploy -- prod/; then ls; fi'
+gate_pass 'LANG=C git -c user.name=x log --grep=deploy -- prod/'
+gate_pass 'LC_ALL=C GIT_PAGER=cat git -C deploy/prod log --grep=deploy'
+for v in GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE; do
+  gate_pass "$v=x git commit -m \"release prod\""              # who the author and committer are (and when): runs nothing
+  gate_pass "$v= git commit -m \"release prod\""               # …an empty value too
+done
+gate_pass 'GIT_AUTHOR_NAME=x GIT_COMMITTER_NAME=x git commit -m "release prod"'
+gate_pass "GIT_AUTHOR_NAME='Deploy Prod' GIT_AUTHOR_EMAIL=dp@example.test git commit -m x"      # …a name with a deploy in it is a name
+gate_pass 'GIT_COMMITTER_DATE="2026-01-01 00:00:00" git commit -m "release prod"'
+gate_pass 'env GIT_AUTHOR_NAME=x GIT_COMMITTER_NAME=x git commit -m "release prod"'
+# … any other variable, by name, and a pager that is anything but cat or empty, still decide
+for v in PATH HOME EDITOR VISUAL GIT_EDITOR GIT_SEQUENCE_EDITOR GIT_SSH GIT_SSH_COMMAND GIT_EXTERNAL_DIFF GIT_ASKPASS SSH_ASKPASS GIT_PROXY_COMMAND \
+         GIT_CONFIG_GLOBAL GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE GIT_EXEC_PATH GIT_TEMPLATE_DIR GIT_TRACE LESS LESSOPEN \
+         LD_PRELOAD BASH_ENV ENV SHELL COLORTERM CLICOLOR LINES FOO; do
+  gate_block "$v=x git log --grep=deploy -- prod/"
+done
+for c in 'GIT_PAGER=less' 'PAGER=less' "GIT_PAGER='cat -v'" 'GIT_PAGER=/bin/cat' 'GIT_PAGER=CAT' 'GIT_PAGER=catx' 'GIT_PAGER=xcat' 'PAGER=xcat' \
+         'GIT_PAGER=cat PAGER=less' 'GIT_PAGER=cat FOO=1' 'FOO=1 GIT_PAGER=cat' 'LANG=C GIT_SSH_COMMAND=x' 'LC_ALL=C GIT_PAGER=less' \
+         'LANGUAGE=en' 'TZDIR=/x' 'TERMINFO=/x' 'TERMCAP=x' 'NOCOLOR=1' 'NO_COLORS=1' 'COLUMN=1' 'COLUMNS2=1' 'LCX=1' 'LC=1' 'TERM2=x' 'TZ2=x' 'LANG2=x' \
+         'GIT_PAGER2=cat' 'PAGER2=cat' 'XPAGER=cat' 'env GIT_PAGER=less' 'sudo PAGER=less' 'env LANG=C GIT_SSH_COMMAND=x' \
+         'FOO=' 'GIT_SSH_COMMAND=' 'LESS=' 'LANG=C FOO=' 'GIT_AUTHOR_X=x' 'GIT_COMMITTER_X=x' 'GIT_AUTHOR=x' 'GIT_COMMITTER=x'; do        # …an empty value is no exception for any other variable
+  gate_block "$c git log --grep=deploy -- prod/"
+done
+for v in GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE; do
+  gate_block "${v}S=x git commit -m \"release prod\""          # …the six names are exact: a longer or a prefixed one is another variable
+  gate_block "X$v=x git commit -m \"release prod\""
+done
+gate_block "GIT_PAGER='./deploy prod' git log"
+gate_block "PAGER='cat; ./deploy prod' git log"
+gate_block 'GIT_AUTHOR_NAME=x GIT_COMMITTER_NAME=x GIT_SSH_COMMAND=./deploy-prod.sh git commit -m "release prod"'      # any other variable beside them decides
+gate_block 'GIT_SSH_COMMAND=./deploy-prod.sh GIT_AUTHOR_NAME=x git commit -m "release prod"'
+gate_block 'env GIT_AUTHOR_NAME=x GIT_SSH_COMMAND=./deploy-prod.sh git commit -m "release prod"'
+gate_block 'GIT_AUTHOR_NAME=$(./deploy-prod.sh) git commit -m x'                      # a value is any text, a substitution in it is still a command of its own
+gate_block 'GIT_AUTHOR_NAME="$(./deploy-prod.sh)" git commit -m x'
+gate_block 'GIT_COMMITTER_EMAIL=`./deploy-prod.sh` git commit -m x'
+gate_block 'LANG=C git push origin deploy-prod'                # the exceptions are for the prefix: the rest of the line is checked as before
+gate_block 'LANG=C git rebase --exec ./deploy-prod.sh main'
+gate_block 'LANG=C git fetch --upload-pack ./deploy-prod.sh ./repo'
+gate_block "TZ=UTC git -c core.pager='./deploy prod' log"
+# …wherever git stands in the command line
+gate_block "sudo git -c core.pager='deploy prod' log"
+gate_block "/usr/bin/git -c core.pager='deploy prod' log"
+gate_block 'sudo git fetch --upload-pack ./deploy-prod.sh ./repo'
+gate_block "if GIT_PAGER='./deploy prod' git log; then ls; fi"
+gate_pass 'if git commit -m "release prod"; then ls; fi'
+gate_pass 'sudo git commit -m "release prod" && ls'
+
+# heredocs: the body is data — unless its command is a shell, which runs it
+for s in $SHELL_CMDS; do
+  gate_block "$(printf '%s <<EOF\n./deploy prod\nEOF' "$s")"
+  gate_block "$(printf "%s <<'EOF'\nls\n./deploy prod\nEOF" "$s")"
+  gate_block "$(printf '%s <<-EOF\n\tls\n\t./deploy prod\n\tEOF' "$s")"
+  gate_block "$(printf '%s -s -- arg <<EOF\n./deploy prod\nEOF' "$s")"
+  gate_pass "$(printf '%s <<EOF\nls -la\necho release to prod\nEOF' "$s")"
+done
+gate_block $'sudo bash <<EOF\n./deploy prod\nEOF'
+gate_block $'env X=1 bash <<EOF\n./deploy prod\nEOF'
+# a <<- body with a command substitution: what follows the body is read from the right place, a body line is not taken for a command
+gate_pass $'cat <<-EOF\n\t$(date)\n\trelease to prod\n\tEOF\nls'
+gate_pass $'cat <<-EOF\n\t`date`\n\trelease to prod\n\tEOF\nls'
+gate_block $'cat <<-EOF\n\t$(date)\n\tEOF\n./deploy prod'
+gate_block $'bash <<-EOF\n\t$(date)\n\t./deploy prod\n\tEOF'
+gate_block $'/bin/bash <<EOF\nls\n./deploy prod\nEOF'
+gate_block $'bash <<EOF | tee out.log\n./deploy prod\nEOF'
+gate_block $'bash <<EOF\nif true; then ./deploy prod; fi\nEOF'
+gate_block $'bash <<EOF\nfor e in a b; do make deploy ENV=prod; done\nEOF'
+gate_block $'bash <<EOF\ncat <<INNER\nx\nINNER\n./deploy prod\nEOF'
+gate_pass $'bash <<EOF\ncat <<INNER\n./deploy prod\nINNER\nEOF'
+gate_block $'bash <<EOF\n./deploy prod'
+gate_pass $'cat <<EOF\nrelease prod'
+for o in 'cat' 'cat > notes.md' 'tee notes.md' 'python3 -' 'python3' 'ruby' 'node' 'perl' 'psql' 'mysql -u x' 'sort' 'wc -l' 'jq .' 'sed s/a/b/' 'awk 1'; do
+  gate_pass "$(printf "%s <<'EOF'\nrelease the build to production\n./deploy prod\nEOF" "$o")"
+  gate_pass "$(printf '%s <<EOF\nrelease the build to production\n./deploy prod\nEOF' "$o")"
+done
+gate_block $'cat <<EOF\nx\nEOF\n./deploy prod'
+gate_block $'cat <<EOF\nrelease prod\nEOF\nmake deploy ENV=prod'
+gate_block $'cat <<EOF > f.txt\nrelease prod\nEOF\nmake deploy ENV=prod'
+gate_pass $'cat <<A; cat <<B\nrelease prod\nA\ndeploy production\nB'
+gate_block $'cat <<A; bash <<B\nrelease prod\nA\n./deploy production\nB'
+gate_block $'bash <<A; cat <<B\n./deploy production\nA\nrelease prod\nB'
+
+# command substitutions run their commands wherever they sit; escaped or single-quoted ones are text
+for c in 'echo "x $(./deploy prod) y"' 'echo "x `./deploy prod` y"' 'git commit -m "msg $(./deploy prod)"' 'echo "$(echo "$(./deploy prod)")"' \
+         'echo "$(echo "$(echo "$(echo "$(echo "$(./deploy prod)")")")")"' $'cat <<EOF\n$(./deploy prod)\nEOF' $'cat <<EOF\nnow `./deploy prod`\nEOF' \
+         $'cat <<EOF\n$(echo $(./deploy prod))\nEOF' $'git commit -m "$(cat <<EOF\n$(./deploy prod)\nEOF\n)"'; do
+  gate_block "$c"
+done
+for c in 'echo "x \$(./deploy prod) y"' 'git commit -m "document \`./deploy.sh prod\` usage"' "echo '\$(./deploy prod)'" $'cat <<\'EOF\'\n$(./deploy prod)\nEOF' \
+         $'cat <<\\EOF\n$(./deploy prod)\nEOF' $'cat <<EOF\n\\$(./deploy prod)\nEOF'; do
+  gate_pass "$c"
+done
+# 16 looked-into substitutions per command line; the rest is matched as text, so a deploy behind them is still seen
+c='echo'; n=0; while [ "$n" -lt 20 ]; do c="$c \"\$(date)\""; n=$((n + 1)); done
+gate_pass "$c"
+gate_block "$c \"\$(./deploy prod)\""
+gate_block "$c \"\$(echo release to prod)\""                          # …and past the 16th a mention is text to match, not a command to read
+c='echo'; n=0; while [ "$n" -lt 10 ]; do c="$c \"\$(date)\""; n=$((n + 1)); done
+gate_pass "$c \"\$(echo release to prod)\""                          # …below them it is read like any command
+# 1000 simple commands per command line are read; what follows is matched as text
+BIG_CMDS=$(awk 'BEGIN { for (i = 0; i < 1100; i++) printf "ls ; " }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_CMDS echo \"release to prod\"")"
+assert_rc "past 1000 simple commands a mention is matched as text and blocked" 2
+BIG_CMDS=$(awk 'BEGIN { for (i = 0; i < 900; i++) printf "ls ; " }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_CMDS echo \"release to prod\"")"
+assert_rc "below 1000 simple commands the same mention is text" 0
+unset BIG_CMDS
+
+# a shell that reads its commands from a pipe, a here-string or a file: the tokenizer cannot follow them, the whole line is matched as text
+for s in $SHELL_CMDS; do
+  gate_block "echo \"./deploy prod\" | $s"
+  gate_block $'cat <<EOF | '"$s"$'\n./deploy prod\nEOF'
+  gate_block "$s <<< \"./deploy prod\""
+  gate_block "$s < deploy-prod.sh"
+  gate_pass "echo \"ls\" | $s"
+done
+gate_block 'cat prod-deploy.sh | sh'
+gate_block 'cat prod-deploy.sh | sudo bash -s'
+gate_pass 'cat prod-deploy.sh'
+gate_pass 'grep -rl release prod/ | xargs wc -l'
+
+# a command that only mentions it: approved or not, nothing is logged for it
+P=$(fresh)
+run_hook guard-bash "$P" "$(j_bash "$P" 'echo "release to prod"')"
+assert_true "a mention is silent: no gate event" "$([ -z "$OUT$ERR" ] && [ "$(log_has "$P" hook.gate)" = false ] && echo true || echo false)" "out=$OUT err=$ERR"
+run_hook guard-bash "$P" "$(j_bash "$P" 'echo "release to prod"')" RELEASE_APPROVAL=REL-9
+assert_true "…also with an approval set: no 'approved' event for a command that deploys nothing" "$([ "$(log_has "$P" hook.gate)" = false ] && echo true || echo false)" "$(cat "$P/.sdlc/logs/events.jsonl" 2>/dev/null)"
+gate_pass './deploy.sh prod' RELEASE_APPROVAL=REL-9
+gate_pass $'bash <<EOF\n./deploy prod\nEOF' RELEASE_APPROVAL=REL-9
+gate_pass 'git push origin release/production' RELEASE_APPROVAL=REL-9
+assert_true "an approved deploy is logged as allow" "$(log_has "$GP" '"event":"hook.gate".*"decision":"allow"')" "$(cat "$GP/.sdlc/logs/events.jsonl" 2>/dev/null)"
+
+# the message and the log say which part of the command line matched
+run_hook guard-bash "$P" "$(j_bash "$P" 'cd x && ./deploy.sh prod')"
+assert_rc "message: a deploy behind other commands is blocked" 2
+assert_has "message: names the simple command that matched" "$ERR" ", in './deploy.sh prod'"
+assert_has "message: names the pattern" "$ERR" "(deploy|release|rollout|promote)"
+assert_has "message: still names the approval env and the config key" "$ERR" "RELEASE_APPROVAL"
+assert_has "message: points at protect.deploy_patterns" "$ERR" "protect.deploy_patterns"
+assert_has "message: says which commands are not looked at" "$ERR" "text tools"
+assert_has "message: says that a text tool or git running a program is looked at" "$ERR" "when it runs a program (--pre, --pager, git -c, --exec, an env prefix"
+assert_true "log: the matched part is in the event" "$(log_has "$P" '"part":"\./deploy\.sh prod"')" "$(cat "$P/.sdlc/logs/events.jsonl" 2>/dev/null)"
+run_hook guard-bash "$P" "$(j_bash "$P" './deploy.sh prod')"
+assert_lacks "message: one simple command needs no 'in …'" "$ERR" ", in '"
+run_hook guard-bash "$P" "$(j_bash "$P" "bash -c 'ls; ./deploy.sh prod'")"
+assert_has "message: a quoted argument is shown as the words the gate read" "$ERR" ", in 'bash -c ls; ./deploy.sh prod'"
+
+# a custom pattern list works the same way
+R=$(fresh); set_cfg "$R" protect.deploy_patterns '["ship-it"]'
+run_hook guard-bash "$R" "$(j_bash "$R" 'echo ship-it now')"
+assert_rc "custom pattern: a text tool is skipped here too" 0
+run_hook guard-bash "$R" "$(j_bash "$R" 'git commit -m "ship-it"')"
+assert_rc "custom pattern: git commit is skipped here too" 0
+run_hook guard-bash "$R" "$(j_bash "$R" './ship-it now')"
+assert_rc "custom pattern: a command is gated" 2
+run_hook guard-bash "$R" "$(j_bash "$R" 'bash -c "ship-it now"')"
+assert_rc "custom pattern: a quoted argument is gated" 2
+run_hook guard-bash "$R" "$(j_bash "$R" $'bash <<EOF\nship-it now\nEOF')"
+assert_rc "custom pattern: a shell heredoc body is gated" 2
+run_hook guard-bash "$R" "$(j_bash "$R" $'cat <<EOF\nship-it now\nEOF')"
+assert_rc "custom pattern: a data heredoc body is not" 0
+
+# the tokenizer cannot be run or says nothing: the command line is matched as plain text, as the gate did before
+AWKSHIM="$WORK/awk-shim"; mkdir -p "$AWKSHIM"; REAL_AWK=$(command -v awk)
+shim_awk() { printf '#!/bin/sh\ncase "$*" in *bodies=1*) %s;; esac\nexec %s "$@"\n' "$1" "$REAL_AWK" > "$AWKSHIM/awk"; chmod +x "$AWKSHIM/awk"; }
+shim_awk 'exit 1'
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'echo "release to prod"')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer fails: the whole text is matched (a mention is blocked again)" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" './deploy prod')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer fails: a deploy is blocked" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" $'bash <<EOF\n./deploy prod\nEOF')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer fails: a shell heredoc deploy is blocked" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'ls -la')" PATH="$AWKSHIM:$PATH"
+assert_true "tokenizer fails: an ordinary command still passes, silently" "$([ "$RC" = 0 ] && [ -z "$OUT$ERR" ] && echo true || echo false)" "rc=$RC out=$OUT err=$ERR"
+shim_awk 'exit 0'
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'echo "release to prod"')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer prints nothing: the whole text is matched" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'ls -la')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer prints nothing: an ordinary command passes" 0
+shim_awk 'printf "Wls\nC\n"; exit 2'
+run_hook guard-bash "$GP" "$(j_bash "$GP" './deploy prod')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer fails after a part of its output: the whole text is matched, not the part" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'ls -la')" PATH="$AWKSHIM:$PATH"
+assert_rc "…and an ordinary command still passes" 0
+shim_awk 'printf "Wls\nC\n!\n"; exit 0'
+run_hook guard-bash "$GP" "$(j_bash "$GP" './deploy prod')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer stops at its record cap: the whole text is matched" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'ls -la')" PATH="$AWKSHIM:$PATH"
+assert_rc "…and an ordinary command still passes" 0
+shim_awk 'printf "W"; head -c 45000 /dev/zero | tr "\0" "a"; printf "\nC\n"; exit 0'
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'echo "release to prod"')" PATH="$AWKSHIM:$PATH"
+assert_rc "tokenizer prints more than its size cap: the whole text is matched" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" 'ls -la')" PATH="$AWKSHIM:$PATH"
+assert_rc "…and an ordinary command still passes (size cap)" 0
+printf '#!/bin/sh\nexit 127\n' > "$AWKSHIM/awk"
+run_hook guard-bash "$GP" "$(j_bash "$GP" './deploy prod')" PATH="$AWKSHIM:$PATH"
+assert_rc "no usable awk at all: a deploy is still blocked" 2
+rm -f "$AWKSHIM/awk"
+# the tokenizer's own record cap (4000: every word, every end of a simple command and every substitution count one): past it the
+# text is matched as a whole — a mention is blocked as it was before, and a deploy behind the cap is not lost
+WORDS_4100=$(awk 'BEGIN { for (i = 0; i < 4100; i++) printf " a%d", i }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "ls$WORDS_4100 ; echo \"release to prod\"")"
+assert_rc "past 4000 words a mention is matched as text and blocked" 2
+run_hook guard-bash "$GP" "$(j_bash "$GP" "ls$WORDS_4100 ; ./deploy prod")"
+assert_rc "…and a deploy behind the words is found" 2
+WORDS_3000=$(awk 'BEGIN { for (i = 0; i < 3000; i++) printf " a%d", i }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "ls$WORDS_3000 ; echo \"release to prod\"")"
+assert_rc "below 4000 words the same mention is text" 0
+BLANK_4100=$(awk 'BEGIN { for (i = 0; i < 4100; i++) printf " \n"; printf "x" }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "ls${BLANK_4100} ; echo \"release to prod\"")"
+assert_rc "past 4000 line ends a mention is matched as text and blocked" 2
+unset WORDS_4100 WORDS_3000 BLANK_4100
+# the file a simple command reads its input from belongs to that command alone
+gate_pass 'sort < deploy-prod.txt ; ls -la'
+gate_pass 'wc -l < prod/deploy.log && ls'
+# a name that is only a piece of a shell's name is no shell: its heredoc is text
+for t in s h as ash ba bas zs ks da ss; do
+  gate_pass "$(printf '%s <<EOF\n./deploy prod\nEOF' "$t")"
+  gate_pass "echo \"release to prod\" | $t"
+done
+gate_pass $'   '
+gate_pass ':'
+gate_block '# ./deploy prod'
+gate_pass 'echo "release prod'
+gate_pass "echo 'release prod"
+gate_pass $'echo release prod\r\nls\r\n'
+gate_pass 'echo "배포 release prod ✓"'
+gate_block './deploy.sh 운영 prod'
+# non-ASCII text is read as bytes: macOS awk stops dead on a regular expression over half a character unless it runs in the C locale,
+# and a long text always has a 256-byte stretch that ends inside a character — the gate must not fall back to the whole text for it
+KO=$(awk 'BEGIN { for (i = 0; i < 120; i++) printf "배포" }')
+ko_case() { run_hook guard-bash "$GP" "$(j_bash "$GP" "$3")"; assert_rc "$2" "$1"; }
+ko_case 0 "non-ASCII text: a long commit message is text" "git commit -m \"$KO release to production\""
+ko_case 0 "non-ASCII text: …whatever its alignment in the window (1)" "git commit -m \"x$KO release to production\""
+ko_case 0 "non-ASCII text: …(2)" "git commit -m \"xx$KO release to production\""
+ko_case 0 "non-ASCII text: a long unquoted text and a mention in echo" "echo $KO release to prod"
+ko_case 0 "non-ASCII text: a backslash in front of a character does not end the reading" "echo \\$KO ; echo release to prod"
+ko_case 2 "non-ASCII text: a deploy behind a long quoted text is found" "echo \"$KO\" ; ./deploy prod"
+ko_case 2 "non-ASCII text: a deploy behind a backslash and a character is found" "echo \\$KO ; ./deploy prod"
+ko_case 2 "non-ASCII text: a deploy inside a long quoted argument is found" "bash -c \"$KO ./deploy prod\""
+unset -f ko_case; unset KO
+
+# big command lines stay fast: 200 KB of text for a data heredoc, a long shell script, thousands of simple commands or words, a 300 KB
+# word, 300 KB of white space, hundreds of substitutions, a long commit message
+BIG_TEXT=$(awk 'BEGIN { for (i = 0; i < 3000; i++) printf "line %d about the release of production and the deploy to prod\n", i }')
+BIG_SH=$(awk 'BEGIN { for (i = 0; i < 1500; i++) printf "echo step %d\n", i }')
+BIG_CMDS=$(awk 'BEGIN { for (i = 0; i < 3000; i++) printf "ls d%d ; ", i; print "true" }')
+BIG_MSG=$(awk 'BEGIN { for (i = 0; i < 100; i++) printf "line %d: tidy the deploy script for production\n", i }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "cat > f.txt <<'EOF'"$'\n'"$BIG_TEXT"$'\nEOF')"
+assert_true "200 KB data heredoc: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "bash <<EOF"$'\n'"$BIG_SH"$'\nEOF')"
+assert_true "1500-line shell heredoc: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "bash <<EOF"$'\n'"$BIG_SH"$'\n./deploy prod\nEOF')"
+assert_true "…and still finds the deploy at its end, in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_CMDS")"
+assert_true "3000 simple commands: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "git commit -m \"\$(cat <<'EOF'"$'\n'"$BIG_MSG"$'\nEOF\n)"')"
+assert_true "100-line commit message in a heredoc: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+BIG_WORDS=$(awk 'BEGIN { printf "make build"; for (i = 0; i < 8000; i++) printf " a%d", i; print "" }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_WORDS")"
+assert_true "8000 words in one command: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_WORDS ; ./deploy prod")"
+assert_true "…and a deploy behind them is still found, in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+BIG_GIT=$(awk 'BEGIN { printf "git add"; for (i = 0; i < 3500; i++) printf " src/f%d.txt", i; print "" }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_GIT")"
+assert_true "3500 words of a git command: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_GIT --exec ./deploy-prod.sh")"
+assert_true "…and the program it is told to run is still found, in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+BIG_ECHO=$(awk 'BEGIN { printf "echo"; for (i = 0; i < 3500; i++) printf " w%d", i; print "" }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_ECHO")"
+assert_true "3500 words of a text tool: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_ECHO --pager ./deploy-prod.sh")"
+assert_true "…and the program it is told to run is still found, in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+BIG_WORD=$(head -c 300000 /dev/zero | tr '\0' 'A')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "make build $BIG_WORD ; ./deploy prod")"
+assert_true "a 300 KB word and a deploy behind it: found in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+BIG_SPACE=$(head -c 300000 /dev/zero | tr '\0' ' ')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "make build${BIG_SPACE}x ; ./deploy prod")"
+assert_true "300 KB of white space and a deploy behind it: found in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "make build >${BIG_SPACE}out.txt ; ./deploy prod")"
+assert_true "300 KB of white space after a redirect operator and a deploy behind it: found in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+BIG_SUBST=$(awk 'BEGIN { printf "echo"; for (i = 0; i < 300; i++) printf " \"$(date)\""; print "" }')
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_SUBST")"
+assert_true "300 command substitutions in one command: passes in under a second" "$([ "$RC" = 0 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$GP" "$(j_bash "$GP" "$BIG_SUBST \"\$(./deploy prod)\"")"
+assert_true "…and a deploy in one more is still found, in under a second" "$([ "$RC" = 2 ] && [ "$MS" -lt 1000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+unset BIG_TEXT BIG_SH BIG_CMDS BIG_MSG BIG_WORDS BIG_GIT BIG_ECHO BIG_WORD BIG_SPACE BIG_SUBST
 
 # ======================================================================
 echo "-- guard-bash: no direct push to the default branch"
@@ -584,6 +1118,16 @@ BLOCKED=(
   'echo hi && rm tests/x_test.py'
   'ls; rm tests/x_test.py'
   'sudo rm tests/x_test.py'
+  'sudo -u root rm tests/x_test.py'
+  'nice -n 5 rm tests/x_test.py'
+  'env -u FOO rm tests/x_test.py'
+  'time -p rm tests/x_test.py'
+  'timeout -k 5 60 rm tests/x_test.py'
+  'stdbuf -o L rm tests/x_test.py'
+  'doas -u root rm tests/x_test.py'
+  'sudo -E env FOO=1 nice -n 5 rm tests/x_test.py'
+  '/usr/bin/env rm tests/x_test.py'
+  '/usr/bin/sudo -u root /bin/rm tests/x_test.py'
   'FOO=1 rm tests/x_test.py'
   'env FOO=1 rm tests/x_test.py'
   'bash -c "rm tests/x_test.py"'
@@ -596,6 +1140,24 @@ for c in "${BLOCKED[@]}"; do
   run_hook guard-bash "$P" "$(j_bash "$P" "$c")"
   assert_rc "blocked on an existing test: $(short "$c")" 2
 done
+# non-ASCII text does not end the reading early: a long text (some 256-byte stretch of it ends inside a character) or a backslash in
+# front of a character must not hide what comes after (macOS awk stops dead on half a character unless it runs in the C locale)
+KO=$(awk 'BEGIN { for (i = 0; i < 120; i++) printf "배포" }')
+ko_n=0
+for c in "echo \"$KO\" ; rm tests/x_test.py" "echo x$KO ; rm tests/x_test.py" "echo \"xx$KO\" ; rm tests/x_test.py" \
+         "echo \\$KO ; rm tests/x_test.py" "git commit -m \"$KO\" ; rm tests/x_test.py"; do
+  ko_n=$((ko_n + 1))
+  run_hook guard-bash "$P" "$(j_bash "$P" "$c")"
+  assert_rc "blocked on an existing test behind non-ASCII text (case $ko_n)" 2
+done
+PK=$(fresh); mk "$PK" 'tests/한글_test.py'; git_init "$PK"; activate "$PK" planned
+run_hook guard-bash "$PK" "$(j_bash "$PK" 'rm tests/한글_test.py')"
+assert_rc "a test file with a non-ASCII name is locked like any other" 2
+run_hook guard-bash "$PK" "$(j_bash "$PK" "echo \"$KO\" ; rm 'tests/한글_test.py'")"
+assert_rc "…also behind a long non-ASCII text" 2
+run_hook guard-bash "$PK" "$(j_bash "$PK" 'rm tests/한글_new.py')"
+assert_rc "…and a new test with a non-ASCII name is free" 0
+unset KO ko_n PK
 ALLOWED=(
   'rm tests/new_test.py'
   'mv /tmp/a tests/new_test.py'
@@ -910,10 +1472,19 @@ run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'add client'")"
 assert_rc "git commit with staged secret blocked" 2
 assert_has "commit block names a pattern" "$ERR" "pattern#"
 assert_lacks "commit block never echoes the secret" "$ERR" "${GH_TOKEN:0:14}"
+for c in "GIT_AUTHOR_NAME=x git commit -m 'add client'" "GIT_AUTHOR_NAME=x GIT_COMMITTER_NAME=x git commit -m 'add client'" \
+         "env GIT_COMMITTER_EMAIL=x git commit -m 'add client'" "git -c user.name=x commit -m 'add client'"; do
+  run_hook guard-bash "$P" "$(j_bash "$P" "$c")"
+  assert_rc "a commit that names its author is scanned like any other: $(short "$c")" 2         # what the deploy gate lets through, the scan still reads
+done
 { gitp "$P" restore --staged src/leak.py 2>/dev/null || gitp "$P" reset -q src/leak.py; }; rm -f "$P/src/leak.py"
 printf 'x = 1\n' >> "$P/src/app.py"; gitp "$P" add src/app.py
 run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'clean change'")"
 assert_rc "clean staged commit allowed" 0
+printf 'caf\xb0\xa1 legacy encoding\naws = "%s"\n' "$AWS_KEY" > "$P/src/legacy.txt"; gitp "$P" add src/legacy.txt
+run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'legacy encoded file'")"
+assert_rc "git commit: a secret behind a line in a legacy encoding is found" 2
+{ gitp "$P" restore --staged src/legacy.txt 2>/dev/null || gitp "$P" reset -q src/legacy.txt; }; rm -f "$P/src/legacy.txt"
 printf 'aws = "%s"\n' "$AWS_KEY" >> "$P/src/app.py"     # tracked, NOT staged
 run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'only staged'")"
 assert_rc "unstaged secret does not block a plain commit" 0
@@ -1061,6 +1632,18 @@ printf 'caf\xb0\xa1 legacy encoding\nnothing secret here\n' > "$R/cp949.txt"
 out=$(bash "$SS" --staged "$R" --untracked 2>&1); rc=$?
 assert_eq "--untracked: …and a clean one in a legacy encoding is not a false hit" "$rc" 0
 rm -f "$R/cp949.txt"
+# the staged diff is read as bytes too: awk and tr (macOS, UTF-8 locale) stop dead on a line in a legacy encoding, and what came after it
+# was never scanned
+printf 'caf\xb0\xa1 legacy encoding\naws = "%s"\n' "$AWS_KEY" > "$R/cp949.txt"; gitp "$R" add cp949.txt
+out=$(bash "$SS" --staged "$R" 2>&1); rc=$?
+assert_eq "--staged: a secret behind a line in a legacy encoding is found" "$rc" 1
+printf '\xb0\xa1 legacy first\naws = "%s"\n' "$AWS_KEY" > "$R/cp949.txt"; gitp "$R" add cp949.txt
+out=$(bash "$SS" --staged "$R" 2>&1); rc=$?
+assert_eq "--staged: …also when the file starts with one" "$rc" 1
+printf 'caf\xb0\xa1 legacy encoding\nnothing secret here\n' > "$R/cp949.txt"; gitp "$R" add cp949.txt
+out=$(bash "$SS" --staged "$R" 2>&1); rc=$?
+assert_eq "--staged: …and a clean staged file in a legacy encoding is not a false hit" "$rc" 0
+gitp "$R" reset -q cp949.txt; rm -f "$R/cp949.txt"
 printf 'aws = "%s"\n' "$AWS_KEY" > "$R/ignored.txt"; printf 'ignored.txt\n' >> "$R/.git/info/exclude"
 out=$(bash "$SS" --staged "$R" --untracked 2>&1); rc=$?
 assert_eq "--untracked: a file covered by .git/info/exclude is not scanned" "$rc" 0
@@ -1127,6 +1710,16 @@ assert_rc "v1: shell test lock applies" 2
 run_hook guard-bash "$P" "$(j_bash "$P" "terraform apply -var env=prod")"
 assert_rc "v1: production gate blocks (environments.production.patterns)" 2
 assert_has "v1: message names RELEASE_APPROVAL" "$ERR" "RELEASE_APPROVAL"
+run_hook guard-bash "$P" "$(j_bash "$P" "echo terraform apply -var env=prod")"
+assert_rc "v1: a text tool printing the pattern words is not a deploy" 0
+run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'terraform apply -var env=prod'")"
+assert_rc "v1: …nor is git without push" 0
+run_hook guard-bash "$P" "$(j_bash "$P" "bash -c 'cd x && terraform apply -var env=prod'")"
+assert_rc "v1: …while a quoted argument of a command still counts" 2
+run_hook guard-bash "$P" "$(j_bash "$P" $'bash <<EOF\nterraform apply -var env=prod\nEOF')"
+assert_rc "v1: …and so does the body of a shell heredoc" 2
+run_hook guard-bash "$P" "$(j_bash "$P" $'cat <<EOF\nterraform apply -var env=prod\nEOF')"
+assert_rc "v1: …but not the body of a data heredoc" 0
 run_hook guard-bash "$P" "$(j_bash "$P" "terraform apply -var env=prod")" RELEASE_APPROVAL=REL-1
 assert_rc "v1: RELEASE_APPROVAL unlocks" 0
 run_hook guard-bash "$P" "$(j_bash "$P" "helm upgrade api ./chart -n staging")"
@@ -1173,6 +1766,16 @@ run_hook guard-bash "$P" "$(j_bash "$P" "kubectl rollout restart deploy/api -n p
 assert_rc "uninitialized: RELEASE_APPROVAL unlocks" 0
 run_hook guard-bash "$P" "$(j_bash "$P" "helm upgrade api ./chart -n staging")"
 assert_rc "uninitialized: staging is not gated" 0
+run_hook guard-bash "$P" "$(j_bash "$P" "echo kubectl rollout restart deploy/api -n prod")"
+assert_rc "uninitialized: a text tool printing the words is not a deploy" 0
+run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'release to production'")"
+assert_rc "uninitialized: git without push is not checked" 0
+run_hook guard-bash "$P" "$(j_bash "$P" "git push origin release/production")"
+assert_rc "uninitialized: git push is" 2
+run_hook guard-bash "$P" "$(j_bash "$P" $'bash <<EOF\n./deploy prod\nEOF')"
+assert_rc "uninitialized: a shell heredoc body is read as commands" 2
+run_hook guard-bash "$P" "$(j_bash "$P" $'cat <<EOF\n./deploy prod\nEOF')"
+assert_rc "uninitialized: a data heredoc body is not" 0
 assert_true "uninitialized: no .sdlc dir created" "$([ ! -e "$P/.sdlc" ] && echo true || echo false)" "$(ls -a "$P")"
 run_hook guard-edit "$P" "$(j_edit "$P" "$P/tests/x_test.py" "changed")"
 assert_rc "uninitialized: test edit allowed" 0
@@ -1408,6 +2011,16 @@ if command -v python3 >/dev/null 2>&1; then
     assert_rc "no-jq: production gate blocked" 2
     run_hook guard-bash "$P" "$(j_bash "$P" "helm upgrade api ./chart -n staging")" PATH="$NOJQ"
     assert_true "no-jq: staging not gated, silent" "$([ "$RC" = 0 ] && [ -z "$OUT$ERR" ] && echo true || echo false)" "rc=$RC out=$OUT err=$ERR"
+    run_hook guard-bash "$P" "$(j_bash "$P" "echo release to prod")" PATH="$NOJQ"
+    assert_rc "no-jq: a text tool is not a deploy" 0
+    run_hook guard-bash "$P" "$(j_bash "$P" "git commit -m 'release to production'")" PATH="$NOJQ"
+    assert_rc "no-jq: git without push is not checked" 0
+    run_hook guard-bash "$P" "$(j_bash "$P" $'bash <<EOF\n./deploy prod\nEOF')" PATH="$NOJQ"
+    assert_rc "no-jq: a shell heredoc body is read as commands" 2
+    run_hook guard-bash "$P" "$(j_bash "$P" $'cat <<EOF\n./deploy prod\nEOF')" PATH="$NOJQ"
+    assert_rc "no-jq: a data heredoc body is not" 0
+    run_hook guard-bash "$P" "$(j_bash "$P" "cd x && ./deploy prod")" PATH="$NOJQ"
+    assert_rc "no-jq: a deploy behind another command is blocked" 2
     set_cfg "$P" protect.deploy_patterns '["ship-it"]'
     run_hook guard-bash "$P" "$(j_bash "$P" "ship-it now")" PATH="$NOJQ"
     assert_rc "no-jq: custom deploy_patterns read from the config array" 2

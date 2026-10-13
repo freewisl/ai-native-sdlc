@@ -199,7 +199,8 @@ test_file_locked() {
 }
 
 # ---------- production deploy gate (guard-bash) ----------
-# One tier. A command matching a deploy pattern needs the approval env var (default RELEASE_APPROVAL).
+# One tier. A command matching a deploy pattern needs the approval env var (default RELEASE_APPROVAL). guard-bash matches the
+# patterns against each simple command of the command line, not against the whole text (see deploy_hit there).
 # Default patterns — keep identical to DEPLOY_PATTERNS in scripts/sdlclib/config.py (tests/hooks.sh compares them).
 SDLC_DEFAULT_DEPLOY_PATTERNS='(deploy|release|rollout|promote)[^|;&]*(prod|production|live)
 (prod|production|live)[^|;&]*(deploy|release|rollout|promote)
@@ -231,7 +232,8 @@ deploy_gate_config() {
   if valid_ident "$name"; then SDLC_DEPLOY_ENV="$name"; fi
   return 0
 }
-# deploy_match <command> → prints the first deploy pattern the command matches and returns 0; returns 1 on no match
+# deploy_match <text> → prints the first deploy pattern a line of the text matches and returns 0; returns 1 on no match
+# (guard-bash passes one line per simple command, so a pattern never spans two commands)
 deploy_match() {
   local cmd="$1" pat rc
   [ -n "$SDLC_DEPLOY_PATTERNS" ] || return 1

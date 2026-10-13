@@ -79,14 +79,15 @@ else
   fi
   # every added line of every file, no path exempt: a directory of fixtures is not a reason to wave real credentials through.
   # The per-file header (diff … up to the first @@) is skipped by state, so an added line that itself starts with "++ " is still scanned.
-  text=$(printf '%s\n' "$diff" | awk '
+  # bytes, not characters: in a UTF-8 locale awk (macOS) stops at a line in a legacy encoding, and what follows is never scanned
+  text=$(printf '%s\n' "$diff" | LC_ALL=C awk '
     /^diff /   { hdr = 1; next }
     /^@@ /     { hdr = 0; next }
     hdr        { next }
     /^\+/      { print substr($0, 2) }')
   if $untracked; then text="$text"$'\n'"$(untracked_text "$root")"; fi
 fi
-[ -n "$(printf '%s' "$text" | tr -d '[:space:]')" ] || exit 0
+[ -n "$(printf '%s' "$text" | LC_ALL=C tr -d '[:space:]')" ] || exit 0
 
 # --- fast reject: one pass with every pattern at once. Text that matches none of them is clean; the rest goes through the loop
 # below, which names the pattern and applies the allowlist. A pattern with a back-reference means something else inside the

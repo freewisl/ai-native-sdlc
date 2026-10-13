@@ -161,7 +161,7 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 | 훅 | 시점 | 하는 일 |
 |---|---|---|
 | `guard-edit` | 파일 편집 직전 | ① frozen·generated 경로 편집 금지 ② 기존 테스트 파일 잠금(sdlc 작업 중에만 — 아래) ③ 설계 먼저 — 활성 작업 문서가 `ready`·`proposed` 인 동안은 `work/`·`.sdlc/` 만 편집 ④ 새 내용의 비밀값 스캔 |
-| `guard-bash` | Bash 직전 | 운영 배포 명령은 `RELEASE_APPROVAL` 없이 차단 · 기본 브랜치로의 직접 push 차단 · 파일을 쓰는 셸 명령(`rm`·`mv`·`cp`·`sed -i`·`tee`·리다이렉션·`dd`·`truncate`·`git rm`/`mv`/`checkout -- <파일>`/`restore`)에도 테스트 잠금과 설계 먼저 적용 · `git commit` 이 가져갈 변경의 비밀 스캔 |
+| `guard-bash` | Bash 직전 | 운영 배포 명령은 `RELEASE_APPROVAL` 없이 차단. 명령줄 전체가 아니라 단순 명령 하나씩 따옴표를 풀어 대조하고, heredoc 본문과 주석은 뺍니다. `echo`·`cat`·`grep` 같은 텍스트 도구와 `git commit`·`log`·`diff` 같은 기록·조회용 git 명령은 글자로 봅니다. 단, 다른 프로그램을 실행시킬 수 있는 형태는 검사합니다(`git -c …`·`--exec`·`GIT_SSH_COMMAND=` 같은 앞 변수, `rg --pre` 등). `bash -c "…"`·`ssh`·`sudo`·명령 치환·셸로 넘기는 heredoc 은 검사합니다 · 기본 브랜치로의 직접 push 차단 · 파일을 쓰는 셸 명령(`rm`·`mv`·`cp`·`sed -i`·`tee`·리다이렉션·`dd`·`truncate`·`git rm`/`mv`/`checkout -- <파일>`/`restore`)에도 테스트 잠금과 설계 먼저 적용 · `git commit` 이 가져갈 변경의 비밀 스캔 |
 | `post-edit` · `post-bash` | 편집·Bash 직후 | 포매터 실행(`hooks.format_on_edit`, `commands.format`)과 있으면 파일 린터(`commands.lint_file`), 검증 명령(`commands.test` 등)의 결과 기록 |
 | `stop-verify` | 응답을 끝내기 전 | `verify.required_before_stop` 이 true 일 때, 편집 뒤 검증이 없거나 실패했으면 한 번 막고 돌릴 명령을 알려 줌 |
 | `session-start` · `session-end` | 세션 시작·끝 | 규칙 요약을 컨텍스트에 넣고(`hooks.session_context`) 기록(`hooks.log_events`) |
@@ -169,7 +169,7 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 - **테스트 잠금은 sdlc 작업 중에만 겁니다** — 활성 작업 문서가 있을 때, 곧 `.sdlc/state/active-work` 의 slug 가 브랜치 `sdlc/<slug>` 와 맞을 때입니다(설계 먼저와 같은 조건). 작업 밖에는 받쳐 줄 게이트가 없고 에이전트가 설정으로 꺼 버릴 수도 있어서 걸지 않습니다. "기존 테스트"는 `merge-base` 에 이미 있던 테스트 파일이고(게이트도 같은 기준), 이 변경이 추가한 새 테스트는 자유입니다. 푸는 길은 둘뿐입니다: 작업 문서의 `test_changes: allowed`(설계가 정함), 사람이 Claude Code 를 띄울 때 환경에 둔 `SDLC_ALLOW_TEST_EDIT=1`.
 - **테스트 파일** — 훅과 게이트가 같은 정의를 씁니다. 디렉터리 `test/`·`tests/`·`__tests__/`·`androidTest/`·`testFixtures/`·`spec/` 아래와 파일 `*_test.go`·`*.test.*`·`*.spec.*`·`test_*.py`·`*_test.py`·`*Test(s).java|kt|swift`·`*Spec.scala|kt`·`*_spec.rb` 입니다(작업 문서 디렉터리는 제외). `protect.test_paths` 의 기본값 `["auto"]` 가 이 집합이고, 글롭을 더하거나(`["auto", "e2e/**"]`) `auto` 를 빼고 직접 적어 바꿀 수 있습니다([설정](#설정)).
 - **커밋 비밀 스캔** — 기본은 스테이지된 diff 입니다. 같은 명령줄에서 `git add` 가 앞서거나 `-a`/`--all` 이면 커밋이 가져갈 수 있는 전부(추적 파일의 변경과, 무시되지 않는 추적 안 된 텍스트 파일 — 개수 상한 있음)를 보고, `git -C <dir>` 로 다른 저장소에 커밋하면 그 저장소도 봅니다.
-- **한계** — `guard-bash` 는 명령줄을 읽을 뿐 실행하지 않는 최선 노력이라, 스스로 파일을 쓰는 프로그램(`python -c`·`patch`·`git apply`·`make`·패키지 매니저·`curl -o`)과 변수·중괄호 확장으로 만든 경로는 보지 못합니다. 훅 잠금은 조기 경고라서 에이전트가 `active-work` 를 지우거나 브랜치를 떠나면 꺼집니다. 강제하는 것은 게이트(검사 3·4·6)입니다.
+- **한계** — `guard-bash` 는 명령줄을 읽을 뿐 실행하지 않는 최선 노력이라, 스스로 파일을 쓰는 프로그램(`python -c`·`patch`·`git apply`·`make`·패키지 매니저·`curl -o`)과 변수·중괄호 확장으로 만든 경로는 보지 못합니다. 배포 판정은 텍스트 도구의 출력이 명령이 되는 경우(`$(echo …)`)와 두 명령에 나뉜 배포(`cd prod && make deploy`)를 보지 못합니다. 훅 잠금은 조기 경고라서 에이전트가 `active-work` 를 지우거나 브랜치를 떠나면 꺼집니다. 강제하는 것은 게이트(검사 3·4·6)입니다.
 
 ## 설정
 
