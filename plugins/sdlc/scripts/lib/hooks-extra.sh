@@ -92,43 +92,54 @@ verify_commands_human() {
 }
 
 # ---------- test lock (guard-edit, guard-bash) ----------
-# An existing test is locked: it may be neither changed nor deleted. Existing = already on the default branch, as of the point
-# where this change branched off it — the engine's merge gate measures the same way. A test file this change adds is free to
-# edit while it is being written (the gate only checks it for skip/only); a test file that does not exist yet may always be
-# created. Without a git base to compare with, every test file that exists counts as existing.
-# Unlocked when protect.protect_tests is off, SDLC_ALLOW_TEST_EDIT=1, .sdlc/state/allow-test-edit exists, or the active work
-# doc says `test_changes: allowed` (the design decides that, per change).
-SDLC_TEST_PATH_ARR=(auto); SDLC_TEST_SPEC_DIR=""; SDLC_TEST_BASE=""
+# During sdlc work — an active work doc applies: .sdlc/state/active-work names a slug and the branch is sdlc/<slug> — an
+# existing test is locked: it may be neither changed nor deleted. Outside sdlc work nothing is locked: there is no gate behind
+# the lock there, and the agent could switch it off in .sdlc/config.json anyway. Existing = already on the default branch, as
+# of the point where this change branched off it — the engine's merge gate measures the same way. A test file this change adds
+# is free to edit while it is being written (the gate only checks it for skip/only); a test file that does not exist yet may
+# always be created. Without a git base to compare with, every test file that exists counts as existing.
+# Unlocked when protect.protect_tests is off, SDLC_ALLOW_TEST_EDIT=1 (a person sets it in the environment Claude Code starts
+# with — a tool call cannot set it for a hook), or the active work doc says `test_changes: allowed` (the design decides that,
+# per change). There is no unlock file: the agent could create one itself.
+SDLC_TEST_PATH_ARR=(auto); SDLC_TEST_WORK_DIR="work"; SDLC_TEST_BASE=""
 
-# auto_test_path <rel> → the built-in test-path set ("auto"); a legacy <paths.spec> artifact dir is not a test dir
+# The built-in test-path set ("auto") is ONE definition with the merge gate. The first two patterns are the gate's own, character
+# for character (TEST_DIR_RE and TEST_FILE_RE in scripts/sdlclib/gate.py); the third is its inline spec/ rule. tests/hooks.sh
+# compares the patterns with the gate's, then compares the verdicts over a corpus of paths. Change the gate and these together.
+# The gate never counts anything under the work dir (SDLC_TEST_WORK_DIR).
+SDLC_TEST_DIR_RE='(^|/)(test|tests|__tests__|androidTest|testFixtures)/'
+SDLC_TEST_FILE_RE='(_test\.go|\.test\.[A-Za-z]+|\.spec\.[A-Za-z]+|(^|/)test_[^/]*\.py|_test\.py|Tests?\.(java|kt|swift)|Spec\.(scala|kt)|_spec\.rb)$'
+SDLC_TEST_SPEC_RE='(^|/)spec/'
+
+# auto_test_path <rel> → 0 when <rel> is a test path of the built-in set; mirrors is_test_path() in gate.py for the "auto" entry
 auto_test_path() {
-  local rel="$1" base="${1##*/}"
-  case "/$rel" in */test/*|*/tests/*|*/__tests__/*) return 0;; esac
-  if [ -z "$SDLC_TEST_SPEC_DIR" ]; then
-    case "/$rel" in */spec/*) return 0;; esac
-  else
-    case "$rel" in "$SDLC_TEST_SPEC_DIR"/*) ;; *) case "/$rel" in */spec/*) return 0;; esac;; esac
-  fi
-  case "$base" in
-    *_test.go|*.test.*|*.spec.*|test_*.py|*_test.py|*Test.java|*Tests.java|*Spec.scala|*_spec.rb) return 0;;
-  esac
+  local LC_ALL=C rel="$1"                        # bytes, not characters: a legacy-encoded file name is a name like any other
+  if [ -n "$SDLC_TEST_WORK_DIR" ]; then case "$rel" in "$SDLC_TEST_WORK_DIR"/*) return 1;; esac; fi
+  [[ "$rel" =~ $SDLC_TEST_DIR_RE ]] && return 0
+  [[ "$rel" =~ $SDLC_TEST_FILE_RE ]] && return 0
+  [[ "$rel" =~ $SDLC_TEST_SPEC_RE ]] && return 0
   return 1
 }
 
-# test_paths_load <root> → SDLC_TEST_PATH_ARR (one pattern per element) and SDLC_TEST_SPEC_DIR. A config that does not
-# set protect.test_paths means "auto" (a version-2 file only holds what differs from the defaults); an explicit [] means none.
+# test_paths_load <root> → SDLC_TEST_PATH_ARR (one pattern per element) and SDLC_TEST_WORK_DIR (paths.work without slashes,
+# like the gate's cfg.rel("work")). A config that does not set protect.test_paths means "auto" (a version-2 file only holds
+# what differs from the defaults); an explicit [] means none.
 test_paths_load() {
-  local lines pat
+  local lines pat w
   SDLC_TEST_PATH_ARR=()
   lines=$(cfg_lines "$1" .protect.test_paths)
   if [ -z "$lines" ] && [ -z "$(cfg_raw "$1" .protect.test_paths)" ]; then lines="auto"; fi
   while IFS= read -r pat; do
     pat=$(trim "$pat"); [ -n "$pat" ] && SDLC_TEST_PATH_ARR[${#SDLC_TEST_PATH_ARR[@]}]="$pat"
   done <<< "$lines"
-  SDLC_TEST_SPEC_DIR=$(cfg "$1" .paths.spec ""); SDLC_TEST_SPEC_DIR="${SDLC_TEST_SPEC_DIR%/}"
+  w=$(work_dir "$1")
+  while [ "${w#/}" != "$w" ]; do w="${w#/}"; done
+  while [ "${w%/}" != "$w" ]; do w="${w%/}"; done
+  SDLC_TEST_WORK_DIR="$w"
   return 0
 }
-# is_test_path <rel> → 0 when the path matches the loaded test paths (cheap: no external command, no here-string)
+# is_test_path <rel> → 0 when the path matches the loaded test paths (cheap: no external command, no here-string). An explicit
+# pattern is read by glob_match (lib/common.sh), the same glob rules as the gate's.
 is_test_path() {
   local i=0 n=${#SDLC_TEST_PATH_ARR[@]} pat
   while [ "$i" -lt "$n" ]; do
@@ -138,17 +149,19 @@ is_test_path() {
   done
   return 1
 }
-# test_edit_allowed <root> → 0 when one of the unlocks is set
+# test_edit_allowed <root> → 0 when one of the unlocks is set: SDLC_ALLOW_TEST_EDIT=1 in the environment, or the active work
+# doc's `test_changes: allowed`
 test_edit_allowed() {
   [ "${SDLC_ALLOW_TEST_EDIT:-}" = "1" ] && return 0
-  [ -f "$1/.sdlc/state/allow-test-edit" ] && return 0
   local doc; doc=$(active_work_file "$1")
   [ -n "$doc" ] && [ "$(frontmatter_get "$1/$doc" test_changes)" = "allowed" ] && return 0
   return 1
 }
-# test_lock_on <root> → 0 when existing test files are locked right now
+# test_lock_on <root> → 0 when existing test files are locked right now: during sdlc work (an active work doc applies, see
+# active_work_slug — a missing doc file still counts: it must not be a way out) and not unlocked
 test_lock_on() {
   [ "$(cfg_bool "$1" .protect.protect_tests true)" = "true" ] || return 1
+  [ -n "$(active_work_slug "$1")" ] || return 1
   test_edit_allowed "$1" && return 1
   return 0
 }

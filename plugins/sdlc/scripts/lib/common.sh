@@ -93,18 +93,46 @@ rel_path() {
   printf '%s' "${p#./}"
 }
 
-# glob_match <pattern> <path>  — bash pattern match; pattern ending with '/' means prefix; '**/' handled as any depth
+# glob_match <pattern> <path> → 0 when the path matches. The glob rules of every list in the config (frozen paths, generated paths,
+# test paths), the same as glob_match() in scripts/sdlclib/util.py, which the merge gate uses; tests/hooks.sh compares the two.
+# The pattern is trimmed (an empty one matches nothing), a leading ./ of the path is dropped. `dir/` is a prefix: the directory
+# itself or anything below it. Any other pattern must match the whole path: `*` is any run of characters but /, `?` one character
+# but /, `**/` any number of directories (also none), `**` anything, / included; every other character stands for itself (also
+# [ ] { }). A pattern without / also matches the file name alone. Bytes, not characters: one `?` is one byte of a multi-byte one.
+# A pattern is translated into an anchored extended regular expression, and the first 16 of a process are kept (SDLC_GLOB_KEY →
+# SDLC_GLOB_ERE): a command that names many paths asks about the same few patterns again and again.
+SDLC_GLOB_KEY=(); SDLC_GLOB_ERE=()
 glob_match() {
-  local pat="$1" p="$2"
+  local LC_ALL=C pat="$1" p="$2" re="" k=0 nk=0 i=0 len=0 c=""
+  pat="${pat#"${pat%%[![:space:]]*}"}"; pat="${pat%"${pat##*[![:space:]]}"}"
+  [ -n "$pat" ] || return 1
+  case "$p" in ./*) p="${p#./}";; esac
   case "$pat" in
-    */) case "$p" in "$pat"*|"${pat%/}") return 0;; esac; return 1 ;;
+    */) [[ "$p" == "${pat%/}" ]] && return 0; case "$p" in "$pat"*) return 0;; esac; return 1 ;;
   esac
-  # translate ** to * for bash extglob-free matching, also try basename match for patterns without '/'
-  local simple="${pat//\*\*\//}"
-  case "$p" in $pat) return 0;; $simple) return 0;; */$pat) return 0;; esac
+  nk=${#SDLC_GLOB_KEY[@]}
+  while [ "$k" -lt "$nk" ]; do [[ "${SDLC_GLOB_KEY[$k]}" == "$pat" ]] && break; k=$((k + 1)); done
+  if [ "$k" -lt "$nk" ]; then re="${SDLC_GLOB_ERE[$k]}"
+  else
+    len=${#pat}
+    while [ "$i" -lt "$len" ]; do
+      case "${pat:$i:3}" in '**/') re="$re(.*/)?"; i=$((i + 3)); continue ;; esac
+      case "${pat:$i:2}" in '**') re="$re.*"; i=$((i + 2)); continue ;; esac
+      c="${pat:$i:1}"; i=$((i + 1))
+      case "$c" in
+        '*') re="$re[^/]*" ;;
+        '?') re="$re[^/]" ;;
+        '\'|'^'|'$'|'.'|'['|'('|')'|'|'|'+'|'{') re="$re\\$c" ;;
+        ']'|'}') re="$re[$c]" ;;
+        *) re="$re$c" ;;
+      esac
+    done
+    re="^$re\$"
+    if [ "$nk" -lt 16 ]; then SDLC_GLOB_KEY[$nk]="$pat"; SDLC_GLOB_ERE[$nk]="$re"; fi
+  fi
+  [[ "$p" =~ $re ]] && return 0
   case "$pat" in */*) return 1;; esac
-  case "${p##*/}" in $pat) return 0;; esac
-  return 1
+  [[ "${p##*/}" =~ $re ]]
 }
 
 # ---------- logging (audit trail) ----------

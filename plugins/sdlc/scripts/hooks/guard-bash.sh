@@ -1,10 +1,16 @@
 #!/bin/bash
 # PreToolUse Bash — in order: (1) production deploy gate (one tier: a command matching protect.deploy_patterns needs the
-# env var protect.deploy_approval_env), (2) no direct push to the default branch, (3) existing test files stay untouched
-# while they are locked (rm, mv, cp, sed -i, redirects, git rm/checkout/restore … on an existing test file),
-# (4) secret scan of the diff on `git commit`. Uninitialized project → only (1), with the built-in patterns.
+# env var protect.deploy_approval_env), (2) no direct push to the default branch, (3) what the command writes, with the same
+# two rules as guard-edit: during sdlc work (an active work doc applies) an existing test file stays untouched while it is
+# locked — outside sdlc work no test is locked — and while the active work doc is ready or proposed (design first) nothing
+# outside the work dir and .sdlc/ is written — rm, mv, cp, sed -i, redirects, tee, git rm/checkout/restore …; (4) secret scan
+# on `git commit`: the staged diff, or — with a `git add` earlier in the command line or -a/--all — what the commit could take.
+# Uninitialized project → only (1), with the built-in patterns.
+# (3) and (4) are best effort: the hook reads the command line, it does not run it — a program that writes on its own (python -c,
+# patch, git apply, make, a package manager, curl -o …) or a path built from a variable or brace expansion is not seen.
 # Reads: protect.{deploy_patterns,deploy_approval_env,block_direct_push,default_branch,protect_tests,test_paths}, paths.work,
-#        secrets.scan_commits; a version-1 config's environments.production.{patterns,approval_env}
+#        secrets.scan_commits, .sdlc/state/active-work (lib/common.sh), SDLC_ALLOW_TEST_EDIT (environment); a version-1 config's
+#        environments.production.{patterns,approval_env}
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../lib/common.sh"
@@ -84,13 +90,17 @@ if [ "$initialized" = true ] && [ "$(cfg_bool "$root" .protect.block_direct_push
   esac
 fi
 
-# (3) existing test files (already on the default branch) stay untouched while they are locked (same rule as guard-edit:
-#     lib/hooks-extra.sh); a test this change adds is free.
+# (3) what the command writes — the same two rules as guard-edit (lib/hooks-extra.sh): during sdlc work existing test files
+#     (already on the default branch) stay untouched while they are locked, a test this change adds is free; and while the
+#     active work doc is ready or proposed, a path inside the project but outside the work dir and .sdlc/ is off limits (design
+#     first). The environment the hook runs in decides SDLC_ALLOW_TEST_EDIT, never an assignment inside the command line.
 #     A tokenizer (awk) turns the command line into records — W<word> (quotes and escapes resolved), O<path> (the target of an
 #     output redirection) and C (end of a simple command: ; & | && || newline ( ) `) — heredoc bodies and comments skipped.
-#     Each simple command is then read for what it does to an existing test file. Best effort, not a shell: no variables,
-#     no brace expansion, no `find -exec`/`xargs`, nothing that runs another program that writes (python -c, patch, git apply).
-#     A path that does not exist yet is allowed.
+#     Each simple command is then read for its write targets: redirections, tee, the destination of cp/mv/ln/install, the
+#     sources of mv, sed -i / perl -i, truncate, rm, dd of=, git rm/mv, git checkout -- <file>, git restore. Best effort, not a
+#     shell: no variables (a target with $VAR or a backtick is skipped), no brace expansion, no `find -exec`/`xargs`, nothing
+#     that runs another program that writes (python -c, patch, git apply, make, package managers, curl -o). A path outside the
+#     project is never refused; for the test lock a path that does not exist yet is allowed too.
 TL_AWK='
 BEGIN { RS = "\001"; SQ = "\047"; DQ = "\042" }
 function ws(c) { return c == " " || c == "\t" || c == "\r" }
@@ -210,7 +220,8 @@ function skipbodies(   k, d, wrapped, j) {
   }
 }
 '
-TL_BASE=""; TL_ROOT=""; TL_ROOT_PHYS=""; TL_READY=""; TL_ON=0; TL_ACTION=""; TL_REL=""; TL_GLOBS=0; TL_NEW_CHECKS=0; NORM=""; ABS=""; REL=""; OPS=()
+TL_BASE=""; TL_ROOT=""; TL_ROOT_PHYS=""; TL_READY=""; TL_ON=0; TL_ACTION=""; TL_REL=""; TL_GLOBS=0; TL_NEW_CHECKS=0; NORM=""; ABS=""; REL=""; OPS=(); OPS_DD=0
+TL_DESIGN=0; TL_NODESIGN=0; TL_WDIR=""; TL_KIND=""      # design first: on while the active work doc is ready/proposed; TL_KIND = tests|design, what refused the command
 TL_MAX_GLOB_WORDS=20; TL_MAX_GLOB_FAST=2000; TL_MAX_GLOB_SLOW=300     # bounds: a command line costs the same whatever a glob expands to
 TL_MAX_NEW_CHECKS=30                                                    # test files looked up in git per command line (one git call each)
 
@@ -273,9 +284,9 @@ tl_dir_test() {
   done <<< "$listing"
   return 1
 }
-# tl_hit_at <action> <abs> <rel> <dir-aware 0|1> → 0 (and TL_ACTION/TL_REL) when <abs>, which lies at <rel> inside the
+# tl_test_at <action> <abs> <rel> <dir-aware 0|1> → 0 (and TL_ACTION/TL_REL) when <abs>, which lies at <rel> inside the
 # project, is an existing locked test file (dir-aware: …or a directory holding one — for commands that delete or move whole trees)
-tl_hit_at() {
+tl_test_at() {
   local action="$1" abs="$2" rel="$3" dirs="$4" f
   if [ -f "$abs" ] || [ -L "$abs" ]; then
     [ -n "$TL_READY" ] || tl_prepare
@@ -296,15 +307,28 @@ tl_hit_at() {
   fi
   return 1
 }
-# tl_hit1 <action> <path word> <dir-aware 0|1> — one path word, resolved against the working directory
+# tl_hit_at <action> <abs> <rel> <dir-aware 0|1> <creates 0|1> → 0 when a command writing to <abs> (at <rel> inside the
+# project) is refused, with TL_KIND/TL_ACTION/TL_REL set: tests = an existing locked test file; design = design first, a path
+# outside the work dir and .sdlc/ while the active work doc is ready or proposed. <creates> = the command makes the path when it
+# is missing (redirection, tee, cp/mv destination, dd of=); for the rest (sed -i, rm, truncate, git checkout …) a missing path
+# changes nothing — and a word that is only a script or an option value (s/a/b/, 0) names no file, so it is not a target.
+tl_hit_at() {
+  if tl_test_at "$1" "$2" "$3" "$4"; then TL_KIND=tests; return 0; fi
+  [ "$TL_DESIGN" = 1 ] && [ "$TL_NODESIGN" = 0 ] || return 1
+  case "$2" in *'$'*|*'`'*) return 1;; esac                      # an unexpanded variable: the real target is unknown
+  [ "${5:-0}" = 1 ] || [ -e "$2" ] || [ -L "$2" ] || return 1
+  case "$3" in "$TL_WDIR"|"$TL_WDIR"/*|.sdlc|.sdlc/*) return 1;; esac
+  TL_KIND=design; TL_ACTION="$1"; TL_REL="$3"; return 0
+}
+# tl_hit1 <action> <path word> <dir-aware 0|1> [creates 0|1] — one path word, resolved against the working directory
 tl_hit1() {
   tl_abs "$2"; tl_rel "$ABS" || return 1
-  tl_hit_at "$1" "$ABS" "$REL" "$3"
+  tl_hit_at "$1" "$ABS" "$REL" "$3" "${4:-0}"
 }
-# tl_hit <action> <path word> <dir-aware 0|1> — tl_hit1 after glob expansion (pathname expansion only; the word is never
-# evaluated). Expansions are capped: a glob that matches thousands of files is not read to the end.
+# tl_hit <action> <path word> <dir-aware 0|1> [creates 0|1] — tl_hit1 after glob expansion (pathname expansion only; the word is
+# never evaluated). Expansions are capped: a glob that matches thousands of files is not read to the end.
 tl_hit() {
-  local action="$1" word="$2" dirs="$3" c exp brel max fast=0
+  local action="$1" word="$2" dirs="$3" creates="${4:-0}" c exp brel max fast=0
   [ -n "$word" ] || return 1
   case "$word" in
     *[*?[]*)
@@ -324,33 +348,38 @@ tl_hit() {
             done)
       [ -n "$exp" ] || exp="$word"
       while IFS= read -r c; do
-        if [ "$fast" = 1 ]; then tl_hit_at "$action" "$TL_BASE/$c" "$brel$c" "$dirs" && return 0
-        else tl_hit1 "$action" "$c" "$dirs" && return 0; fi
+        if [ "$fast" = 1 ]; then tl_hit_at "$action" "$TL_BASE/$c" "$brel$c" "$dirs" "$creates" && return 0
+        else tl_hit1 "$action" "$c" "$dirs" "$creates" && return 0; fi
       done <<< "$exp"
       return 1;;
   esac
-  tl_hit1 "$action" "$word" "$dirs"
+  tl_hit1 "$action" "$word" "$dirs" "$creates"
 }
-# tl_ops <start> → OPS: the non-option words from index <start> on; after -- every word is an operand
+# tl_ops <start> → OPS: the non-option words from index <start> on; after -- every word is an operand. OPS_DD = how many
+# operands came before the -- (all of them when there is none)
 tl_ops() {
   local k="$1" w endopts=0
-  OPS=()
+  OPS=(); OPS_DD=-1
   while [ "$k" -lt "${#W[@]}" ]; do
     w="${W[$k]}"; k=$((k + 1))
     if [ "$endopts" = 1 ]; then OPS[${#OPS[@]}]="$w"
-    elif [ "$w" = "--" ]; then endopts=1
+    elif [ "$w" = "--" ]; then endopts=1; OPS_DD=${#OPS[@]}
     else case "$w" in -?*) ;; *) OPS[${#OPS[@]}]="$w";; esac
     fi
   done
+  [ "$OPS_DD" -ge 0 ] || OPS_DD=${#OPS[@]}
 }
-# tl_ops_hit <action> <start> <dir-aware 0|1> → 0 when any operand is a hit
+# tl_ops_hit <action> <start> <dir-aware 0|1> [creates 0|1] [after-dashes 0|1] → 0 when any operand is a hit. With
+# after-dashes only the operands after -- count for design first (git checkout <branch> names no file, git checkout -- <file> does).
 tl_ops_hit() {
-  local i=0
+  local i=0 creates="${4:-0}" dd="${5:-0}"
   tl_ops "$2"
   while [ "$i" -lt "${#OPS[@]}" ]; do
-    if tl_hit "$1" "${OPS[$i]}" "$3"; then return 0; fi
+    if [ "$dd" = 1 ] && [ "$i" -lt "$OPS_DD" ]; then TL_NODESIGN=1; else TL_NODESIGN=0; fi
+    if tl_hit "$1" "${OPS[$i]}" "$3" "$creates"; then TL_NODESIGN=0; return 0; fi
     i=$((i + 1))
   done
+  TL_NODESIGN=0
   return 1
 }
 # tl_inplace <sed|gsed|perl> <start> → 0 when an option word asks for in-place editing (-i, -pi, -i.bak, --in-place)
@@ -396,12 +425,12 @@ tl_cpmv() {
   if [ -d "$ABS" ]; then                         # a directory receives the sources under their own names
     i=0; while [ "$i" -lt "$nops" ]; do
       src="${OPS[$i]}"; src="${src%/}"
-      tl_hit "$verb onto it" "$dest/${src##*/}" 0 && return 0
+      tl_hit "$verb onto it" "$dest/${src##*/}" 0 1 && return 0
       i=$((i + 1))
     done
     return 1
   fi
-  tl_hit "$verb onto it" "$dest" 0
+  tl_hit "$verb onto it" "$dest" 0 1
 }
 # tl_git <index after "git"> → 0 when the git command changes an existing locked test file (git rm/mv, checkout/restore of a file)
 tl_git() {
@@ -425,7 +454,7 @@ tl_git() {
       done
       # `git restore --staged <file>` only touches the index, never the file
       if [ "$sub" = restore ] && [ "$staged" = 1 ] && [ "$worktree" = 0 ]; then :
-      else tl_ops_hit "git $sub" "$k" 0 && rc=0; fi;;
+      else tl_ops_hit "git $sub" "$k" 0 0 "$([ "$sub" = checkout ] && echo 1 || echo 0)" && rc=0; fi;;
   esac
   TL_BASE="$saved"
   return "$rc"
@@ -434,7 +463,7 @@ tl_git() {
 tl_clause() {
   local depth="$1" nw=${#W[@]} k=0 r=0 w base wrap=0 i str
   while [ "$r" -lt "${#R[@]}" ]; do
-    if tl_hit "output redirection" "${R[$r]}" 0; then return 0; fi
+    if tl_hit "output redirection" "${R[$r]}" 0 1; then return 0; fi
     r=$((r + 1))
   done
   while [ "$k" -lt "$nw" ]; do                   # skip VAR=value prefixes, shell keywords and wrappers (sudo, env, time …)
@@ -454,12 +483,12 @@ tl_clause() {
   case "$base" in
     rm|unlink|shred) tl_ops_hit "delete ($base)" "$k" 1 && return 0;;
     cp|mv|ln|install) tl_cpmv "$base" "$k" && return 0;;
-    tee) tl_ops_hit "overwrite (tee)" "$k" 0 && return 0;;
+    tee) tl_ops_hit "overwrite (tee)" "$k" 0 1 && return 0;;
     truncate) tl_ops_hit "truncate" "$k" 0 && return 0;;
     sed|gsed|perl) if tl_inplace "$base" "$k"; then tl_ops_hit "in-place edit ($base -i)" "$k" 0 && return 0; fi;;
     dd) i=$k
         while [ "$i" -lt "$nw" ]; do
-          case "${W[$i]}" in of=*) tl_hit "overwrite (dd)" "${W[$i]#of=}" 0 && return 0;; esac
+          case "${W[$i]}" in of=*) tl_hit "overwrite (dd)" "${W[$i]#of=}" 0 1 && return 0;; esac
           i=$((i + 1))
         done;;
     cd) tl_ops "$k"
@@ -502,24 +531,67 @@ if [ "$initialized" = true ] && tl_interesting "$cmd"; then
   norm_path "$root"; TL_ROOT="$NORM"
   TL_ROOT_PHYS=$(cd "$root" 2>/dev/null && pwd -P); [ -n "$TL_ROOT_PHYS" ] || TL_ROOT_PHYS="$TL_ROOT"
   TL_BASE="$TL_ROOT"; if [ -n "$cwd" ] && [ -d "$cwd" ]; then norm_path "$cwd"; TL_BASE="$NORM"; fi
+  doc=$(active_work_file "$root"); dstatus=""
+  if [ -n "$doc" ]; then
+    dstatus=$(frontmatter_get "$root/$doc" status)
+    case "$dstatus" in ready|proposed) TL_DESIGN=1; TL_WDIR=$(work_dir "$root");; esac
+  fi
   if tl_scan "$cmd" 0; then
+    if [ "$TL_KIND" = design ]; then
+      log_event "$root" hook.guard deny design_first "{\"tool\":\"Bash\",\"cmd\":$(json_escape "$cmd_short"),\"path\":$(json_escape "$TL_REL"),\"action\":$(json_escape "$TL_ACTION")}"
+      block "design first — fill Plan and Proof, then set status planned. '$cmd_short' would change '$TL_REL' ($TL_ACTION) while $doc has status '$dstatus'. Why: a change is built only after its design is on record. To proceed: write Plan and Proof in $doc and set its status to planned (the work doc, everything under $TL_WDIR/ and .sdlc/ stay editable)."
+    fi
     log_event "$root" hook.guard deny test_lock_bash "{\"cmd\":$(json_escape "$cmd_short"),\"path\":$(json_escape "$TL_REL"),\"action\":$(json_escape "$TL_ACTION")}"
-    doc=$(active_work_file "$root"); doc_hint="${doc:-the work doc of this change ($(work_dir "$root")/<slug>.md)}"
-    block "'$cmd_short' would change the existing test file '$TL_REL' ($TL_ACTION). Why: existing tests (those already on the default branch) are locked — fix the code, not the test (protect.protect_tests) — and the lock covers shell commands as well as edits; test files this change adds stay free to edit. To proceed, only if the test itself is wrong or the new behavior needs it changed: that is a design decision — set 'test_changes: allowed' in $doc_hint when designing the change; a build session asks a person instead of flipping it itself. As a last resort the user runs the session with SDLC_ALLOW_TEST_EDIT=1."
+    doc_hint="$(work_dir "$root")/$(active_work_slug "$root").md"
+    block "'$cmd_short' would change the existing test file '$TL_REL' ($TL_ACTION) while $doc_hint is the active work doc. Why: existing tests (those already on the default branch) are locked — fix the code, not the test (protect.protect_tests) — and the lock covers shell commands as well as edits; test files this change adds stay free to edit. To proceed, only if the test itself is wrong or the new behavior needs it changed: that is a design decision — set 'test_changes: allowed' in $doc_hint when designing the change; a build session asks a person instead of flipping it itself. As a last resort the user runs the session with SDLC_ALLOW_TEST_EDIT=1."
   fi
 fi
 
-# (4) secrets in the changes being committed
+# (4) secrets in the changes being committed. The hook runs before the command, so what a `git add` earlier in the same command
+#     line stages is not in the index yet: with one, and with -a/--all, the scan covers what the commit could take (secret-scan.sh
+#     --all, plus --untracked for the add); a plain `git commit` scans the staged diff only. `git -C <dir> add|commit` adds the
+#     repository named there to the scan. Best effort: a pathspec commit (`git commit <file>`) and `git add -f` of an ignored
+#     file are not widened.
 if [ "$initialized" = true ] && [ "$(cfg_bool "$root" .secrets.scan_commits true)" = "true" ]; then
-  if printf '%s\n' "$cmd" | grep -E -q '(^|[^[:alnum:]_./-])git([[:space:]]+-[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
-    all=""
-    printf '%s\n' "$cmd" | grep -E -q -e '(^|[[:space:]])--all([[:space:]]|$)' -e '(^|[[:space:]])-[A-Za-z]*a[A-Za-z]*([[:space:]]|$)' && all="--all"
+  GARG='((\\.|"[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]\\"'"'"'])+)'      # one shell word: pieces that are \-escaped, "quoted", 'quoted' or plain
+  GIT_CMD='(^|[^[:alnum:]_./-])git([[:space:]]+(-[Cc][[:space:]]+'"$GARG"'|--(git-dir|work-tree|namespace)[[:space:]]+'"$GARG"'|-[^[:space:]]+))*[[:space:]]+'
+  if printf '%s\n' "$cmd" | grep -E -q -e "${GIT_CMD}commit([[:space:]]|\$)"; then
+    scope=staged; scan_flags=""
+    if printf '%s\n' "$cmd" | grep -E -q -e '(^|[[:space:]])--all([[:space:]]|$)' -e '(^|[[:space:]])-[A-Za-z]*a[A-Za-z]*([[:space:]]|$)'; then
+      scope=all; scan_flags="--all"
+    fi
+    if printf '%s' "$cmd" | tr '\n' ' ' | grep -E -q -e "${GIT_CMD}add([[:space:]]|\$).*${GIT_CMD}commit([[:space:]]|\$)"; then
+      scope=all+untracked; scan_flags="--all --untracked"
+    fi
     scan_root="$root"
     git -C "$scan_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || scan_root=$(json_get "$input" .cwd)
-    hits=""; [ -n "$scan_root" ] && hits=$(bash "$here/../secret-scan.sh" --staged "$scan_root" $all 2>/dev/null)
+    # The project's own repository is always scanned. `git -C <dir> add|commit` commits to the repository named there, so that one
+    # is scanned as well (the first two, each repository once — a scan costs about 0.2 s) — a command can mix both, and a named
+    # directory that is not a repository (built from a variable or `~`) is left to the scan of the project.
+    scan_dirs="$scan_root"; seen=$'\n'"$(git -C "$scan_root" rev-parse --show-toplevel 2>/dev/null)"$'\n'
+    c_re='(^|[^[:alnum:]_./-])git[[:space:]]+-C[[:space:]]+'"$GARG"'[[:space:]]+(commit|add)([[:space:]]|$)'
+    c_rest="$cmd"; c_n=0; c_k=0
+    while [ "$c_n" -lt 8 ] && [ "$c_k" -lt 2 ] && [[ "$c_rest" =~ $c_re ]]; do
+      c_dir="${BASH_REMATCH[2]}"; c_rest="${c_rest#*"${BASH_REMATCH[0]}"}"; c_n=$((c_n + 1))
+      c_dir="${c_dir//[\"\'\\]/}"                       # the word as the shell would pass it: quotes and escapes resolved
+      case "$c_dir" in /*) ;; *) c_cwd=$(json_get "$input" .cwd); c_dir="${c_cwd:-$root}/$c_dir";; esac
+      c_top=$(git -C "$c_dir" rev-parse --show-toplevel 2>/dev/null)
+      [ -n "$c_top" ] || continue
+      case "$seen" in *$'\n'"$c_top"$'\n'*) continue;; esac
+      seen="$seen$c_top"$'\n'; scan_dirs="$scan_dirs"$'\n'"$c_dir"; c_k=$((c_k + 1))
+    done
+    hits=""; hit_dir=""
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      hits=$(bash "$here/../secret-scan.sh" --staged "$d" $scan_flags 2>/dev/null)
+      [ -n "$hits" ] && { hit_dir="$d"; break; }
+    done <<< "$scan_dirs"
     if [ -n "$hits" ]; then
-      log_event "$root" hook.guard deny commit_secret "{\"cmd\":$(json_escape "$cmd_short"),\"hits\":$(json_escape "$(one_line "$hits")")}"
-      block "possible secret in the changes being committed ($(one_line "$hits")). Why: credentials never enter version control (secrets.scan_commits). To proceed: take the value out of the diff (git restore --staged <file>, then edit it to read from the environment or a secret manager) and commit again."
+      log_event "$root" hook.guard deny commit_secret "{\"cmd\":$(json_escape "$cmd_short"),\"scope\":\"$scope\",\"hits\":$(json_escape "$(one_line "$hits")")}"
+      scope_note=""; where=""
+      [ "$scope" = "all+untracked" ] && scope_note=" The command stages before it commits, so the scan covered everything git add could take: tracked changes and untracked files that are not ignored (git status lists them)."
+      [ "$hit_dir" = "$scan_root" ] || where=" in $hit_dir"
+      block "possible secret in the changes being committed$where ($(one_line "$hits")). Why: credentials never enter version control (secrets.scan_commits). To proceed: take the value out of the diff (git restore --staged <file>, then edit it to read from the environment or a secret manager) and commit again.$scope_note"
     fi
   fi
 fi

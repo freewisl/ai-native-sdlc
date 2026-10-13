@@ -56,7 +56,9 @@ frozen_file=$(cfg "$root" .protect.frozen_paths_file ".sdlc/frozen-paths.txt"); 
 frozen_n=0; [ -f "$frozen_file" ] && frozen_n=$(grep -Ev '^[[:space:]]*(#|$)' "$frozen_file" 2>/dev/null | wc -l | tr -d ' ')
 guards="frozen paths: $frozen_n entr$( [ "$frozen_n" = 1 ] && printf 'y' || printf 'ies')"
 if [ "$(cfg_bool "$root" .protect.protect_tests true)" = "true" ]; then
-  if test_edit_allowed "$root"; then
+  if [ -z "$slug" ]; then
+    guards="$guards · existing test files: locked during sdlc work only (no active work doc now)"
+  elif test_edit_allowed "$root"; then
     guards="$guards · existing test files: UNLOCKED for this change"
   else
     guards="$guards · existing test files locked, new ones are free (unlock: test_changes: allowed in the work doc, decided in the design)"

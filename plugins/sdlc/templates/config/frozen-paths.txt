@@ -1,5 +1,6 @@
 # Paths Claude must not edit. One entry per line, relative to the repository root.
-# A trailing slash protects a directory; glob patterns (*, **) are supported.
+# A trailing slash protects a directory. In a glob, * and ? stay inside one directory and ** crosses directories;
+# a pattern with a / starts at the repository root, one without a / matches the file name at any depth.
 # Examples:
 # src/gen/
 # **/generated/**
