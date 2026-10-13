@@ -196,6 +196,22 @@ The status view shows:
 - **Agent:** diagnoser.
 - The plugin-level trigger evals are rewritten in the current `prompt.md` + `graders/` format.
 
+## Known limitations (P7, not fixed)
+
+These were found in the live trial and the D1 work. None of them blocks the loop.
+- **No progress needs a baseline.** The check compares a stop with the previous stop, so the first window has nothing to compare with. With a very small turn cap, a window that only reads is normal. Two such windows in a row fail the phase. The default caps make this unlikely.
+- **`events.jsonl` does not mark a continued window.** A window that hit its cap is logged as `max_turns`, whether the engine continued it or not. The run log says which.
+- **`num_turns` is not the cap unit.** claude reports N + 1 turns for a window capped at N.
+- **Session logs are not pure JSONL.** claude may print a plain-text warning first: `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. In an untrusted workspace, loop sessions do not get the project's allow list. The engine's `--allowedTools` covers what they need.
+- **A refused start replaces "last stop".** When `run` refuses to start (on a dirty tree, for example), `status` shows the refusal as the last stop.
+- **The deploy gate does not see:**
+  - a command made from a text tool's output (`$(echo …)`, or an unquoted `VAR=$(…)` in front of git)
+  - a deploy split across two commands (`cd prod && make deploy`)
+  - abbreviated long options and bundled short options of git (`--upl`, `-qu cmd`)
+  - an alias, pager or hook already set in the repository's `.git/config`
+
+  The gate is a guard against accidental deploys, not a sandbox.
+
 ## Phases / progress
 
 Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `tests/py/stubs`), run on Python 3.9 and 3.12.
@@ -206,5 +222,18 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
 - [x] P4 hooks adapted (work doc, test lock add-only + bash bypass, one deploy tier) + bash hook tests updated
 - [x] P5 templates (work.md, CLAUDE.sections, REVIEW.md, config v2), delete old templates and scripts
 - [x] P6 README (ko), CHANGELOG 1.0.0, marketplace/plugin manifests, docs images
-- [ ] P7 full test run + `claude plugin validate --strict`; end-to-end trial on a scratch repo without a remote (real claude, a small app); fix what it finds
+- [x] P7 full test run + `claude plugin validate --strict`; end-to-end trial on a scratch repo without a remote (real claude, a small app); fix what it finds
+  - The trial (2026-10-13, claude 2.1.296, $4.00) found ten problems; all are fixed.
+  - A re-run ($2.00) confirmed four of the fixes:
+    - the skeleton item merged unattended, and its gate ran the commands it filled in
+    - a stop resumed the same session and counted no failure
+    - bytecode left by a build did not block a resume
+    - a turn cap of 3 continued the same session through design and build to a merge
+  - The deploy gate now matches each simple command (D1).
+  - `tests/run.sh` passes:
+    - hooks 1816
+    - scripts 91
+    - engine 475 tests on Python 3.12 and 3.9
+    - `plugin validate --strict` and the marketplace
+  - The limitations still open are listed under Known limitations.
 - [ ] P8 hand-off to the user: migration notes per repo (pilot, solar-next, …), merge to main, push and update only on the user's go-ahead
