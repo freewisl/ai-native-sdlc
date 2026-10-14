@@ -3,7 +3,7 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
-## [1.0.0] - 2026-10-13
+## [1.0.0] - 2026-10-14
 
 A redesign, not an increment. 0.x was too complicated to use ("사용법이 너무 복잡해"): 19 skills became 4, the intent, spec and plan files became one work doc, the merge gate moved from the session's own report to the shell, and the loop engine was rewritten in Python.
 Run `/sdlc:init` once in each repository that used 0.x (see Migration).
