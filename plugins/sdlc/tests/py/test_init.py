@@ -83,6 +83,13 @@ class InitRepo:
             raise AssertionError("git %s failed: %s" % (" ".join(args), r.stderr))
         return r.stdout.strip()
 
+    def git_in(self, cwd, *args):
+        """git in another working copy — a second clone of this repository's origin."""
+        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, env=self.env())
+        if r.returncode != 0:
+            raise AssertionError("git %s failed in %s: %s" % (" ".join(args), cwd, r.stderr))
+        return r.stdout.strip()
+
     def commit(self, message="work"):
         self.git("add", "-A")
         self.git("commit", "-q", "--allow-empty", "-m", message)
@@ -410,10 +417,10 @@ class ExistingClaudeMd(Case):
         self.assertIn("- Test: npm run test (all green", self.repo.read("CLAUDE.md"))
 
     def test_the_0x_lines_naming_removed_commands_are_replaced_in_both_languages(self):
-        self.assertEqual(len(I.OLD_LINES), 4)
+        self.assertEqual(len(I.OLD_LINES), 6)
         self.assertEqual(sum(1 for k in I.OLD_LINES if "/sdlc:lesson" in k), 2)
         for old, new in I.OLD_LINES.items():
-            self.assertTrue(I.REMOVED_COMMANDS.search(old), old)
+            self.assertTrue(I.REMOVED_COMMANDS.search(old) or "plan.md" in old, old)   # the 0.4.1–0.5.1 lines name plan.md, not a command
             self.assertFalse(I.REMOVED_COMMANDS.search(new), new)         # the new wording names no removed command
         keep = ["# Orders API", "", "## Commands", "- Test: npm test", "", "## Things Claude gets wrong", "- Never edit src/gen."]
         old = list(I.OLD_LINES)
@@ -433,6 +440,27 @@ class ExistingClaudeMd(Case):
         self.assertEqual(verb, "MERGED")
         self.assertIn("4 line(s) naming removed commands updated", note)
         self.assertNotIn("still mentions", note)                      # nothing left that names a removed command
+
+    def test_the_lines_0_4_1_to_0_5_1_wrote_are_replaced_in_both_languages_too(self):
+        en = "Nothing is implemented without an approved plan: start in plan mode, commit plan.md, then build."
+        ko = "승인된 계획 없이는 아무것도 구현하지 않는다. 플랜 모드로 시작해 plan.md 를 커밋한 뒤 구현한다."
+        for old, current in ((en, "Every change starts from a committed plan.md (`/sdlc:go` writes and commits it; `/sdlc:plan` for "
+                                  "the step-by-step path)."),
+                             (ko, "모든 변경은 커밋된 plan.md 에서 시작한다(`/sdlc:go` 가 작성·커밋하고, 단계별로는 `/sdlc:plan`).")):
+            self.assertEqual(I.OLD_LINES[old], I.OLD_LINES[current])        # the same 1.0 line as the 0.5.2 wording gets
+        self.repo.write("CLAUDE.md", "# Orders\n\n## Commands\n- Test: npm test\n\n## Verifying your work\nRun the tests.\n%s\n\n"
+                                     "## 검증\n%s\n\n## Notes\nKeep PRs small.\n" % (en, ko))
+        res = self.repo.init()
+        text = self.repo.read("CLAUDE.md")
+        self.assertNotIn(en, text)
+        self.assertNotIn(ko, text)
+        self.assertIn("Every change has a work doc (`work/<slug>.md`: goal, acceptance criteria, plan, proof); `/sdlc:go` writes it.\n", text)
+        self.assertIn("모든 변경에는 작업 문서(`work/<slug>.md`: 목표·인수 조건·계획·증명)가 있다. `/sdlc:go` 가 작성한다.\n", text)
+        self.assertIn("Keep PRs small.", text)
+        verb, note = rows(res)["CLAUDE.md"]
+        self.assertEqual(verb, "MERGED")
+        self.assertIn("2 line(s) naming removed commands updated", note)
+        self.assertNotIn("still mentions", note)
 
     def test_a_mention_of_a_removed_command_is_reported_and_left_alone(self):
         text = "# Shop\n\n## Notes\nUse /sdlc:plan before big changes, and /sdlc:review after. /sdlc:go is fine.\n"
@@ -1069,7 +1097,7 @@ def make_v1_repo(repo, config=None):
     w(".sdlc/APPROVALS.md", "# Approvals\n")
     w(".sdlc/history/.gitkeep", "")
     w(".sdlc/examples/CLAUDE.md", "playbook code block\n")
-    w(".sdlc/LESSONS.md", "# Lessons\n- never edit src/gen\n")
+    w(".sdlc/LESSONS.md", "# Lessons\n\n## 2026-09-02 — never edit src/gen\n- Fix: the build overwrites generated code.\n")
     w(".sdlc/frozen-paths.txt", "src/gen/\n")
     w(".github/workflows/sdlc-review.yml", "# sdlc — PR review\nname: sdlc-review\non: pull_request\n")
     w(".github/workflows/ci.yml", "name: CI\non: push\n")
@@ -1095,6 +1123,66 @@ KEPT_BY_PRUNE = ("intent/a-ready.md", "intent/b-planned.md", "intent/c-done.md",
                  ".sdlc/config.json", ".sdlc/config.v1.json", ".sdlc/frozen-paths.txt", "CLAUDE.md", "REVIEW.md")
 
 
+# the headings the 0.x Korean templates gave the sections init reads: both languages in one title
+KO_HEADINGS = (("## Problem\n", "## 문제 (Problem)\n"), ("## Proposed outcome\n", "## 제안하는 결과 (Proposed outcome)\n"),
+               ("## Requirements\n", "## 요구사항 (Requirements)\n"), ("## Proof\n", "## 증명 (Proof)\n"))
+# the 0.x LESSONS.md as its templates wrote it: the entry format is shown inside an HTML comment, no entry below it
+LESSONS_TEMPLATE = {
+    "en": "# Lessons\n\nVersion-controlled post-mortem lessons. Future investigations read this file first.\n"
+          "Each entry is written by the team that owned the incident and links to the eval that now guards against it.\n\n"
+          "<!-- Entry format:\n## YYYY-MM-DD — <short title>\n- Trigger: what fired\n- Impact:\n- Root cause:\n- Fix: PR link or commit\n"
+          "- Guard: evals/cases/<name> · CLAUDE.md line added (yes/no)\n- Owner:\n-->\n",
+    "ko": "# Lessons (교훈)\n\n버전 관리되는 포스트모템 교훈 모음입니다. 앞으로의 조사는 이 파일을 먼저 읽습니다.\n"
+          "각 항목은 인시던트를 담당한 팀이 작성하며, 이제 그 재발을 막고 있는 eval 을 링크합니다.\n\n"
+          "<!-- 항목 형식:\n## YYYY-MM-DD — <짧은 제목>\n- 트리거(Trigger): 무엇이 발동했나\n- 영향(Impact):\n- 근본 원인(Root cause):\n"
+          "- 수정(Fix): PR 링크 또는 커밋\n- 방어(Guard): evals/cases/<name> · CLAUDE.md 한 줄 추가 여부 (yes/no)\n- 담당(Owner):\n-->\n"}
+# the first lines of the 0.x evals README; the English one starts with a marker comment, the Korean one does not
+KO_EVALS_README = "\n# evals/ — 에이전트 설정의 회귀 테스트\n\nCLAUDE.md·스킬·훅이 에이전트를 조종하므로, 코드가 받는 회귀 테스트를 이 설정도 똑같이 받습니다.\n"
+EN_EVALS_README = "# evals/ — regression tests for the agent's configuration\n\nCLAUDE.md, skills and hooks steer the agent.\n"
+CLOSING_NOTE = "the front matter has no closing `---` — read it up to the first other line, as 0.x did"
+
+
+def korean(text):
+    """A 0.x file as the Korean templates wrote it: `## 문제 (Problem)`, not `## Problem`."""
+    for en, ko in KO_HEADINGS:
+        text = text.replace(en, ko)
+    return text
+
+
+def unclosed(text):
+    """The same 0.x file with the closing `---` of its front matter missing: the keys, then straight into the heading."""
+    lines = text.split("\n")
+    i = next(k for k, l in enumerate(lines) if k > 0 and l == "---")
+    return "\n".join(lines[:i] + lines[i + 1:])
+
+
+def with_origin(repo):
+    """A bare repository as `origin`, with the checkout's main pushed to it; its path."""
+    bare = os.path.join(repo.tmp, "origin.git")
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True, env=repo.env())
+    repo.git("remote", "add", "origin", bare)
+    repo.git("push", "-q", "-u", "origin", "main")
+    return bare
+
+
+def push_elsewhere(repo, bare, branch="main", commits=1):
+    """`commits` more commits on the origin's `branch`, pushed from a second clone: this checkout's own refs/remotes/origin/
+    stay where they were until something fetches."""
+    other = os.path.join(repo.tmp, "elsewhere")
+    if not os.path.isdir(other):
+        repo.git_in(repo.tmp, "clone", "-q", bare, other)
+    if branch not in repo.git_in(other, "branch", "--list", branch):
+        repo.git_in(other, "checkout", "-q", "-b", branch, "origin/main")
+    else:
+        repo.git_in(other, "checkout", "-q", branch)
+    for _ in range(commits):
+        with open(os.path.join(other, "merged-%s-%d.txt" % (branch, len(os.listdir(other)))), "w", encoding="utf-8") as fh:   # a new name each time
+            fh.write("a person merged this\n")
+        repo.git_in(other, "add", "-A")
+        repo.git_in(other, "commit", "-q", "-m", "merged since")
+    repo.git_in(other, "push", "-q", "origin", branch)
+
+
 class Migration(Case):
     def setUp(self):
         super().setUp()
@@ -1118,8 +1206,8 @@ class Migration(Case):
         self.assertEqual(cfg["protect"]["deploy_approval_env"], "OK_PROD")
         for gone in ("roles", "ci", "environments", "monitor", "policies", "evals", "gate", "plan"):
             self.assertNotIn(gone, cfg)
-        self.assertEqual(cfg["loop"], {"max_turns": 500, "max_failures_per_slug": 3, "self_check": True, "fix_rounds": 2,
-                                       "pause_file": ".sdlc/state/pause", "item_note": "", "session_max_minutes": 120})
+        self.assertEqual(cfg["loop"], {"max_failures_per_slug": 3, "self_check": True, "fix_rounds": 2,
+                                       "pause_file": ".sdlc/state/pause", "item_note": ""})   # 500 turns / 120 min are 1.0's own defaults
         self.assertEqual(rows(self.res)[".sdlc/config.json"][0], "MIGRATED")
         self.assertIn("version 1 → 2, mode solo", rows(self.res)[".sdlc/config.json"][1])
 
@@ -1344,7 +1432,7 @@ class MigrationDetails(Case):
         self.repo.write("docs/specs/x-one.md", spec("x-one", "One", "- R1. WHEN a THE SYSTEM SHALL b."))
         self.repo.write("docs/intents/TEMPLATE.md", TEMPLATE_MD % ("intent", "Intent"))
         self.repo.write("docs/plans/TEMPLATE.md", TEMPLATE_MD % ("plan", "Plan"))
-        self.repo.write("docs/LESSONS.md", "- a lesson\n")
+        self.repo.write("docs/LESSONS.md", "## 2026-09-02 — a lesson\n")
         self.repo.write("sdlc-evals/README.md", "<!-- sdlc:evals -->\n")
         self.repo.write("sdlc-evals/cases/respect-frozen-path/case.json", "{}\n")
         self.repo.write("evals/README.md", "someone else's evals\n")
@@ -1399,6 +1487,479 @@ class MigrationDetails(Case):
         self.assertEqual(d.section("Goal"), "See `intent/f-bare.md`.")
         self.assertEqual(d.section("Acceptance criteria"), "")
         self.assertEqual(d.meta["created"][:4], "2026" if d.meta["created"].startswith("2026") else d.meta["created"][:4])
+
+
+class MigrationOldFiles(Case):
+    """The 0.x files as real repositories had them, which is not always what the templates meant."""
+
+    def setUp(self):
+        super().setUp()
+        make_v1_repo(self.repo)
+
+    def doc(self, slug):
+        return WorkDoc.parse(self.repo.read("work/%s.md" % slug))
+
+    def test_a_section_matches_by_its_name_or_by_a_title_that_ends_in_the_name_in_parentheses(self):
+        doc = WorkDoc.parse("---\n---\n## 문제 (Problem)\nA\n\n## Proposed Outcome\nB\n\n## 증명 (proof)\nC\n\n"
+                            "## Proof of concept\nD\n\n## Requirements (draft)\nE\n")
+        self.assertEqual(I.old_section(doc, "Problem"), "A")
+        self.assertEqual(I.old_section(doc, "Proposed outcome"), "B")            # whatever the case
+        self.assertEqual(I.old_section(doc, "Proof"), "C")
+        self.assertEqual(I.old_section(doc, "Requirements"), "")                 # `Requirements (draft)` is another title
+        self.assertEqual(I.old_section(doc, "Goal"), "")
+        self.assertEqual(doc.section("Problem"), "")                             # WorkDoc.section itself still takes the whole title
+
+    def test_the_korean_templates_headings_carry_both_languages_and_still_fill_goal_acceptance_and_proof(self):
+        self.repo.write("intent/k-ko.md", korean(intent("k-ko", "approved", "한국어 항목", "고객이 상태를 볼 수 없다.",
+                                                         "고객이 상태 페이지를 본다.")))
+        self.repo.write("spec/k-ko.md", korean(spec("k-ko", "한국어 항목", "- R1. WHEN 페이지를 열면 THE SYSTEM SHALL 상태를 보여준다.")))
+        self.repo.write("plan/k-ko.md", korean(plan("k-ko", "한국어 항목", "approved", proof="test_status.py 가 증명한다.")))
+        self.repo.commit("a Korean 0.x item")
+        res = self.repo.init()
+        d = self.doc("k-ko")
+        self.assertEqual((d.status, d.title), ("planned", "한국어 항목"))
+        self.assertEqual(d.section("Goal"), "고객이 상태를 볼 수 없다.\n\n고객이 상태 페이지를 본다.")
+        self.assertEqual(d.section("Acceptance criteria"), "- R1. WHEN 페이지를 열면 THE SYSTEM SHALL 상태를 보여준다.")
+        self.assertEqual(d.section("Proof"), "test_status.py 가 증명한다.")
+        self.assertNotIn("See `intent/k-ko.md`", self.repo.read("work/k-ko.md"))     # the pointer line is the fallback only
+        english = self.doc("b-planned")                                                  # the plain English headings still work
+        self.assertEqual((english.section("Goal"), english.section("Proof")),
+                         ("Nobody can export.\n\nAn export button.", "test_export.py covers the CSV download."))
+        self.assertIn("k-ko", res["migrated"])
+
+    def test_a_plan_whose_front_matter_never_closes_still_says_implemented_and_the_item_is_not_migrated(self):
+        self.repo.write("intent/g-unclosed.md", intent("g-unclosed", "approved", "G", "p", "o"))
+        self.repo.write("plan/g-unclosed.md", unclosed(plan("g-unclosed", "G", "implemented")))
+        self.repo.commit("a plan whose front matter was never closed")
+        res = self.repo.init()
+        self.assertNotIn("g-unclosed", res["migrated"])                            # 0.x grep saw `status: implemented`: merged
+        self.assertFalse(self.repo.exists("work/g-unclosed.md"))
+        self.assertIn("plan/g-unclosed.md: " + CLOSING_NOTE, res["notes"])
+        self.assertEqual(sum(1 for n in res["notes"] if "no closing" in n), 1)     # the one file, named once
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+
+    def test_an_unclosed_approved_plan_keeps_its_proof_and_a_dependency_on_a_finished_unclosed_one_is_dropped(self):
+        self.repo.write("intent/g-unclosed.md", intent("g-unclosed", "approved", "G", "p", "o"))
+        self.repo.write("plan/g-unclosed.md", unclosed(plan("g-unclosed", "G", "implemented")))
+        self.repo.write("intent/h-needs-g.md", intent("h-needs-g", "approved", "H", "p", "o", depends_on=["g-unclosed"]))
+        self.repo.write("plan/h-needs-g.md", unclosed(plan("h-needs-g", "H", "approved", test_changes="allowed",
+                                                            proof="test_h.py covers it.")))
+        self.repo.commit("0.x")
+        res = self.repo.init()
+        d = self.doc("h-needs-g")
+        self.assertEqual((d.status, d.depends_on, d.meta["test_changes"]), ("planned", [], "allowed"))
+        self.assertEqual(d.section("Proof"), "test_h.py covers it.")
+        self.assertIn("plan/h-needs-g.md: " + CLOSING_NOTE, res["notes"])
+        self.assertIn("plan/g-unclosed.md: " + CLOSING_NOTE, res["notes"])
+
+    def test_an_intent_and_a_spec_with_unclosed_front_matter_are_read_too(self):
+        self.repo.write("intent/i-open.md", unclosed(intent("i-open", "approved", "I", "The problem.", "The outcome.")))
+        self.repo.write("spec/i-open.md", unclosed(spec("i-open", "I", "- R1. WHEN a THE SYSTEM SHALL b.")))
+        self.repo.commit("0.x")
+        res = self.repo.init()
+        d = self.doc("i-open")
+        self.assertEqual((d.status, d.title), ("ready", "I"))
+        self.assertEqual(d.section("Goal"), "The problem.\n\nThe outcome.")
+        self.assertEqual(d.section("Acceptance criteria"), "- R1. WHEN a THE SYSTEM SHALL b.")
+        self.assertIn("intent/i-open.md: " + CLOSING_NOTE, res["notes"])
+        self.assertIn("spec/i-open.md: " + CLOSING_NOTE, res["notes"])
+
+    def test_an_unclosed_plan_on_the_0x_branch_is_read_there_too(self):
+        self.repo.write("intent/j-branch.md", intent("j-branch", "approved", "J", "p", "o"))
+        self.repo.commit("intent")
+        self.repo.git("checkout", "-q", "-b", "sdlc/j-branch")
+        self.repo.write("plan/j-branch.md", unclosed(plan("j-branch", "J", "approved", proof="test_j.py covers it.")))
+        self.repo.commit("plan on the item branch")
+        self.repo.git("checkout", "-q", "main")
+        self.assertFalse(self.repo.exists("plan/j-branch.md"))
+        res = self.repo.init()
+        d = self.doc("j-branch")
+        self.assertEqual((d.status, d.section("Proof")), ("planned", "test_j.py covers it."))
+        self.assertIn("`plan/j-branch.md` on branch `sdlc/j-branch`", d.section("Plan"))
+        self.assertIn("plan/j-branch.md: " + CLOSING_NOTE, res["notes"])
+
+    def test_front_matter_that_closes_or_is_no_front_matter_at_all_gets_no_closing_note(self):
+        self.repo.write("intent/k-rule.md", "---\n\n# Just notes under a horizontal rule\n")       # `---`, then no key line
+        self.repo.write("intent/l-plain.md", "# No front matter\n\n## Problem\nx\n")
+        self.repo.commit("0.x")
+        res = self.repo.init()
+        self.assertEqual([n for n in res["notes"] if "no closing" in n], [])
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+
+    def test_old_frontmatter_reads_up_to_the_first_line_that_is_not_a_key(self):
+        notes = []
+        meta, body = I.old_frontmatter("---\nslug: x\nstatus: implemented\nspec_commit: b0b42c1\n# Title\nstatus: later\n\ntext\n",
+                                       "plan/x.md", notes)
+        self.assertEqual(meta, {"slug": "x", "status": "implemented", "spec_commit": "b0b42c1"})
+        self.assertEqual(body, "# Title\nstatus: later\n\ntext\n")                          # nothing past the heading is a key
+        self.assertEqual(notes, ["plan/x.md: " + CLOSING_NOTE])
+        self.assertEqual(I.old_frontmatter("---\nslug: x\n---\n# T\n", "plan/x.md", notes), ({"slug": "x"}, "# T\n"))
+        self.assertEqual(I.old_frontmatter("# T\n---\nstatus: x\n", "plan/x.md", notes), ({}, "# T\n---\nstatus: x\n"))
+        self.assertEqual(len(notes), 1)
+
+
+class MigrationBehindRemote(Case):
+    """init reads the 0.x files of this checkout: one that is behind origin would bring back what was merged since."""
+    BEHIND = "this checkout is %d commit(s) behind origin/%s — 0.x items merged since then would come back as work; " \
+             "update it (git pull --ff-only) and run init again"
+
+    def setUp(self):
+        super().setUp()
+        make_v1_repo(self.repo)
+        self.bare = with_origin(self.repo)
+
+    def test_a_checkout_behind_the_remote_is_refused_before_anything_is_written(self):
+        push_elsewhere(self.repo, self.bare)
+        stale = self.repo.git("rev-parse", "refs/remotes/origin/main")
+        before = self.repo.snapshot()
+        r = self.repo.run()
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(r.stderr.strip(), self.BEHIND % (1, "main") + "; nothing was changed")
+        self.assertEqual(self.repo.snapshot(), before)                                   # no config, no work doc, no backup
+        self.assertEqual(self.repo.git("status", "--porcelain"), "")
+        self.assertNotEqual(self.repo.git("rev-parse", "refs/remotes/origin/main"), stale)   # it asked the remote first
+        j = self.repo.run("--json")
+        self.assertEqual((j.returncode, j.stdout), (2, ""))
+
+    def test_after_pulling_the_default_branch_init_goes_through(self):
+        push_elsewhere(self.repo, self.bare, commits=2)
+        r = self.repo.run()
+        self.assertEqual((r.returncode, r.stderr.strip()), (2, self.BEHIND % (2, "main") + "; nothing was changed"))
+        self.repo.git("pull", "-q", "--ff-only")
+        res = self.repo.init()
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+        self.assertFalse([n for n in res["notes"] if "behind" in n])
+        self.assertEqual(self.repo.config()["version"], 2)
+
+    def test_a_dry_run_does_not_fetch_and_gives_the_count_as_its_first_note(self):
+        push_elsewhere(self.repo, self.bare)
+        stale = self.repo.git("rev-parse", "refs/remotes/origin/main")
+        res = self.repo.init("--dry-run")
+        self.assertEqual(self.repo.git("rev-parse", "refs/remotes/origin/main"), stale)  # no fetch: the refs as they are
+        self.assertFalse([n for n in res["notes"] if "behind" in n])                      # …say this checkout is level
+        self.repo.git("fetch", "-q", "origin")
+        before = self.repo.snapshot()
+        res = self.repo.init("--dry-run")
+        self.assertEqual(res["notes"][0], self.BEHIND % (1, "main"))                      # a note, not an error, and no "nothing was changed"
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])    # the dry run still shows what it would do
+        self.assertEqual(self.repo.snapshot(), before)
+        text = self.repo.run("--dry-run")
+        self.assertEqual(text.returncode, 0, text.stderr)
+        self.assertRegex(text.stdout, r"(?m)^NOTE +this checkout is 1 commit\(s\) behind origin/main — ")
+
+    def test_level_with_the_remote_or_ahead_of_it_is_fine(self):
+        self.repo.write("local.txt", "not pushed yet\n")
+        self.repo.commit("a local commit")
+        self.assertEqual(self.repo.git("rev-list", "--count", "origin/main..HEAD"), "1")
+        res = self.repo.init()
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+        self.assertFalse([n for n in res["notes"] if "behind" in n])
+
+    def test_a_detached_head_equal_to_the_remote_branch_is_fine(self):
+        self.repo.git("checkout", "-q", "--detach", "origin/main")
+        res = self.repo.init()
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+
+    def test_a_feature_branch_that_has_fallen_behind_is_refused_too(self):
+        push_elsewhere(self.repo, self.bare)
+        self.repo.git("checkout", "-q", "-b", "feature")
+        self.repo.write("feature.txt", "work\n")
+        self.repo.commit("feature work")
+        r = self.repo.run()                                                               # ahead of its start, and behind origin/main
+        self.assertEqual((r.returncode, r.stderr.strip()), (2, self.BEHIND % (1, "main") + "; nothing was changed"))
+
+    def test_the_branch_in_the_0x_config_is_the_one_compared(self):
+        push_elsewhere(self.repo, self.bare, branch="develop")
+        self.repo.git("fetch", "-q", "origin")                                            # origin/develop is ahead; origin/main is level
+        self.assertFalse([n for n in self.repo.init("--dry-run")["notes"] if "behind" in n])   # the config says main
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["protect"]["default_branch"] = "develop"
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        r = self.repo.run()
+        self.assertEqual((r.returncode, r.stderr.strip()), (2, self.BEHIND % (1, "develop") + "; nothing was changed"))
+
+    def test_without_a_branch_in_the_config_the_detected_default_branch_is_used(self):
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        del cfg["protect"]["default_branch"]
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        push_elsewhere(self.repo, self.bare)
+        r = self.repo.run()
+        self.assertEqual((r.returncode, r.stderr.strip()), (2, self.BEHIND % (1, "main") + "; nothing was changed"))
+
+    def test_no_remote_branch_to_compare_with_means_no_check_and_no_fetch(self):
+        push_elsewhere(self.repo, self.bare)
+        self.repo.git("update-ref", "-d", "refs/remotes/origin/main")                     # never fetched: nothing to compare with
+        res = self.repo.init()
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+        self.assertFalse(self.repo.git("for-each-ref", "refs/remotes/origin/main"))       # …and init did not go and fetch it
+
+    def test_a_remote_that_cannot_be_reached_is_ignored_and_the_refs_as_they_are_decide(self):
+        self.repo.git("remote", "set-url", "origin", os.path.join(self.repo.tmp, "no-such-origin.git"))
+        res = self.repo.init()                                                             # level with the last fetch: goes through
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+
+    def test_a_version_2_repository_is_not_checked(self):
+        push_elsewhere(self.repo, self.bare)
+        self.repo.write(".sdlc/config.json", json.dumps({"version": 2, "mode": "solo"}))
+        stale = self.repo.git("rev-parse", "refs/remotes/origin/main")
+        r = self.repo.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.repo.git("rev-parse", "refs/remotes/origin/main"), stale)   # not a migration: it does not fetch either
+
+
+class MigrationConfigNotes(Case):
+    """What `migrate_v1` says, as init prints it."""
+
+    def migrate(self, loop=None, **top):
+        cfg = json.loads(json.dumps(V1_CONFIG))
+        cfg["loop"].update(loop or {})
+        cfg.update(top)
+        make_v1_repo(self.repo, cfg)
+        return self.repo.init()
+
+    def test_the_caps_0x_shipped_as_defaults_are_not_carried_and_a_note_says_so(self):
+        res = self.migrate({"max_turns": 200, "item_max_minutes": 45})
+        loop = self.repo.config()["loop"]
+        self.assertNotIn("max_turns", loop)
+        self.assertNotIn("session_max_minutes", loop)
+        self.assertIn("loop.max_turns 200, loop.item_max_minutes 45 were 0.x defaults — 1.0's defaults apply "
+                      "(500 turns, 120 min per session)", res["notes"])
+        cfg = Config(self.repo.root)
+        self.assertEqual((cfg.get("loop.max_turns"), cfg.get("loop.session_max_minutes")), (500, 120))   # what the engine runs with
+
+    def test_the_other_0x_default_for_turns_is_not_carried_either(self):
+        res = self.migrate({"max_turns": 120, "item_max_minutes": 90})
+        loop = self.repo.config()["loop"]
+        self.assertEqual((loop.get("max_turns"), loop["session_max_minutes"]), (None, 90))
+        self.assertIn("loop.max_turns 120 was a 0.x default — 1.0's defaults apply (500 turns, 120 min per session)", res["notes"])
+
+    def test_a_cap_somebody_chose_is_carried_and_one_equal_to_1_0s_default_needs_no_line(self):
+        res = self.migrate({"max_turns": 300, "item_max_minutes": 90})
+        loop = self.repo.config()["loop"]
+        self.assertEqual((loop["max_turns"], loop["session_max_minutes"]), (300, 90))
+        self.assertFalse([n for n in res["notes"] if "0.x default" in n])
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        cfg = json.loads(json.dumps(V1_CONFIG))
+        cfg["loop"].update({"max_turns": 500, "item_max_minutes": 120})
+        make_v1_repo(other, cfg)
+        again = other.init()
+        self.assertFalse({"max_turns", "session_max_minutes"} & set(other.config()["loop"]))
+        self.assertFalse([n for n in again["notes"] if "0.x default" in n])
+
+    def test_policies_that_are_dropped_are_named_with_what_that_means(self):
+        res = self.migrate(policies=["secure-api-review", "brand-voice"])
+        want = ("policies dropped (secure-api-review, brand-voice): their skills in .claude/skills/ stay and still trigger on "
+                "their own, but nothing applies them at review any more — name the ones the reviewer must apply in REVIEW.md")
+        self.assertIn(want, res["notes"])
+        self.assertTrue(any(n.startswith("dropped (not used by 1.0):") and "policies" in n for n in res["notes"]))   # still in the generic list
+        self.assertNotIn("policies", self.repo.config())
+
+    def test_an_empty_policies_list_gets_no_note_of_its_own(self):
+        res = self.migrate(policies=[])
+        self.assertFalse([n for n in res["notes"] if n.startswith("policies dropped")])
+        self.assertTrue(any(n.startswith("dropped (not used by 1.0):") and "policies" in n for n in res["notes"]))
+
+    def test_solo_with_autopilot_off_is_told_that_the_loop_and_go_merge_what_passes(self):
+        res = self.migrate(roles={"solo": True, "autopilot": False, "auto_merge": True})
+        want = ("roles.autopilot=false: in 1.0 solo mode /sdlc:run and /sdlc:go merge what passes the gate — use mode team to "
+                "have a person merge")
+        self.assertIn(want, res["notes"])
+        self.assertEqual(self.repo.config()["mode"], "solo")
+
+    def test_one_note_names_both_keys_when_both_are_false_and_none_when_a_person_merges_anyway(self):
+        res = self.migrate(roles={"solo": True, "autopilot": False, "auto_merge": False})
+        merges = [n for n in res["notes"] if "in 1.0 solo mode" in n]
+        self.assertEqual(len(merges), 1)
+        self.assertTrue(merges[0].startswith("roles.autopilot=false, roles.auto_merge=false: "), merges[0])
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        make_v1_repo(other, dict(V1_CONFIG, roles={"solo": True, "autopilot": True, "auto_merge": False}))
+        self.assertTrue(any(n.startswith("roles.auto_merge=false: in 1.0 solo mode") for n in other.init()["notes"]))
+        third = InitRepo()
+        self.addCleanup(third.cleanup)
+        make_v1_repo(third, dict(V1_CONFIG, roles={"solo": False, "autopilot": False, "auto_merge": False}))
+        self.assertFalse([n for n in third.init()["notes"] if "in 1.0 solo mode" in n])           # team: a person merges already
+
+    def test_a_pause_file_from_0x_is_noted_and_left_alone(self):
+        make_v1_repo(self.repo)
+        self.repo.write(".sdlc/state/pause", "2026-10-01T00:00:00Z\n")
+        res = self.repo.init()
+        want = ".sdlc/state/pause exists — the loop will not start while it is there; delete it, or run `sdlc.py resume` " \
+               "(which also starts the loop)"
+        self.assertIn(want, res["notes"])
+        self.assertTrue(self.repo.exists(".sdlc/state/pause"))
+        self.assertFalse([n for n in self.repo.init()["notes"] if "pause" in n])                   # a migration note: not repeated
+
+    def test_the_pause_file_the_0x_config_named_is_the_one_noted(self):
+        res = self.migrate({"pause_file": ".sdlc/halt"})
+        self.assertFalse([n for n in res["notes"] if "pause" in n or "halt" in n])                 # nothing there: no note
+        self.repo.write(".sdlc/halt", "x\n")
+        self.repo.write(".sdlc/config.json", self.repo.read(".sdlc/config.v1.json"))
+        again = self.repo.init()
+        self.assertTrue(any(n.startswith(".sdlc/halt exists — the loop will not start") for n in again["notes"]), again["notes"])
+
+    def test_no_pause_file_no_note(self):
+        make_v1_repo(self.repo)
+        self.assertFalse([n for n in self.repo.init()["notes"] if "pause" in n])
+
+
+class MigrationLeftovers(Case):
+    def setUp(self):
+        super().setUp()
+        make_v1_repo(self.repo)
+
+    def test_the_korean_evals_readme_has_no_marker_but_its_title_gives_it_away(self):
+        self.repo.write("evals/README.md", KO_EVALS_README)
+        self.assertNotIn("<!-- sdlc:evals -->", self.repo.read("evals/README.md"))
+        res = self.repo.init()
+        self.assertIn("evals/README.md", res["leftovers"])
+        self.assertIn("evals/cases/no-secret-in-code/", res["leftovers"])                     # the example case goes with it
+        self.assertNotIn("evals/cases/my-own-case/", res["leftovers"])
+        removed = {rel for rel, (verb, _) in rows(self.repo.init("--prune")).items() if verb == "REMOVED"}
+        self.assertIn("evals/README.md", removed)
+        self.assertFalse(self.repo.exists("evals/README.md"))
+        self.assertTrue(self.repo.exists("evals/cases/my-own-case/case.json"))
+
+    def test_the_english_title_without_its_marker_counts_too_and_somebody_elses_readme_does_not(self):
+        self.repo.write("evals/README.md", EN_EVALS_README)
+        self.assertIn("evals/README.md", self.repo.init()["leftovers"])
+        self.repo.write("evals/README.md", "# Our evals\n\n# evals/ — 에이전트 설정의 회귀 테스트\n")     # the title is not the first line
+        self.assertNotIn("evals/README.md", self.repo.init()["leftovers"])
+        self.repo.write("evals/README.md", "# evals/ — 에이전트 설정의 회귀 테스트 (우리 것)\n")         # …and not exactly the title
+        self.assertNotIn("evals/README.md", self.repo.init()["leftovers"])
+
+    def test_lessons_that_are_only_the_template_are_a_leftover_and_not_a_note(self):
+        for lang in ("en", "ko"):
+            other = InitRepo()
+            self.addCleanup(other.cleanup)
+            make_v1_repo(other)
+            other.write(".sdlc/LESSONS.md", LESSONS_TEMPLATE[lang])
+            res = other.init()
+            self.assertFalse([n for n in res["notes"] if "lessons" in n.lower()], lang)
+            self.assertIn(".sdlc/LESSONS.md", res["leftovers"], lang)
+            removed = {rel for rel, (verb, _) in rows(other.init("--prune")).items() if verb == "REMOVED"}
+            self.assertIn(".sdlc/LESSONS.md", removed, lang)
+            self.assertFalse(other.exists(".sdlc/LESSONS.md"), lang)
+            self.assertTrue(other.exists(".sdlc/config.json"))                                   # the rest of .sdlc stays
+
+    def test_check_lists_a_template_only_lessons_file_as_a_leftover(self):
+        other = InitRepo()                                              # one with nothing else of 0.x in it
+        self.addCleanup(other.cleanup)
+        other.init()
+        self.assertNotIn("leftovers", other.check()[1])
+        other.write(".sdlc/LESSONS.md", LESSONS_TEMPLATE["ko"])
+        code, got = other.check()
+        self.assertEqual(got["leftovers"]["status"], "warn")
+        self.assertEqual(got["leftovers"]["detail"], ".sdlc/LESSONS.md — `init --prune` removes them")
+        other.write(".sdlc/LESSONS.md", LESSONS_TEMPLATE["ko"] + "\n## 2026-09-10 — a lesson\n")
+        self.assertNotIn("leftovers", other.check()[1])
+
+    def test_lessons_with_an_entry_below_the_template_are_a_note_and_stay(self):
+        self.repo.write(".sdlc/LESSONS.md", LESSONS_TEMPLATE["ko"] + "\n## 2026-09-10 — 생성 코드는 손대지 않는다\n- 수정: 빌드가 덮어쓴다.\n")
+        res = self.repo.init()
+        self.assertTrue([n for n in res["notes"] if n.startswith(".sdlc/LESSONS.md holds 0.x lessons")])
+        self.assertNotIn(".sdlc/LESSONS.md", res["leftovers"])
+        self.repo.init("--prune")
+        self.assertTrue(self.repo.exists(".sdlc/LESSONS.md"))
+
+    def test_only_the_untouched_template_holds_no_lessons(self):
+        self.assertFalse(I.has_lessons(LESSONS_TEMPLATE["en"]))
+        self.assertFalse(I.has_lessons(LESSONS_TEMPLATE["ko"]))
+        self.assertFalse(I.has_lessons("﻿" + LESSONS_TEMPLATE["ko"].replace("\n", "\r\n")))
+        self.assertFalse(I.has_lessons("# Lessons\n<!--\n## 2026-01-01 — in a comment\n-->\n"))
+        self.assertFalse(I.has_lessons(""))
+        self.assertTrue(I.has_lessons("# Lessons\n\n## 2026-01-01 — a lesson\n"))
+        self.assertTrue(I.has_lessons("<!-- a comment -->\n## 설계에서 뒤집힌 판단들 (2026-09-06)\n- text\n"))
+        self.assertTrue(I.has_lessons("# Lessons\n\n### a smaller heading\n"))          # anything the team wrote stays
+        self.assertTrue(I.has_lessons(LESSONS_TEMPLATE["ko"] + "- 생성 코드는 손대지 않는다\n"))
+
+    def test_triage_drafts_are_noted_by_name_and_stay(self):
+        self.repo.write("intent/triage/b-two.md", "---\nstatus: draft\n---\n# Two\n")
+        self.repo.write("intent/triage/a-one.md", "---\nstatus: draft\n---\n# One\n")
+        res = self.repo.init()
+        self.assertIn("intent/triage/ holds 2 0.x triage draft(s) (a-one.md, b-two.md) — 1.0 does not read them; start the ones "
+                      "still wanted with /sdlc:go, or delete them", res["notes"])
+        self.assertNotIn("intent/triage/", res["leftovers"])                                   # drafts in it: not an untouched directory
+        self.assertTrue(self.repo.exists("intent/triage/a-one.md"))
+        self.repo.init("--prune")
+        self.assertTrue(self.repo.exists("intent/triage/b-two.md"))
+
+    def test_at_most_five_triage_drafts_are_named(self):
+        for i in range(7):
+            self.repo.write("intent/triage/d%d.md" % i, "# d%d\n" % i)
+        self.repo.write("intent/triage/notes.txt", "not a draft\n")
+        note = [n for n in self.repo.init()["notes"] if n.startswith("intent/triage/ holds")][0]
+        self.assertTrue(note.startswith("intent/triage/ holds 7 0.x triage draft(s) (d0.md, d1.md, d2.md, d3.md, d4.md, …) — "), note)
+
+    def test_a_triage_directory_with_nothing_but_a_gitkeep_gets_no_note_and_is_a_leftover(self):
+        res = self.repo.init()
+        self.assertFalse([n for n in res["notes"] if "triage" in n])
+        self.assertIn("intent/triage/", res["leftovers"])
+
+    def test_the_triage_note_follows_a_custom_intent_directory(self):
+        cfg = json.loads(json.dumps(V1_CONFIG))
+        cfg["paths"]["intent"] = "docs/intents"
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        other.write(".sdlc/config.json", json.dumps(cfg))
+        other.write("docs/intents/triage/x.md", "# x\n")
+        other.commit("0.x")
+        self.assertTrue(any(n.startswith("docs/intents/triage/ holds 1 0.x triage draft(s) (x.md)") for n in other.init()["notes"]))
+
+
+class ProjectSkills(Case):
+    """Skills, commands and agents of the project that still name a command 1.0 removed."""
+
+    def files(self):
+        self.repo.write(".claude/skills/x/SKILL.md", "---\nname: x\n---\nRun /sdlc:review before every merge.\n")
+        self.repo.write(".claude/skills/x/references/more.md", "First /sdlc:plan, then /sdlc:spec, then /sdlc:go. /sdlc:plan again.\n")
+        self.repo.write(".claude/commands/ship.md", "Use /sdlc:release.\n")
+        self.repo.write(".claude/agents/helper.md", "---\nname: helper\n---\nCalls /sdlc:verify.\n")
+        self.repo.write(".claude/skills/ok/SKILL.md", "Only /sdlc:go and /sdlc:run here.\n")
+        self.repo.write(".claude/skills/x/notes.txt", "/sdlc:review in a text file that is not scanned\n")
+        self.repo.write(".claude/settings.local.json", '{"note": "/sdlc:review"}\n')
+
+    WANT = ("still mentions removed commands: .claude/agents/helper.md (/sdlc:verify), .claude/commands/ship.md (/sdlc:release), "
+            ".claude/skills/x/SKILL.md (/sdlc:review), .claude/skills/x/references/more.md (/sdlc:plan, /sdlc:spec)")
+
+    def test_init_notes_the_files_and_commands_and_changes_none_of_them(self):
+        self.files()
+        before = {k: v for k, v in self.repo.snapshot()[0].items() if k.startswith(".claude/")}
+        res = self.repo.init()
+        self.assertIn(self.WANT, res["notes"])
+        after = self.repo.snapshot()[0]
+        self.assertEqual(before, {k: after[k] for k in before})                                 # every file as it was
+        self.assertRegex(self.repo.run().stdout, r"(?m)^NOTE +still mentions removed commands: \.claude/agents/helper\.md")
+
+    def test_a_second_run_still_says_it_since_nothing_was_fixed(self):
+        self.files()
+        self.repo.init()
+        self.assertIn(self.WANT, self.repo.init()["notes"])
+
+    def test_at_most_five_files_are_named(self):
+        for i in range(7):
+            self.repo.write(".claude/skills/s%d/SKILL.md" % i, "/sdlc:plan\n")
+        note = [n for n in self.repo.init()["notes"] if n.startswith("still mentions removed commands")][0]
+        self.assertEqual(note.count("/SKILL.md"), 5)
+        self.assertTrue(note.endswith(" …"), note)
+
+    def test_nothing_to_report_without_such_mentions(self):
+        self.repo.write(".claude/skills/ok/SKILL.md", "Only /sdlc:go here.\n")
+        self.assertFalse([n for n in self.repo.init()["notes"] if "removed commands" in n])
+
+    def test_check_has_a_warn_row_with_the_same_content(self):
+        self.node_repo()
+        self.repo.init()
+        self.assertNotIn("skills", self.repo.check()[1])
+        self.files()
+        code, got = self.repo.check()
+        self.assertEqual(got["skills"]["status"], "warn")
+        self.assertEqual(got["skills"]["detail"], self.WANT)
+        self.assertEqual(code, 0)                                                              # a warning: nothing is missing
+        r = self.repo.run("--check")
+        self.assertRegex(r.stdout, r"(?m)^WARN +project skills +still mentions removed commands: \.claude/agents/helper\.md")
 
 
 class Prune(Case):
@@ -1579,6 +2140,22 @@ class Check(Case):
         self.repo.write("CLAUDE.md", done.replace("- Run: TODO: set the run command", "- Test: TODO: set the test command"))
         _, got = self.repo.check()
         self.assertEqual(got["claude_md"]["status"], "warn")            # the test command is not optional
+        self.assertIn("TODO placeholders left", got["claude_md"]["detail"])
+
+    def test_the_0x_line_for_a_command_it_did_not_find_is_not_a_left_over_placeholder_either(self):
+        self.ready()
+        done = self.repo.read("CLAUDE.md").replace(
+            "TODO: naming, error handling, testing and dependency conventions (Claude fills this in during /sdlc:init)",
+            "snake_case").replace("TODO: main components, boundaries and data flow (Claude fills this in during /sdlc:init)", "a CLI")
+        done = done.replace("- Run: TODO: set the run command", "- Run: TODO: no run command found (package.json has no start script)")
+        done += "- Lint: TODO: no lint command found (no linter is configured)\n- Build: TODO: no build command found\n"
+        self.assertEqual(I.OPTIONAL_TODO.sub("", done).count("TODO:"), 0)
+        self.repo.write("CLAUDE.md", done)
+        _, got = self.repo.check()
+        self.assertEqual(got["claude_md"]["status"], "ok", got["claude_md"])
+        self.repo.write("CLAUDE.md", done + "- Test: TODO: no test command found\n")
+        _, got = self.repo.check()
+        self.assertEqual(got["claude_md"]["status"], "warn")            # a missing test command is not optional
         self.assertIn("TODO placeholders left", got["claude_md"]["detail"])
 
     def test_a_version_1_config_is_a_warning(self):

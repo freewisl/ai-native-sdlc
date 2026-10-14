@@ -14,6 +14,7 @@ from .util import read_json
 CONFIG_REL = os.path.join(".sdlc", "config.json")
 PHASES = ("design", "build", "fix", "self_check")      # the sessions the loop starts; each has a model and an effort
 LEGACY_LOOP_DEFAULTS = {"model": "opus", "fix_model": "sonnet", "effort": "high"}   # what 0.x ran when the file said nothing
+LEGACY_LOOP_CAPS = {"max_turns": (120, 200), "item_max_minutes": (45,)}   # caps 0.x shipped as defaults (0.8.2's init moved them)
 
 DEPLOY_PATTERNS = [
     "(deploy|release|rollout|promote)[^|;&]*(prod|production|live)",
@@ -139,15 +140,25 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     if "auto_commit" in raw:
         new["auto_commit"] = raw["auto_commit"]
     lp = section(raw, "loop")
-    loop = {k: lp[k] for k in ("max_turns", "max_failures_per_slug", "fix_rounds", "self_check", "allowed_tools",
-                              "item_note", "pause_file") if k in lp}
+    loop = {k: lp[k] for k in ("max_failures_per_slug", "fix_rounds", "self_check", "allowed_tools", "item_note",
+                              "pause_file") if k in lp}
     for k, old_default in LEGACY_LOOP_DEFAULTS.items():   # a 0.x default is not a choice: 1.0 picks the model per phase
         if k in lp and lp[k] != old_default:
             loop[k] = lp[k]
             notes.append("loop.%s %r kept (it differs from the 0.x default) — loop.models / loop.efforts set it per phase" %
                          (k, lp[k]))
-    if "item_max_minutes" in lp:
-        loop["session_max_minutes"] = lp["item_max_minutes"]
+    old_caps = []
+    for k, key in (("max_turns", "max_turns"), ("item_max_minutes", "session_max_minutes")):
+        if k not in lp:
+            continue
+        if lp[k] in LEGACY_LOOP_CAPS[k]:                  # a cap 0.x shipped as its default is not a choice either…
+            old_caps.append("loop.%s %s" % (k, lp[k]))
+        elif lp[k] != DEFAULTS["loop"][key]:              # …and a value equal to 1.0's own default needs no line
+            loop[key] = lp[k]
+    if old_caps:
+        notes.append("%s %s — 1.0's defaults apply (%d turns, %d min per session)" % (
+            ", ".join(old_caps), "were 0.x defaults" if len(old_caps) > 1 else "was a 0.x default",
+            DEFAULTS["loop"]["max_turns"], DEFAULTS["loop"]["session_max_minutes"]))
     if lp.get("enabled") is False:
         if roles.get("solo"):
             loop["enabled"] = False
@@ -160,11 +171,21 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     rv = section(raw, "paths").get("review")
     if rv and rv != DEFAULTS["paths"]["review"]:
         new["paths"] = {"review": rv}
-    if roles.get("solo") and roles.get("auto_merge") is False:
-        notes.append("roles.auto_merge=false: in 1.0 solo mode the loop merges what passes the gate — use mode team to "
-                     "merge by hand")
+    off = ["roles.%s=false" % k for k in ("autopilot", "auto_merge") if roles.get(k) is False]
+    if roles.get("solo") and off:
+        notes.append("%s: in 1.0 solo mode /sdlc:run and /sdlc:go merge what passes the gate — use mode team to have a "
+                     "person merge" % ", ".join(off))
     if "solo" in roles:
         kept.add("roles")                              # roles.solo became mode
+    names = []
+    for x in raw["policies"] if isinstance(raw.get("policies"), list) else []:
+        name = x.get("name") if isinstance(x, dict) else x          # 0.x listed the policy skills by name
+        if name:
+            names.append(str(name))
+    if names:
+        notes.append("policies dropped (%s): their skills in .claude/skills/ stay and still trigger on their own, but "
+                     "nothing applies them at review any more — name the ones the reviewer must apply in REVIEW.md" %
+                     ", ".join(names))
     dropped = [k for k in ("source_of_truth", "environments", "gate", "policies", "evals", "monitor", "ci", "plan", "roles")
                if k in raw and k not in kept]
     if dropped:

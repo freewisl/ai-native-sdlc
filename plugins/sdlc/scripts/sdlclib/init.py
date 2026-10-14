@@ -39,6 +39,11 @@ OLD_LINES = {
         "- (같은 실수가 두 번째로 나타나면 여기에 한 줄을 추가한다)",
     "모든 변경은 커밋된 plan.md 에서 시작한다(`/sdlc:go` 가 작성·커밋하고, 단계별로는 `/sdlc:plan`).":
         "모든 변경에는 작업 문서(`work/<slug>.md`: 목표·인수 조건·계획·증명)가 있다. `/sdlc:go` 가 작성한다.",
+    # 0.4.1–0.5.1 (before the plan-first rule named /sdlc:go)
+    "Nothing is implemented without an approved plan: start in plan mode, commit plan.md, then build.":
+        "Every change has a work doc (`work/<slug>.md`: goal, acceptance criteria, plan, proof); `/sdlc:go` writes it.",
+    "승인된 계획 없이는 아무것도 구현하지 않는다. 플랜 모드로 시작해 plan.md 를 커밋한 뒤 구현한다.":
+        "모든 변경에는 작업 문서(`work/<slug>.md`: 목표·인수 조건·계획·증명)가 있다. `/sdlc:go` 가 작성한다.",
 }
 REMOVED_COMMANDS = re.compile(r"/sdlc:(?:intent|spec|plan|lesson|review|verify|doctor|release|monitor|triage|"
                               r"postmortem|metrics|evals|policy|scan|ship|loop)\b")
@@ -51,8 +56,19 @@ PRUNE_FILES = (".sdlc/bands.json", ".sdlc/APPROVALS.md", ".sdlc/managed-settings
 PRUNE_DIRS = (".sdlc/examples", ".sdlc/state/loop-resume")
 EXAMPLE_EVALS = ("fix-without-editing-test", "no-secret-in-code", "respect-frozen-path")
 TEMPLATE_MARK = re.compile(r"^slug:\s*\{\{slug\}\}", re.M)       # 0.x copied its plugin templates to <dir>/TEMPLATE.md unrendered
-OPTIONAL_TODO = re.compile(r"TODO: set the (?:build|lint|run) command")    # a project may have none of these
+# a project may have none of these: init's placeholder, and what 0.x's init skill wrote when it found no command
+OPTIONAL_TODO = re.compile(r"TODO: (?:set the (?:build|lint|run) command|no (?:build|lint|run) command found)")
 AGENTS_IMPORT = re.compile(r"(?<![\w@/])@AGENTS\.md(?![\w-]|\.\w)")
+FRONT_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*:\s?")           # a front matter line, as workdoc.split_frontmatter reads it
+# the first line of the 0.x evals README — the Korean one carries no marker
+EVALS_TITLES = ("# evals/ — 에이전트 설정의 회귀 테스트", "# evals/ — regression tests for the agent's configuration")
+FETCH_SECONDS = 10.0                                             # the longest init waits for the remote, as `status` does
+# the lines of the 0.x LESSONS.md templates (0.4.1–0.8.3, en and ko) outside their HTML comment
+LESSONS_LINES = frozenset((
+    "# Lessons", "Version-controlled post-mortem lessons. Future investigations read this file first.",
+    "Each entry is written by the team that owned the incident and links to the eval that now guards against it.",
+    "# Lessons (교훈)", "버전 관리되는 포스트모템 교훈 모음입니다. 앞으로의 조사는 이 파일을 먼저 읽습니다.",
+    "각 항목은 인시던트를 담당한 팀이 작성하며, 이제 그 재발을 막고 있는 eval 을 링크합니다."))
 
 
 def imports_agents(text: str) -> bool:
@@ -461,16 +477,47 @@ def old_paths(root: str, raw: Optional[Dict[str, Any]]) -> Dict[str, str]:
                                                            ("evals", "evals"), ("lessons", ".sdlc/LESSONS.md"))}
 
 
-def artifact(root: str, rel: str, branch: str) -> Tuple[Dict[str, Any], str, str]:
+def old_frontmatter(text: str, rel: str, notes: List[str]) -> Tuple[Dict[str, Any], str]:
+    """`split_frontmatter` for a 0.x file. 0.x read a key with a line grep (`^status:`), so a block that never closes —
+    `---`, the keys, then straight into the heading — still had its status: read the `key: value` lines right after the
+    first `---`, up to the first other line, and say so."""
+    meta, body = split_frontmatter(text)
+    if not text.startswith("---") or body != text:             # none, or one that closes
+        return meta, body
+    lines = text.split("\n")
+    keys: List[str] = []
+    for line in lines[1:]:
+        if not FRONT_KEY.match(line):
+            break
+        keys.append(line)
+    if not keys:
+        return meta, body
+    note = "%s: the front matter has no closing `---` — read it up to the first other line, as 0.x did" % rel
+    if note not in notes:
+        notes.append(note)
+    return split_frontmatter("---\n" + "\n".join(keys) + "\n---\n")[0], "\n".join(lines[1 + len(keys):])
+
+
+def old_section(doc: WorkDoc, name: str) -> str:
+    """`doc.section(name)`, also where a 0.x Korean template carries both languages in the heading: `## 문제 (Problem)`."""
+    want = name.strip().lower()
+    for title, body in doc.sections:
+        t = title.strip().lower()
+        if t == want or t.endswith("(%s)" % want):
+            return body.strip("\n")
+    return ""
+
+
+def artifact(root: str, rel: str, branch: str, notes: List[str]) -> Tuple[Dict[str, Any], str, str]:
     """(frontmatter, body, ref): the default branch's copy (the working tree) first, else the 0.x item branch's."""
     text = read_text(os.path.join(root, rel))
     if text is not None:
-        meta, body = split_frontmatter(text)
+        meta, body = old_frontmatter(text, rel, notes)
         return meta, body, ""
     for ref in (branch, "origin/" + branch):
         r = run(["git", "-C", root, "show", "%s:%s" % (ref, rel)], timeout=20)
         if r.ok:
-            meta, body = split_frontmatter(r.out)
+            meta, body = old_frontmatter(r.out, rel, notes)
             return meta, body, ref
     return {}, "", ""
 
@@ -480,7 +527,7 @@ def clean(text: str) -> str:
     return "\n".join(l for l in text.splitlines() if not re.match(r"^\s*-\s*R\d+\.\s*$", l)).strip()
 
 
-def migrate_intents(root: str, paths: Dict[str, str], work_rel: str, out: Out) -> List[str]:
+def migrate_intents(root: str, paths: Dict[str, str], work_rel: str, out: Out, notes: List[str]) -> List[str]:
     """0.x intents that are not done → work docs: approved → ready, or planned when an approved plan exists (on the
     default branch or on sdlc/<slug>); draft → proposed. Rejected and merged ones stay history — and a `depends_on`
     naming a merged one is dropped, since it has no work doc and the queue would wait on it for good."""
@@ -493,11 +540,12 @@ def migrate_intents(root: str, paths: Dict[str, str], work_rel: str, out: Out) -
     open_items, finished = [], set()
     for n in names:
         slug = n[:-3]
-        meta, body = split_frontmatter(read_text(os.path.join(root, paths["intent"], n)) or "")
+        meta, body = old_frontmatter(read_text(os.path.join(root, paths["intent"], n)) or "",
+                                     "%s/%s" % (paths["intent"], n), notes)
         status = str(meta.get("status", ""))
         if status not in ("approved", "draft") or not SLUG_RE.match(slug):
             continue
-        pmeta, pbody, pref = artifact(root, "%s/%s" % (paths["plan"], n), "sdlc/" + slug)
+        pmeta, pbody, pref = artifact(root, "%s/%s" % (paths["plan"], n), "sdlc/" + slug, notes)
         if str(pmeta.get("status", "")) == "implemented" and not pref:
             finished.add(slug)                                  # merged in 0.x
         else:
@@ -507,9 +555,9 @@ def migrate_intents(root: str, paths: Dict[str, str], work_rel: str, out: Out) -
         if os.path.exists(os.path.join(root, rel)):
             out.add("SKIPPED", rel, "already a work doc")
             continue
-        _, sbody, _ = artifact(root, "%s/%s" % (paths["spec"], n), "sdlc/" + slug)
+        _, sbody, _ = artifact(root, "%s/%s" % (paths["spec"], n), "sdlc/" + slug, notes)
         intent = WorkDoc.parse("---\n---\n" + body)
-        goal = "\n\n".join(x for x in (clean(intent.section("Problem")), clean(intent.section("Proposed outcome"))) if x)
+        goal = "\n\n".join(x for x in (clean(old_section(intent, sec)) for sec in ("Problem", "Proposed outcome")) if x)
         planned = status == "approved" and str(pmeta.get("status", "")) in ("approved", "implemented")
         deps = [str(d) for d in meta.get("depends_on")] if isinstance(meta.get("depends_on"), list) else []
         dropped = [d for d in deps if d in finished]
@@ -519,13 +567,13 @@ def migrate_intents(root: str, paths: Dict[str, str], work_rel: str, out: Out) -
                        "test_changes": "allowed" if str(pmeta.get("test_changes", "")) == "allowed" else "none",
                        "created": str(meta.get("created") or now_iso()), "source": "migrated:intent"}, "")
         doc.set_section("Goal", goal or "See `%s/%s`." % (paths["intent"], n))
-        acceptance = clean(WorkDoc.parse("---\n---\n" + sbody).section("Requirements"))
+        acceptance = clean(old_section(WorkDoc.parse("---\n---\n" + sbody), "Requirements"))
         if acceptance:
             doc.set_section("Acceptance criteria", acceptance)
         if planned:
             doc.set_section("Plan", "The approved 0.x plan: `%s/%s`%s." % (paths["plan"], n,
                                                                             " on branch `%s`" % pref if pref else ""))
-            proof = clean(WorkDoc.parse("---\n---\n" + pbody).section("Proof"))
+            proof = clean(old_section(WorkDoc.parse("---\n---\n" + pbody), "Proof"))
             if proof:
                 doc.set_section("Proof", proof)
         out.write(root, rel, doc.dumps())
@@ -561,10 +609,63 @@ def leftovers(root: str, paths: Dict[str, str]) -> List[str]:
                     (read_text(os.path.join(wf, n)) or "").startswith("# sdlc"):
                 found.append(".github/workflows/" + n)
     ev = paths["evals"]
-    if "<!-- sdlc:evals -->" in (read_text(os.path.join(root, ev, "README.md")) or ""):
+    readme = (read_text(os.path.join(root, ev, "README.md")) or "").lstrip("\ufeff")
+    title = next((l.strip() for l in readme.splitlines() if l.strip()), "")
+    if "<!-- sdlc:evals -->" in readme or title in EVALS_TITLES:
         found.append(ev + "/README.md")
         found += ["%s/cases/%s/" % (ev, c) for c in EXAMPLE_EVALS if os.path.isdir(os.path.join(root, ev, "cases", c))]
+    lessons = read_text(os.path.join(root, paths["lessons"]))
+    if lessons is not None and not has_lessons(lessons):  # the template, with no entry written under it
+        found.append(paths["lessons"])
     return [f for f in found if inside(root, f)]
+
+
+def has_lessons(text: str) -> bool:
+    """A 0.x LESSONS.md holds something of the team's once a line outside the HTML comment is not one of the template's own
+    (the template shows the entry format inside the comment). Only an untouched template is a leftover."""
+    text = re.sub(r"<!--.*?-->", "", text.lstrip("﻿"), flags=re.S)
+    return any(l.strip() and l.strip() not in LESSONS_LINES for l in text.splitlines())
+
+
+def triage_drafts(root: str, intent_rel: str) -> List[str]:
+    """The 0.x triage drafts (`<intent dir>/triage/*.md`): 1.0 has no triage queue and does not read them."""
+    d = os.path.join(root, intent_rel, "triage")
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    return sorted(n for n in names if n.endswith(".md") and not n.startswith(".") and os.path.isfile(os.path.join(d, n)))
+
+
+def stale_files(root: str) -> List[Tuple[str, List[str]]]:
+    """[(path, commands)]: the project's own skills, commands and agents that name a command 1.0 removed."""
+    found = []
+    for sub in ("skills", "commands", "agents"):
+        for top, _, names in os.walk(os.path.join(root, ".claude", sub)):
+            for n in names:
+                p = os.path.join(top, n)
+                cmds = sorted(set(REMOVED_COMMANDS.findall(read_text(p) or ""))) if n.endswith(".md") else []
+                if cmds:
+                    found.append((os.path.relpath(p, root).replace(os.sep, "/"), cmds))
+    return sorted(found)
+
+
+def stale_text(files: List[Tuple[str, List[str]]]) -> str:
+    return "still mentions removed commands: " + ", ".join("%s (%s)" % (p, ", ".join(c)) for p, c in files[:5]) + \
+        (" …" if len(files) > 5 else "")
+
+
+def commits_behind(root: str, default: str, fetch: bool) -> int:
+    """How many commits origin/<default> has that HEAD lacks; 0 when there is no such branch to compare with. `fetch` asks
+    the remote first — a failure is ignored, the refs as they are are all there is then."""
+    from .gitops import Git
+    git = Git(root)
+    if not git.remote_branch_exists(default):
+        return 0
+    if fetch:
+        git.refresh(FETCH_SECONDS)
+    n = git.out("rev-list", "--count", "HEAD..origin/" + default)
+    return int(n) if n.isdigit() else 0
 
 
 def inside(root: str, rel: str) -> bool:
@@ -609,10 +710,19 @@ def init(root: str, lang: str = "", mode: str = "", commands: str = "", dry: boo
     det = detect(root)
     if not det["git"]["is_repo"]:
         return {"error": "%s is not a git repository — run `git init` and commit first" % root}
-    explicit = parse_commands(commands)
-    forge, auto_mode, why = detect_forge(root, det["git"])
     legacy = isinstance(raw, dict) and config_version(raw) < 2
     notes: List[str] = []
+    if legacy:                   # the 0.x files are read from this checkout: behind the remote, work merged since comes back
+        default = str((raw.get("protect") or {}).get("default_branch") or "") or det["git"]["default_branch"]
+        behind = commits_behind(root, default, fetch=not dry)
+        if behind:
+            msg = ("this checkout is %d commit(s) behind origin/%s — 0.x items merged since then would come back as work; "
+                   "update it (git pull --ff-only) and run init again" % (behind, default))
+            if not dry:
+                return {"error": msg + "; nothing was changed"}
+            notes.append(msg)
+    explicit = parse_commands(commands)
+    forge, auto_mode, why = detect_forge(root, det["git"])
 
     def fill_commands(cm: Dict[str, Any]) -> List[str]:
         """--commands values always; detected ones only where the config has none."""
@@ -697,10 +807,24 @@ def init(root: str, lang: str = "", mode: str = "", commands: str = "", dry: boo
     settings(root, cmds, out)
 
     old = old_paths(root, raw)
-    migrated = migrate_intents(root, old, paths["work"], out) if legacy else []
-    if legacy and os.path.isfile(os.path.join(root, old["lessons"])):
-        notes.append("%s holds 0.x lessons — move the ones still true into CLAUDE.md's \"Things Claude gets wrong\"; "
-                     "1.0 does not read it" % old["lessons"])
+    migrated = migrate_intents(root, old, paths["work"], out, notes) if legacy else []
+    if legacy:
+        lessons = read_text(os.path.join(root, old["lessons"]))
+        if lessons is not None and has_lessons(lessons):
+            notes.append("%s holds 0.x lessons — move the ones still true into CLAUDE.md's \"Things Claude gets wrong\"; "
+                         "1.0 does not read it" % old["lessons"])
+        drafts = triage_drafts(root, old["intent"])
+        if drafts:
+            notes.append("%s/triage/ holds %d 0.x triage draft(s) (%s%s) — 1.0 does not read them; start the ones still "
+                         "wanted with /sdlc:go, or delete them" % (old["intent"], len(drafts), ", ".join(drafts[:5]),
+                                                                  ", …" if len(drafts) > 5 else ""))
+        pause = str((cfg.get("loop") or {}).get("pause_file") or DEFAULTS["loop"]["pause_file"])
+        if os.path.exists(os.path.join(root, pause)):
+            notes.append("%s exists — the loop will not start while it is there; delete it, or run `sdlc.py resume` "
+                         "(which also starts the loop)" % pause)
+    stale = stale_files(root)
+    if stale:
+        notes.append(stale_text(stale))
     left = leftovers(root, old)
     if do_prune and left:
         prune(root, left, out)
@@ -775,6 +899,9 @@ def check(root: str) -> Dict[str, Any]:
         if os.path.exists(os.path.join(root, "AGENTS.md")) and not same_file(os.path.join(root, "AGENTS.md"),
                                                                               os.path.join(root, "CLAUDE.md")) and not imports_agents(cm):
             row("warn", "agents_md", "AGENTS.md", "exists, but CLAUDE.md does not import it (@AGENTS.md)")
+    stale = stale_files(root)
+    if stale:
+        row("warn", "skills", "project skills", stale_text(stale))
     rv = read_text(cfg.path("review"))
     row("missing" if rv is None else "warn" if "TODO:" in rv else "ok", "review", cfg.rel("review"),
         "missing" if rv is None else "generated paths still TODO" if "TODO:" in rv else "")

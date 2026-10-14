@@ -96,6 +96,46 @@ class Config(unittest.TestCase):
                                    "gate": {}})
         self.assertEqual(notes, ["dropped (not used by 1.0): environments, gate, roles"])   # nothing of those was carried over
 
+    def test_migrate_v1_does_not_carry_the_caps_0x_shipped_as_defaults(self):
+        caps = "1.0's defaults apply (500 turns, 120 min per session)"
+        for turns in (120, 200):
+            new, notes = C.migrate_v1({"loop": {"max_turns": turns}})
+            self.assertNotIn("max_turns", new["loop"])
+            self.assertEqual(notes, ["loop.max_turns %d was a 0.x default — %s" % (turns, caps)])
+        new, notes = C.migrate_v1({"loop": {"item_max_minutes": 45}})
+        self.assertEqual((new["loop"], notes), ({}, ["loop.item_max_minutes 45 was a 0.x default — " + caps]))
+        new, notes = C.migrate_v1({"loop": {"max_turns": 200, "item_max_minutes": 45}})
+        self.assertEqual((new["loop"], notes), ({}, ["loop.max_turns 200, loop.item_max_minutes 45 were 0.x defaults — " + caps]))
+        new, notes = C.migrate_v1({"loop": {"max_turns": 200, "item_max_minutes": 90}})              # one default, one choice
+        self.assertEqual((new["loop"], notes), ({"session_max_minutes": 90}, ["loop.max_turns 200 was a 0.x default — " + caps]))
+
+    def test_migrate_v1_carries_a_cap_somebody_chose_and_skips_one_equal_to_1_0s_default(self):
+        new, notes = C.migrate_v1({"loop": {"max_turns": 300, "item_max_minutes": 90}})
+        self.assertEqual((new["loop"], notes), ({"max_turns": 300, "session_max_minutes": 90}, []))
+        new, notes = C.migrate_v1({"loop": {"max_turns": 500, "item_max_minutes": 120}})
+        self.assertEqual((new["loop"], notes), ({}, []))                                            # nothing to carry, nothing to say
+        self.assertEqual((C.DEFAULTS["loop"]["max_turns"], C.DEFAULTS["loop"]["session_max_minutes"]), (500, 120))
+
+    def test_migrate_v1_names_the_dropped_policies_and_what_that_means(self):
+        new, notes = C.migrate_v1({"policies": ["secure-api-review", {"name": "brand-voice"}, "", None, {}]})
+        self.assertEqual(notes, ["policies dropped (secure-api-review, brand-voice): their skills in .claude/skills/ stay and still "
+                                 "trigger on their own, but nothing applies them at review any more — name the ones the reviewer "
+                                 "must apply in REVIEW.md", "dropped (not used by 1.0): policies"])      # and still in the generic list
+        self.assertNotIn("policies", new)
+        for none in ([], [None, ""], "secure-api-review", {"secure-api-review": True}):                 # no policy named: nothing to add
+            self.assertEqual(C.migrate_v1({"policies": none})[1], ["dropped (not used by 1.0): policies"], none)
+        self.assertEqual(C.migrate_v1({})[1], [])
+
+    def test_migrate_v1_says_once_which_roles_keys_were_false_for_a_solo_repository(self):
+        tail = "in 1.0 solo mode /sdlc:run and /sdlc:go merge what passes the gate — use mode team to have a person merge"
+        for roles, keys in (({"solo": True, "autopilot": False}, "roles.autopilot=false"),
+                            ({"solo": True, "auto_merge": False}, "roles.auto_merge=false"),
+                            ({"solo": True, "autopilot": False, "auto_merge": False}, "roles.autopilot=false, roles.auto_merge=false")):
+            self.assertEqual(C.migrate_v1({"roles": roles})[1], ["%s: %s" % (keys, tail)], roles)
+        for roles in ({"solo": True, "autopilot": True, "auto_merge": True}, {"solo": True}, {"solo": False, "autopilot": False,
+                                                                                                "auto_merge": False}):
+            self.assertEqual(C.migrate_v1({"roles": roles})[1], [], roles)             # on, absent, or a team: a person merges anyway
+
     def test_config_reads_defaults_and_legacy(self):
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, ".sdlc"))

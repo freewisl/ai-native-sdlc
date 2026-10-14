@@ -198,9 +198,26 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 
 플러그인을 1.0 으로 업데이트한 뒤, 0.x 를 쓰던 저장소마다 `/sdlc:init` 을 한 번 실행합니다. 그 전에는 `/sdlc:go`·`/sdlc:run` 이 init 부터 하라고 안내하며 멈춥니다. init 은 덮어쓰지 않아 다시 실행해도 안전합니다.
 
-- **설정** — `.sdlc/config.json` 을 version 2 로 다시 쓰고 옛 파일은 `.sdlc/config.v1.json` 에 보관합니다. `commands.*`·`protect.*`·`secrets`·`hooks` 와 `loop` 의 `max_turns`·`fix_rounds`·`self_check` 등은 이어지고(`item_max_minutes` 는 `session_max_minutes` 로), `roles.solo` 가 `mode` 가 됩니다. `protect.ticketed_paths` 는 `risk.human` 으로, `environments.production` 의 패턴·승인 변수는 `protect.deploy_patterns`·`deploy_approval_env` 로 옮기고, `loop.max_items`·`max_minutes` 와 1.0 이 쓰지 않는 최상위 키(`ci`·`monitor`·`policies` 등)는 버리면서 NOTE 로 알려 줍니다.
-- **intent → 작업 문서** — 0.x 에서 아직 머지되지 않은 승인·초안 intent 는 `work/<slug>.md` 가 됩니다. 승인된 것은 `ready`(승인된 plan 이 있으면 `planned`), 초안은 `proposed` 입니다. Problem·Proposed outcome 이 Goal 이, spec 의 요구사항이 인수 조건이 되고 `depends_on` 은 유지됩니다(0.x 에서 이미 머지된 항목을 가리키는 것만 뺍니다).
-- **그대로 두는 것** — `intent/`·`spec/`·`plan/` 의 끝난 기록은 건드리지 않습니다. 0.x 가 만든 파일(`.sdlc/bands.json`, CI 워크플로, 예시 evals 등)은 `LEFTOVER` 로 알려 주고, 사용자가 허락할 때만 `sdlc.py init --prune` 으로 지웁니다. `.sdlc/LESSONS.md` 는 1.0 이 읽지 않으니 쓸 만한 줄을 CLAUDE.md 의 "Things Claude gets wrong"으로 옮기십시오.
+기본 브랜치를 최신으로 받은 체크아웃에서 실행하십시오(`git pull --ff-only`). 워크트리가 여럿이면 기본 브랜치가 체크아웃된 곳에서 실행합니다. 이전은 그 체크아웃의 0.x 파일을 읽기 때문에, init 은 `origin/<기본 브랜치>` 보다 뒤처진 체크아웃에서는 이전을 거부합니다. 그 사이에 머지된 항목이 다시 할 일로 살아나기 때문입니다.
+
+- **설정** — `.sdlc/config.json` 을 version 2 로 다시 쓰고 옛 파일은 `.sdlc/config.v1.json` 에 보관합니다.
+  - 이어지는 것: `commands.*`·`protect.*`·`secrets`·`hooks` 와 `loop` 의 `max_turns`·`fix_rounds`·`self_check` 등. `item_max_minutes` 는 `session_max_minutes` 가 됩니다.
+  - 0.x 의 기본값이던 상한(`max_turns` 120·200, `item_max_minutes` 45)은 옮기지 않으므로 1.0 기본값(500턴·120분)이 적용됩니다.
+  - 이름이 바뀌는 것: `roles.solo` 는 `mode` 로, `protect.ticketed_paths` 는 `risk.human` 으로, `environments.production` 의 패턴·승인 변수는 `protect.deploy_patterns`·`deploy_approval_env` 로 갑니다.
+  - 버리는 것: `loop.max_items`·`max_minutes` 와 1.0 이 쓰지 않는 최상위 키(`ci`·`monitor`·`policies` 등). 버린 것은 NOTE 로 알려 줍니다.
+  - solo 에서 `roles.autopilot`·`auto_merge` 가 false 였으면, 1.0 은 게이트를 통과한 것을 머지한다고 NOTE 로 알려 줍니다. 사람이 머지하려면 team 모드를 쓰십시오.
+- **intent → 작업 문서** — 0.x 에서 아직 머지되지 않은 승인·초안 intent 는 `work/<slug>.md` 가 됩니다.
+  - 상태: 승인된 것은 `ready`(승인된 plan 이 있으면 `planned`), 초안은 `proposed` 입니다.
+  - 내용: Problem·Proposed outcome 이 Goal 이, spec 의 요구사항이 인수 조건이, plan 의 Proof 가 증명이 됩니다. 한글 템플릿의 `## 문제 (Problem)` 같은 제목도 읽습니다.
+  - `depends_on` 은 유지하되, 0.x 에서 이미 머지된 항목을 가리키는 것만 뺍니다.
+- **그대로 두는 것** — `intent/`·`spec/`·`plan/` 의 끝난 기록은 건드리지 않습니다.
+  - 0.x 가 만든 파일(`.sdlc/bands.json`, CI 워크플로, 예시 evals, 손대지 않은 `LESSONS.md` 템플릿 등)은 `LEFTOVER` 로 알려 주고, 사용자가 허락할 때만 `sdlc.py init --prune` 으로 지웁니다.
+  - 내용이 있는 `.sdlc/LESSONS.md` 는 1.0 이 읽지 않으니, 쓸 만한 줄을 CLAUDE.md 의 "Things Claude gets wrong"으로 옮기십시오.
+- **사람이 볼 것** — init 이 NOTE 로 알려 주는 것들입니다.
+  - `intent/triage/` 의 초안: 1.0 에는 triage 대기열이 없습니다.
+  - 버린 정책: 스킬은 남지만 리뷰에서 적용하지 않습니다. 리뷰어가 적용할 것은 REVIEW.md 에 적으십시오.
+  - 남아 있는 `.sdlc/state/pause`: 지우기 전에는 루프가 시작하지 않습니다.
+  - 지워진 명령을 부르는 `.claude/skills`·`commands`·`agents` 파일: `--check` 도 경고합니다.
 - **훅 동작이 달라진 곳** — 테스트 잠금은 sdlc 작업 중에만 걸립니다(0.x 는 늘 잠김). `.sdlc/state/allow-test-edit` 파일로 푸는 길은 없어졌으니 `test_changes: allowed` 나 `SDLC_ALLOW_TEST_EDIT=1` 을 쓰십시오. 글롭의 `*` 는 이제 `/` 를 넘지 않고(깊이는 `**`) `/` 가 들어간 패턴은 저장소 루트에서 시작하므로(`dist/**` 는 `pkg/dist/` 에 맞지 않음 — `**/dist/**`) 동결 목록·`generated_paths`·`test_paths`·`risk.human`(0.x 의 `ticketed_paths`) 에서 더 깊은 단계나 다른 위치의 같은 경로까지 막던 항목은 `**` 로 고쳐야 합니다. 0.x 의 `spec/` 이력 문서는 기본 테스트 집합(RSpec 식 `spec/`)에 들어가 작업 중에는 잠기고 게이트 검사 3 의 대상이 됩니다. 보통은 바뀔 일이 없고, 손대야 하면 설계에서 `test_changes: allowed` 로 풀어야 합니다.
 
 | 0.x | 1.0 |
