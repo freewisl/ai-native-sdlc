@@ -283,12 +283,12 @@ class SelfCheck(RepoCase):
         self.assertEqual([(c["model"], c["effort"]) for c in self.repo.calls() if c["key"] == "a-first:build"], [("sonnet", "high")])
 
 
-def queue_doc(repo, slug, size=None, criteria=1, plan=0):
-    """Commit a work doc to main with `size:` in its front matter (None: the field is left out), `criteria` acceptance
+def queue_doc(repo, slug, difficulty=None, criteria=1, plan=0):
+    """Commit a work doc to main with `difficulty:` in its front matter (None: the field is left out), `criteria` acceptance
     criteria and a Plan of `plan` numbered steps (0: no Plan section, as the loop finds a doc before its design)."""
     text = repo.doc_text(slug, acceptance="\n".join("R%d. WHEN a THE SYSTEM SHALL b." % (i + 1) for i in range(criteria)))
-    if size is not None:
-        text = text.replace("\ncreated:", "\nsize: %s\ncreated:" % size, 1)
+    if difficulty is not None:
+        text = text.replace("\ncreated:", "\ndifficulty: %s\ncreated:" % difficulty, 1)
     if plan:
         text += "\n## Plan\n" + "\n".join("%d. step %d" % (i + 1, i + 1) for i in range(plan)) + "\n"
     repo.write("work/%s.md" % slug, text)
@@ -297,8 +297,8 @@ def queue_doc(repo, slug, size=None, criteria=1, plan=0):
 
 
 class EffortFor(RepoCase):
-    """Engine.effort_for: `loop.efforts` moved by the item's size, earlier failures, fix rounds and the size of the range a
-    self-check reads. The doc is read as it is in the working tree when the question is asked."""
+    """Engine.effort_for: `loop.efforts` moved by the item's difficulty, earlier failures and fix rounds. The doc is read as it
+    is in the working tree when the question is asked. A self-check has no item and runs at its base."""
 
     def engine(self, loop=None):
         if loop is not None:
@@ -310,45 +310,53 @@ class EffortFor(RepoCase):
     def efforts(self, e, slug="a-first", **kw):
         return {p: e.effort_for(p, slug, **kw) for p in ("design", "build", "fix")}
 
-    def test_a_small_item_lowers_design_and_build_by_one_and_leaves_the_fix(self):
-        queue_doc(self.repo, "a-first", size="s")
-        self.assertEqual(self.efforts(self.engine()), {"design": ("medium", "size s"), "build": ("medium", "size s"),
+    def test_an_easy_item_lowers_design_and_build_by_one_and_leaves_the_fix(self):
+        queue_doc(self.repo, "a-first", difficulty="easy")           # no Plan yet: a design reads the field too
+        self.assertEqual(self.efforts(self.engine()), {"design": ("medium", "difficulty easy"),
+                                                      "build": ("medium", "difficulty easy"),
                                                       "fix": ("medium", "")})     # medium is the fix's own: not lowered to low
 
-    def test_a_large_item_raises_all_three_by_one(self):
-        queue_doc(self.repo, "a-first", size="l")
-        self.assertEqual(self.efforts(self.engine()), {"design": ("xhigh", "size l"), "build": ("xhigh", "size l"),
-                                                      "fix": ("high", "size l")})
+    def test_a_hard_item_raises_all_three_by_one(self):
+        queue_doc(self.repo, "a-first", difficulty="hard")
+        self.assertEqual(self.efforts(self.engine()), {"design": ("xhigh", "difficulty hard"),
+                                                      "build": ("xhigh", "difficulty hard"),
+                                                      "fix": ("high", "difficulty hard")})
 
-    def test_a_medium_item_moves_nothing(self):
-        queue_doc(self.repo, "a-first", size="m")
+    def test_a_normal_item_moves_nothing(self):
+        queue_doc(self.repo, "a-first", difficulty="normal")
         self.assertEqual(self.efforts(self.engine()), {"design": ("high", ""), "build": ("high", ""), "fix": ("medium", "")})
 
-    def test_without_a_size_a_design_runs_at_its_base_and_build_and_fix_go_by_the_estimate(self):
-        queue_doc(self.repo, "a-first", criteria=8, plan=9)
-        self.assertEqual(self.efforts(self.engine()), {"design": ("high", ""),
-                                                      "build": ("xhigh", "estimated l (8 criteria, 9 steps)"),
-                                                      "fix": ("high", "estimated l (8 criteria, 9 steps)")})
-        queue_doc(self.repo, "b-second", criteria=1, plan=2)
+    def test_no_difficulty_or_one_that_is_not_one_is_normal(self):
         e = self.engine()
-        self.assertEqual(self.efforts(e, "b-second"), {"design": ("high", ""),
-                                                       "build": ("medium", "estimated s (1 criterion, 2 steps)"),
-                                                       "fix": ("medium", "")})
-        queue_doc(self.repo, "c-third", criteria=3, plan=5)                  # medium: nothing to say
-        self.assertEqual(self.efforts(e, "c-third"), {"design": ("high", ""), "build": ("high", ""), "fix": ("medium", "")})
+        for i, given in enumerate((None, "", "medium", "s", "difficult", "very hard", "[hard]")):
+            queue_doc(self.repo, "item-%d" % i, difficulty=given)
+            self.assertEqual(self.efforts(e, "item-%d" % i),
+                             {"design": ("high", ""), "build": ("high", ""), "fix": ("medium", "")}, given)
 
-    def test_a_doc_before_its_design_has_no_plan_to_count_and_runs_at_the_base(self):
-        queue_doc(self.repo, "a-first", criteria=9)
-        self.assertEqual(self.efforts(self.engine()), {"design": ("high", ""), "build": ("high", ""), "fix": ("medium", "")})
-
-    def test_the_explicit_size_beats_the_estimate_and_counts_in_a_design(self):
-        queue_doc(self.repo, "a-first", size="l", criteria=1, plan=2)         # the design session guessed larger than the plan
+    def test_the_value_is_read_stripped_and_lower_cased_and_the_reason_says_it_so(self):
+        queue_doc(self.repo, "a-first", difficulty="  HARD ")
+        queue_doc(self.repo, "b-second", difficulty="Easy")
         e = self.engine()
-        self.assertEqual(e.effort_for("design", "a-first"), ("xhigh", "size l"))
-        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "size l"))
+        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "difficulty hard"))
+        self.assertEqual(e.effort_for("build", "b-second"), ("medium", "difficulty easy"))
+
+    def test_how_big_the_item_is_does_not_matter_only_how_hard(self):
+        queue_doc(self.repo, "big", criteria=9, plan=12)                              # no difficulty: nothing is counted
+        queue_doc(self.repo, "tiny", criteria=1, plan=1)
+        queue_doc(self.repo, "big-easy", difficulty="easy", criteria=9, plan=12)      # a rename across forty files
+        queue_doc(self.repo, "tiny-hard", difficulty="hard", criteria=1, plan=1)      # a five-line concurrency fix
+        e = self.engine()
+        base = {"design": ("high", ""), "build": ("high", ""), "fix": ("medium", "")}
+        self.assertEqual(self.efforts(e, "big"), base)
+        self.assertEqual(self.efforts(e, "tiny"), base)
+        self.assertEqual(self.efforts(e, "big-easy"), {"design": ("medium", "difficulty easy"),
+                                                       "build": ("medium", "difficulty easy"), "fix": ("medium", "")})
+        self.assertEqual(self.efforts(e, "tiny-hard"), {"design": ("xhigh", "difficulty hard"),
+                                                        "build": ("xhigh", "difficulty hard"),
+                                                        "fix": ("high", "difficulty hard")})
 
     def test_an_item_that_failed_before_gets_one_more_in_every_phase(self):
-        queue_doc(self.repo, "a-first", size="m")
+        queue_doc(self.repo, "a-first", difficulty="normal")
         e = self.engine()
         st.update(self.repo.root, "a-first", failures=1)
         self.assertEqual(self.efforts(e), {"design": ("xhigh", "failed before"), "build": ("xhigh", "failed before"),
@@ -360,89 +368,85 @@ class EffortFor(RepoCase):
         self.assertEqual(e.effort_for("build", "a-first"), ("high", ""))
 
     def test_a_second_fix_round_and_every_one_after_it_get_one_more_not_one_more_each(self):
-        queue_doc(self.repo, "a-first", size="m")
+        queue_doc(self.repo, "a-first", difficulty="normal")
         e = self.engine()
         self.assertEqual([e.effort_for("fix", "a-first", fix_round=r) for r in (0, 1, 2, 3, 4)],
                          [("medium", ""), ("medium", ""), ("high", "fix round 2"), ("high", "fix round 3"),
                           ("high", "fix round 4")])
 
-    def test_the_parts_add_up_and_the_reason_lists_each_in_turn(self):
-        queue_doc(self.repo, "a-first", criteria=8, plan=9)
-        e = self.engine({"efforts": {"build": "low", "fix": "low"}})
-        st.update(self.repo.root, "a-first", failures=2)
-        # +1 for the size, +1 for the failures; the second fix round makes it three
-        self.assertEqual(e.effort_for("build", "a-first"),
-                         ("high", "estimated l (8 criteria, 9 steps), failed before"))        # the example in the docs
-        self.assertEqual(e.effort_for("fix", "a-first", fix_round=2),
-                         ("xhigh", "estimated l (8 criteria, 9 steps), failed before, fix round 2"))
+    def test_a_fix_round_says_nothing_to_design_and_build(self):
+        queue_doc(self.repo, "a-first", difficulty="normal")
+        e = self.engine()
+        self.assertEqual([e.effort_for(p, "a-first", fix_round=2) for p in ("design", "build")], [("high", ""), ("high", "")])
 
-    def test_a_small_item_that_failed_is_back_at_its_base(self):
-        queue_doc(self.repo, "a-first", size="s")
+    def test_the_parts_add_up_then_the_sum_is_clamped_and_the_reason_lists_each_in_turn(self):
+        queue_doc(self.repo, "a-first", difficulty="hard")
+        st.update(self.repo.root, "a-first", failures=2)
+        e = self.engine()
+        # high + 1 for the difficulty + 1 for the failures is past xhigh: clamped after the sum, the reasons stay
+        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "difficulty hard, failed before"))      # the example in the docs
+        e = self.engine({"efforts": {"build": "low", "fix": "low"}})
+        self.assertEqual(e.effort_for("build", "a-first"), ("high", "difficulty hard, failed before"))        # low + 2
+        self.assertEqual(e.effort_for("fix", "a-first", fix_round=1), ("high", "difficulty hard, failed before"))
+        self.assertEqual(e.effort_for("fix", "a-first", fix_round=2),
+                         ("xhigh", "difficulty hard, failed before, fix round 2"))                           # low + 3
+
+    def test_an_easy_item_that_failed_is_back_at_its_base_and_a_fix_has_nothing_to_lower(self):
+        queue_doc(self.repo, "a-first", difficulty="easy")
         e = self.engine()
         st.update(self.repo.root, "a-first", failures=1)
-        self.assertEqual(e.effort_for("build", "a-first"), ("high", "size s, failed before"))     # −1 and +1: the rules still show
+        # −1 and +1: back at the base, and the reasons still show
+        self.assertEqual(e.effort_for("design", "a-first"), ("high", "difficulty easy, failed before"))
+        self.assertEqual(e.effort_for("build", "a-first"), ("high", "difficulty easy, failed before"))
+        self.assertEqual(e.effort_for("fix", "a-first"), ("high", "failed before"))                          # 0 and +1
+        self.assertEqual(e.effort_for("fix", "a-first", fix_round=2), ("xhigh", "failed before, fix round 2"))
 
     def test_the_effort_stops_at_low_and_xhigh_and_the_reason_still_names_what_was_tried(self):
-        queue_doc(self.repo, "a-first", size="s")
+        queue_doc(self.repo, "a-first", difficulty="easy")
         e = self.engine({"efforts": {"design": "low", "build": "xhigh"}})
-        self.assertEqual(e.effort_for("design", "a-first"), ("low", "size s"))
-        queue_doc(self.repo, "a-first", size="l")
-        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "size l"))
+        self.assertEqual(e.effort_for("design", "a-first"), ("low", "difficulty easy"))
+        queue_doc(self.repo, "a-first", difficulty="hard")
+        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "difficulty hard"))
+        st.update(self.repo.root, "a-first", failures=1)
+        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "difficulty hard, failed before"))
 
     def test_an_effort_that_is_empty_max_or_not_a_level_is_left_alone_with_no_reason(self):
-        queue_doc(self.repo, "a-first", size="l")
+        queue_doc(self.repo, "a-first", difficulty="hard")
         st.update(self.repo.root, "a-first", failures=3)
         e = self.engine({"efforts": {"design": "", "build": "max", "fix": "turbo"}})
         self.assertEqual(self.efforts(e, fix_round=2), {"design": ("", ""), "build": ("max", ""), "fix": ("turbo", "")})
 
     def test_the_doc_is_read_each_time_it_is_asked(self):
-        queue_doc(self.repo, "a-first", size="s")
+        queue_doc(self.repo, "a-first", difficulty="easy")
         e = self.engine()
-        self.assertEqual(e.effort_for("build", "a-first"), ("medium", "size s"))
-        self.repo.write("work/a-first.md", self.repo.read("work/a-first.md").replace("size: s", "size: l"))   # the design revised it
-        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "size l"))
-        self.repo.write("work/a-first.md", self.repo.read("work/a-first.md").replace("size: l\n", ""))
-        self.assertEqual(e.effort_for("build", "a-first"), ("high", ""))                     # no size, no plan: the base
+        self.assertEqual(e.effort_for("build", "a-first"), ("medium", "difficulty easy"))
+        # the design session revised its guess in the working tree
+        self.repo.write("work/a-first.md", self.repo.read("work/a-first.md").replace("difficulty: easy", "difficulty: hard"))
+        self.assertEqual(e.effort_for("build", "a-first"), ("xhigh", "difficulty hard"))
+        self.repo.write("work/a-first.md", self.repo.read("work/a-first.md").replace("difficulty: hard\n", ""))
+        self.assertEqual(e.effort_for("build", "a-first"), ("high", ""))                     # no difficulty: the base
 
     def test_no_slug_or_no_doc_is_the_base(self):
         e = self.engine()
         self.assertEqual(e.effort_for("build"), ("high", ""))
         self.assertEqual(e.effort_for("design", "nothing-here"), ("high", ""))
 
-    def test_a_self_check_goes_by_the_size_of_the_range(self):
+    def test_a_self_check_is_its_base_with_no_reason(self):
         e = self.engine()
-        self.assertEqual([e.effort_for("self_check", diff_lines=n) for n in (None, 0, 1, 299, 300, 1999, 2000, 50000)],
-                         [("high", ""), ("medium", "small range (0 lines)"), ("medium", "small range (1 line)"),
-                          ("medium", "small range (299 lines)"), ("high", ""), ("high", ""),
-                          ("xhigh", "large range (2000 lines)"), ("xhigh", "large range (50000 lines)")])
-        e = self.engine({"efforts": {"self_check": "max"}})
-        self.assertEqual(e.effort_for("self_check", diff_lines=10), ("max", ""))
-
-    def test_a_range_says_nothing_to_the_item_phases_and_an_item_nothing_to_the_self_check(self):
-        queue_doc(self.repo, "a-first", size="l")
+        self.assertEqual(e.effort_for("self_check"), ("high", ""))
+        queue_doc(self.repo, "a-first", difficulty="hard")                  # it has no item: none of this reaches it
         st.update(self.repo.root, "a-first", failures=1)
-        e = self.engine()
-        self.assertEqual(e.effort_for("build", "a-first", diff_lines=10), ("xhigh", "size l, failed before"))
         self.assertEqual(e.effort_for("self_check", "a-first", fix_round=3), ("high", ""))
+        for base in ("low", "medium", "xhigh", "max", ""):
+            e = self.engine({"efforts": {"self_check": base}})
+            self.assertEqual(e.effort_for("self_check"), (base, ""), base)
 
     def test_with_auto_effort_off_the_table_is_passed_as_written(self):
-        queue_doc(self.repo, "a-first", size="l")
+        queue_doc(self.repo, "a-first", difficulty="hard")
         st.update(self.repo.root, "a-first", failures=2)
         e = self.engine({"auto_effort": False})
         self.assertEqual(self.efforts(e, fix_round=3), {"design": ("high", ""), "build": ("high", ""), "fix": ("medium", "")})
-        self.assertEqual(e.effort_for("self_check", diff_lines=5), ("high", ""))
-
-    def test_the_range_is_lines_added_plus_removed(self):
-        e = self.engine()
-        first = self.repo.git("rev-parse", "HEAD")
-        self.repo.write("x.txt", "one\ntwo\nthree\nfour\n")                               # +4
-        self.repo.write("tests/test_base.py", "def test_base():\n    assert True\n")      # one line replaced: +1 -1
-        self.repo.git("add", "-A")
-        self.repo.git("commit", "-q", "-m", "y")
-        head = self.repo.git("rev-parse", "HEAD")
-        self.assertEqual(e.range_lines(first, head), 6)
-        self.assertEqual(e.range_lines(head, head), 0)                                      # nothing between: not "unknown"
-        self.assertIsNone(e.range_lines("0" * 40, head))                                    # git cannot say: no adjustment
+        self.assertEqual(e.effort_for("self_check"), ("high", ""))
 
 
 class AutoEffort(RepoCase):
@@ -472,8 +476,8 @@ class AutoEffort(RepoCase):
         self.repo.write(".sdlc/config.json", json.dumps(cfg))
         self.repo.git("commit", "-qam", "loop config")
 
-    def test_a_small_item_runs_design_and_build_one_level_lower_not_the_fix_and_the_log_says_why(self):
-        queue_doc(self.repo, "a-first", size="s")
+    def test_an_easy_item_runs_design_and_build_one_level_lower_not_the_fix_and_the_log_says_why(self):
+        queue_doc(self.repo, "a-first", difficulty="easy")
         self.repo.scenario({"a-first:build": ["fail_gate"]})
         e = self.repo.engine()
         self.assertEqual(e.run(), 0)
@@ -481,31 +485,45 @@ class AutoEffort(RepoCase):
         self.assertEqual(self.pairs("a-first:build"), [("sonnet", "medium")])
         self.assertEqual(self.pairs("a-first:fix"), [("sonnet", "medium")])              # the fix's own medium, not lowered
         log = self.log(e)
-        self.assertIn("DESIGN  a-first — session (model opus, effort medium — size s)", log)
-        self.assertIn("BUILD   a-first — session (model sonnet, effort medium — size s)", log)
+        self.assertIn("DESIGN  a-first — session (model opus, effort medium — difficulty easy)", log)
+        self.assertIn("BUILD   a-first — session (model sonnet, effort medium — difficulty easy)", log)
         self.assertIn("FIX     a-first — session (model sonnet, effort medium)\n", log)       # nothing moved it: no reason
         self.assertEqual(self.repo.status_of("a-first"), "done")
 
-    def test_a_large_item_runs_all_three_one_level_higher(self):
-        queue_doc(self.repo, "a-first", size="l")
+    def test_a_hard_item_runs_all_three_one_level_higher(self):
+        queue_doc(self.repo, "a-first", difficulty="hard")
         self.repo.scenario({"a-first:build": ["fail_gate"]})
         e = self.repo.engine()
         self.assertEqual(e.run(), 0)
         self.assertEqual([self.pairs("a-first:design"), self.pairs("a-first:build"), self.pairs("a-first:fix")],
                          [[("opus", "xhigh")], [("sonnet", "xhigh")], [("sonnet", "high")]])
-        self.assertIn("BUILD   a-first — session (model sonnet, effort xhigh — size l)", self.log(e))
-        self.assertIn("FIX     a-first — session (model sonnet, effort high — size l)", self.log(e))
+        self.assertIn("BUILD   a-first — session (model sonnet, effort xhigh — difficulty hard)", self.log(e))
+        self.assertIn("FIX     a-first — session (model sonnet, effort high — difficulty hard)", self.log(e))
 
-    def test_an_item_without_a_size_is_estimated_from_its_plan_by_the_build_and_the_log_shows_the_count(self):
+    def test_an_item_without_a_difficulty_runs_at_the_table_as_written_whatever_its_plan_and_the_log_has_no_reason(self):
         self.repo.add_items("a-first")                                  # one criterion, and the stub designs a one-step plan
         e = self.repo.engine()
         self.assertEqual(e.run(), 0)
-        self.assertEqual(self.pairs("a-first:design"), [("opus", "high")])                # a design has no plan to count yet
-        self.assertEqual(self.pairs("a-first:build"), [("sonnet", "medium")])
-        self.assertIn("BUILD   a-first — session (model sonnet, effort medium — estimated s (1 criterion, 1 step))", self.log(e))
+        self.assertEqual([self.pairs("a-first:design"), self.pairs("a-first:build")], [[("opus", "high")], [("sonnet", "high")]])
+        log = self.log(e)
+        self.assertIn("DESIGN  a-first — session (model opus, effort high)\n", log)           # nothing moved it: no reason
+        self.assertIn("BUILD   a-first — session (model sonnet, effort high)\n", log)
+
+    def test_a_hard_item_that_failed_before_names_both_reasons_in_the_log_in_order(self):
+        queue_doc(self.repo, "a-first", difficulty="hard")
+        self.repo.scenario({"a-first:build": ["gave_up", "ok"]})
+        first = self.repo.engine()
+        self.assertEqual(first.run(), 1)
+        self.assertIn("BUILD   a-first — session (model sonnet, effort xhigh — difficulty hard)\n", self.log(first))
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.pairs("a-first:build"), [("sonnet", "xhigh"), ("opus", "xhigh")])          # high + 1 + 1, clamped
+        self.assertIn("BUILD   a-first — session (model opus, effort xhigh — difficulty hard, failed before)\n", self.log(e))
+        self.assertEqual([d["effort_reason"] for d in self.session_events() if d["phase"] == "build"],
+                         ["difficulty hard", "difficulty hard, failed before"])
 
     def test_an_item_that_failed_before_gets_one_more_on_top_of_the_escalated_model(self):
-        queue_doc(self.repo, "a-first", size="m")
+        queue_doc(self.repo, "a-first", difficulty="normal")
         self.repo.scenario({"a-first:build": ["gave_up", "ok"]})
         self.assertEqual(self.repo.engine().run(), 1)
         e = self.repo.engine()
@@ -515,7 +533,7 @@ class AutoEffort(RepoCase):
         self.assertIn("BUILD   a-first — session (model opus, effort xhigh — failed before)", self.log(e))
 
     def test_the_second_fix_round_gets_one_more(self):
-        queue_doc(self.repo, "a-first", size="m")
+        queue_doc(self.repo, "a-first", difficulty="normal")
         self.repo.scenario({"a-first:build": ["fail_gate"], "a-first:fix": ["gave_up", "ok"]})     # round 1 changes nothing
         e = self.repo.engine()
         self.assertEqual(e.run(), 0)
@@ -525,9 +543,19 @@ class AutoEffort(RepoCase):
         self.assertIn("FIX     a-first — session (model sonnet, effort high — fix round 2)", log)
         self.assertEqual([d["effort_reason"] for d in self.session_events() if d["phase"] == "fix"], ["", "fix round 2"])
 
+    def test_a_hard_item_names_its_difficulty_before_the_fix_round(self):
+        queue_doc(self.repo, "a-first", difficulty="hard")
+        self.repo.scenario({"a-first:build": ["fail_gate"], "a-first:fix": ["gave_up", "ok"]})
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.pairs("a-first:fix"), [("sonnet", "high"), ("sonnet", "xhigh")])
+        log = self.log(e)
+        self.assertIn("FIX     a-first — session (model sonnet, effort high — difficulty hard)\n", log)
+        self.assertIn("FIX     a-first — session (model sonnet, effort xhigh — difficulty hard, fix round 2)\n", log)
+
     def test_an_empty_effort_passes_no_flag_and_max_stays_max(self):
         self.set_loop(efforts={"design": "", "build": "max"})
-        queue_doc(self.repo, "a-first", size="l")
+        queue_doc(self.repo, "a-first", difficulty="hard")
         e = self.repo.engine()
         self.assertEqual(e.run(), 0)
         design, build = self.call("a-first:design")[0], self.call("a-first:build")[0]
@@ -539,7 +567,7 @@ class AutoEffort(RepoCase):
 
     def test_with_auto_effort_off_the_table_goes_through_as_written_and_the_header_does_not_say_auto(self):
         self.set_loop(auto_effort=False)
-        queue_doc(self.repo, "a-first", size="l")
+        queue_doc(self.repo, "a-first", difficulty="hard")
         self.repo.scenario({"a-first:build": ["gave_up", "ok"]})
         self.assertEqual(self.repo.engine().run(), 1)
         e = self.repo.engine()
@@ -549,7 +577,7 @@ class AutoEffort(RepoCase):
         log = self.log(e)
         self.assertIn("efforts=design:high/build:high/fix:medium\n", log)
         self.assertNotIn("(auto)", log)
-        self.assertNotIn("size l", log)
+        self.assertNotIn("difficulty hard", log)
 
     def test_the_run_header_names_the_efforts_and_says_auto(self):
         self.repo.add_items("a-first")
@@ -564,15 +592,15 @@ class AutoEffort(RepoCase):
         self.assertTrue(self.log(e).splitlines()[0].endswith("efforts=design:high/build:high/fix:default (auto)"))
 
     def test_the_session_event_carries_the_effort_and_why(self):
-        queue_doc(self.repo, "a-first", size="s")
+        queue_doc(self.repo, "a-first", difficulty="easy")
         self.assertEqual(self.repo.engine().run(), 0)
         sessions = {d["phase"]: d for d in self.session_events()}
-        self.assertEqual((sessions["design"]["effort"], sessions["design"]["effort_reason"]), ("medium", "size s"))
-        self.assertEqual((sessions["build"]["effort"], sessions["build"]["effort_reason"]), ("medium", "size s"))
+        self.assertEqual((sessions["design"]["effort"], sessions["design"]["effort_reason"]), ("medium", "difficulty easy"))
+        self.assertEqual((sessions["build"]["effort"], sessions["build"]["effort_reason"]), ("medium", "difficulty easy"))
         self.assertEqual([d["continued"] for d in sessions.values()], [False, False])
 
     def test_a_continuation_works_out_its_effort_again_and_passes_it_on_the_resume(self):
-        queue_doc(self.repo, "a-first", size="s")
+        queue_doc(self.repo, "a-first", difficulty="easy")
         self.repo.scenario({"a-first:build": ["max_turns", "ok"]})
         e = self.repo.engine()
         asked = []
@@ -584,10 +612,10 @@ class AutoEffort(RepoCase):
         self.assertEqual([(c["resumed"], c["effort"]) for c in builds], [(False, "medium"), (True, "medium")])
         self.assertIn("--effort", builds[1]["args"])
         log = self.log(e)
-        self.assertIn("BUILD   a-first — resuming session (model sonnet, effort medium — size s)", log)
+        self.assertIn("BUILD   a-first — resuming session (model sonnet, effort medium — difficulty easy)", log)
 
     def test_the_status_file_and_the_status_command_name_the_running_sessions_model_and_effort(self):
-        queue_doc(self.repo, "a-first", size="l")
+        queue_doc(self.repo, "a-first", difficulty="hard")
         self.repo.scenario({"a-first:build": ["sleep:60", "ok"]})
         r = self.repo.cli("run", "--detach", "--claude-bin", STUBS + "/claude")
         self.addCleanup(self.repo.cli, "stop")
@@ -606,36 +634,40 @@ class AutoEffort(RepoCase):
 
 
 class SelfCheckEffort(RepoCase):
-    """The self-check reads what merged: a small range with less effort than configured, a large one with more."""
-    config = {"loop": {"self_check": True, "self_check_min_items": 1}}
+    """The self-check reads what merged and has no item: it runs at the configured effort, whatever the size of the range."""
+    config = {"loop": {"self_check": True, "self_check_min_items": 1, "efforts": {"self_check": "medium"}}}   # not the default high
 
     def checks(self):
         return [c for c in self.repo.calls() if c["key"] == "self-check"]
 
-    def test_a_small_range_is_read_with_one_level_less_and_the_run_says_why(self):
+    def check_notes(self, e):
+        """What the run log says in brackets about each self-check session: `model opus, effort medium`."""
+        with open(e.log_path) as fh:
+            return re.findall(r"^\S+ CHECK   reviewing what merged \(\w+\.\.\w+\) \((.*)\)$", fh.read(), re.M)
+
+    def check_events(self):
+        with open(self.repo.path(".sdlc/logs/events.jsonl")) as fh:
+            return [d["detail"] for d in map(json.loads, fh) if d["event"] == "loop.session" and d["detail"]["phase"] == "self-check"]
+
+    def test_it_runs_at_the_configured_effort_with_no_reason_whatever_the_range(self):
         self.repo.add_items("a-first")
         e = self.repo.engine()
-        self.assertEqual(e.run(), 0)
+        self.assertEqual(e.run(), 0)                                      # the range: what one small item merged
         self.assertEqual([(c["model"], c["effort"]) for c in self.checks()], [("opus", "medium")])
-        with open(e.log_path) as fh:
-            log = fh.read()
-        self.assertRegex(log, r"CHECK   reviewing what merged \(\w+\.\.\w+\) \(model opus, effort medium — small range \(\d+ lines\)\)")
-        with open(self.repo.path(".sdlc/logs/events.jsonl")) as fh:
-            ev = [json.loads(l)["detail"] for l in fh if '"loop.session"' in l and '"self-check"' in l][0]
-        self.assertEqual(ev["effort"], "medium")
-        self.assertRegex(ev["effort_reason"], r"^small range \(\d+ lines\)$")
-        self.assertIs(ev["continued"], False)
-
-    def test_a_large_range_is_read_with_one_level_more(self):
-        e = self.repo.engine()
+        # a second self-check over a range of 2,100 lines in one merge
         e.from_sha = self.repo.git("rev-parse", "HEAD")
         self.repo.write("generated.txt", "x\n" * 2100)
         self.repo.git("add", "-A")
         self.repo.git("commit", "-q", "-m", "a big merge")
         e.merged_since_check = ["a-first"]
         e.self_check()
-        self.assertEqual([c["effort"] for c in self.checks()], ["xhigh"])
-        self.assertIn("effort xhigh — large range (2100 lines)", open(e.log_path).read())
+        self.assertEqual([c["effort"] for c in self.checks()], ["medium", "medium"])
+        self.assertEqual(self.check_notes(e), ["model opus, effort medium"] * 2)                  # no "— why" after the effort
+        events = self.check_events()
+        self.assertEqual([(d["effort"], d["effort_reason"], d["continued"]) for d in events], [("medium", "", False)] * 2)
+        with open(self.repo.path(".sdlc/state/loop-status.json")) as fh:
+            status = json.load(fh)
+        self.assertEqual((status["phase"], status["model"], status["effort"]), ("self-check", "opus", "medium"))
 
     def test_with_auto_effort_off_it_runs_at_the_configured_effort(self):
         cfg = json.loads(self.repo.read(".sdlc/config.json"))
@@ -643,8 +675,11 @@ class SelfCheckEffort(RepoCase):
         self.repo.write(".sdlc/config.json", json.dumps(cfg))
         self.repo.git("commit", "-qam", "auto effort off")
         self.repo.add_items("a-first")
-        self.assertEqual(self.repo.engine().run(), 0)
-        self.assertEqual([c["effort"] for c in self.checks()], ["high"])
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([c["effort"] for c in self.checks()], ["medium"])
+        self.assertEqual(self.check_notes(e), ["model opus, effort medium"])
+        self.assertEqual([(d["effort"], d["effort_reason"]) for d in self.check_events()], [("medium", "")])
 
 
 if __name__ == "__main__":

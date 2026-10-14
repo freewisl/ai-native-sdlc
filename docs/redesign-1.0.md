@@ -43,7 +43,7 @@ title: 수입·지출 입력/수정/삭제
 status: ready          # proposed | ready | planned | built | done | dropped | needs-input
 depends_on: []
 test_changes: none     # none | allowed (design decides; existing test files stay locked otherwise)
-size: m                # s | m | l (optional, since 1.1: the loop sizes a session's effort from it)
+difficulty: normal     # easy | normal | hard (optional, since 1.1: the loop picks a session's effort from it)
 created: 2026-10-12T09:30:00Z
 source: user           # user | goal:<id> | self-check
 ---
@@ -113,7 +113,7 @@ Engine state (`.sdlc/state/items.json`) holds only what the repository cannot sa
 - Design and self-check run on the strongest model; build and fix run on a cheaper one. Config:
   `loop.models` = `{design: opus, build: sonnet, fix: sonnet, self_check: opus}` and
   `loop.efforts` = `{design: high, build: high, fix: medium, self_check: high}`.
-- **Since 1.1** `loop.efforts` is the baseline: the loop shifts each session's effort by the item's size, earlier failures and fix rounds (see "1.1" below).
+- **Since 1.1** `loop.efforts` is the baseline: the loop shifts each session's effort by the item's difficulty, earlier failures and fix rounds (see "1.1" below).
 - **Escalation:** a build for an item that has failed before runs on `loop.escalate_model` (opus; "" turns it off).
 - The old keys still work. A string `loop.model` applies to design, build and self-check, `loop.fix_model` to fix, and a string `loop.effort` to every phase. Migration from 0.x carries them only when they differ from the 0.x defaults (opus / sonnet / high).
 - A model-family limit switches the session to another configured model of a different family, else sonnet, else opus.
@@ -211,11 +211,11 @@ These numbers shaped F5 and F6: the startup prompt is a real cost of every sessi
 
 **F1 — The loop picks each session's effort** (`loop.auto_effort`)
 - **Effort is shifted; the model is not switched.** The model per phase already says who does the work (design and self-check think, build and fix execute), and `escalate_model` already covers "this item failed". The question was how hard a session thinks. `--effort` is a per-window flag, so the engine can pass another value to every window, a `--resume` included, while a different model forces a fresh session and loses the cache. Effort is also a finer dial than a choice between two models. The shift starts from the user's `loop.efforts` (now the baseline), moves one step per reason along `low`, `medium`, `high`, `xhigh` and stops there. A `""` or `max` the user wrote is left alone, because a person chose it, and no shift reaches `max`. `xhigh` is safe to pass: claude lowers it by itself on a model without it.
-- **Size.** A work doc may carry `size: s|m|l`. `/sdlc:run` guesses it when it splits a goal; the design session sets it from its Plan and may revise the guess, because only then is there something to measure. `s` lowers design and build one step. `l` raises design, build and fix one step. A fix session is not lowered for `s`: it works on a failure, and small items fail too. An item that has failed before raises design, build and fix one step, and so does a second fix round. The rules are pure functions in `scripts/sdlclib/effort.py`, applied to every window, so a continuation can differ from the first window.
-- **A design without an explicit size runs at its base.** The estimate counts acceptance criteria and Plan steps, and the Plan does not exist yet when a design starts; the criteria alone say little about how hard the design is. Build and fix do see a Plan, so without a `size` they estimate one: `s` for at most two criteria and three steps, `l` for seven or more criteria or eight or more steps, `m` otherwise (and when there are no Plan steps).
-- **`size` is a hint, not a field the engine polices.** `problems()` does not validate it and an unknown value counts as missing, so a typo cannot park an item. A wrong guess costs one effort step.
-- **A self-check is sized by its range:** fewer than 300 changed lines (`git diff --shortstat`) one step lower, 2,000 or more one step higher.
-- **The reason is visible.** Effort now varies per window, so a surprising bill has to be explainable from the log: the session line says why (`effort medium — size s`), the run header shows the baseline and `(auto)`, `loop-status.json` and `status` show the running session's model and effort, and the `loop.session` event carries `effort` and `effort_reason`.
+- **Difficulty, not size.** Effort sets how hard a session thinks per step; size measures how much work there is. A 40-file rename is large and easy; a 5-line concurrency fix is small and hard. The first build of 1.1 used `size: s|m|l` with an estimate from the counts of criteria and Plan steps. Before the release the user asked whether size is the right measure, and it was replaced: the design session, which has just planned the change on the strongest model, judges how hard it is; `/sdlc:run` may guess first. Without a judgment the item runs at the base, because counts measure volume, not difficulty. A work doc carries `difficulty: easy|normal|hard`. `easy` is mechanical: the Plan names every edit and there is no logic to get wrong. `hard` is concurrency, security or auth, a data migration or a stored format, money or precision, an algorithm, a contract between modules, or a requirement that needed judgment. `normal` is everything else. `easy` lowers design and build one step and `hard` raises design, build and fix one step. A fix session is not lowered for `easy`: it works on a failure, and easy items fail too.
+- **`difficulty` is a hint, not a field the engine polices.** `problems()` does not validate it, it is not frozen with the criteria, and any value other than the three (in any case) counts as `normal`, so a typo cannot park an item. A wrong judgment costs one effort step.
+- **Evidence beats a guess:** an item that failed before, and a second fix round, each add a step — the first to design, build and fix, the second to the fix session. The rules are pure functions in `scripts/sdlclib/effort.py`, applied to every window, so a continuation can differ from the first window.
+- **The self-check runs at its base:** its session mostly hands the range to the reviewer agent, and the size of a range is volume again.
+- **The reason is visible.** Effort now varies per window, so a surprising bill has to be explainable from the log: the session line says why (`effort medium — difficulty easy`), the run header shows the baseline and `(auto)`, `loop-status.json` and `status` show the running session's model and effort, and the `loop.session` event carries `effort` and `effort_reason`.
 
 **F2 — The self-check needs two merged items** (`loop.self_check_min_items`)
 - A self-check looks for what the per-item reviews missed, above all how merged changes interact: a contract one changed and another still assumes. One merged item has nothing to interact with, and its own review (reviewer plus validation) has just read that diff. A second pass over it is the same diff and the same criteria on a stronger model. So the minimum is two, counted from the start of the run or from the last self-check (`merged_since_check`); `1` runs it after any merge, as 1.0 did.
@@ -290,11 +290,11 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
 - [x] P8 hand-off to the user: migration notes per repository, merge to main, push and update only on the user's go-ahead
   - A survey of the six 0.x repositories (init run in throwaway clones only) found 14 migration defects; all are fixed. The per-repository notes went to the user, not into this repository: they hold details of a company repository.
   - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.0.0 in both profiles.
-- [x] 1.1 built: auto effort, self-check min items, PR checks wait, FIX_BLOCKED, events and refused start, opt-in isolation, CLAUDE.md trim, with tests and docs
+- [x] 1.1 built: auto effort (by difficulty, after the first build's size was replaced), self-check min items, PR checks wait, FIX_BLOCKED, events and refused start, opt-in isolation, CLAUDE.md trim, with tests and docs
   - `tests/run.sh` passes:
     - hooks 1816
     - scripts 91
-    - engine 743 tests on Python 3.12 and 3.9
+    - engine 737 tests on Python 3.12 and 3.9
     - `plugin validate --strict` and the marketplace
   - Not tried against a real GitHub repository: the PR-checks wait is tested with the stub `gh` only.
 - [ ] 1.1 release: merge to main, push and update only on the user's go-ahead

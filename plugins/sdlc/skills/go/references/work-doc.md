@@ -11,7 +11,7 @@ title: 수입·지출 입력/수정/삭제
 status: ready
 depends_on: []
 test_changes: none
-size: m
+difficulty: normal
 created: 2026-10-12T09:30:00Z
 source: user
 ---
@@ -21,7 +21,7 @@ source: user
 - `title`: in `language`; quote it when it contains `: ` or ` #`.
 - `depends_on`: `[slug, slug]` — the item waits until those are done.
 - `test_changes`: `none` or `allowed` — decided by the design and frozen with it: the gate sends a later change to a person.
-- `size`: `s`, `m` or `l` (any case; `small`, `medium`, `large`, `xs` and `xl` are read too) — how much effort the loop's sessions spend. `/sdlc:run` guesses it when it splits a goal; the design sets it from its Plan and may revise the guess (references/design.md). Optional and not frozen. Without one (or with any other value) the engine estimates a size from the criteria and Plan steps for the build and fix sessions, and a design session runs at its base effort.
+- `difficulty`: `easy`, `normal` or `hard` (any case) — how hard the loop's sessions think. `easy`: mechanical — the Plan names every edit and there is no logic to get wrong (config, a rename, wording, wiring, copying a pattern that exists). `hard`: concurrency, security or auth, a data migration or a stored format, money or precision, an algorithm, a contract between modules, or a requirement that needed judgment. `normal`: everything else. `/sdlc:run` guesses it when it splits a goal; the design sets it from its Plan and revises the guess (references/design.md). Optional and not frozen. Without one, or with any other value, it is `normal` and the sessions run at their base effort.
 - `created`: the current UTC time, ISO — take it from `date -u +%Y-%m-%dT%H:%M:%SZ`, never type one from memory. The queue works oldest first, so docs written together get ascending values, a second apart, in the order they should be worked. `source`: `user`, `goal:<id>`, `self-check` or `review:<slug>`.
 
 One `key: value` per line and nothing after the value — a trailing `# comment` becomes part of the value and breaks the doc. The template is `templates/<language>/work.md` (`{{slug}}`, `{{title}}`, `{{created}}`); replace each comment you fill, and make sure Goal holds real text.

@@ -18,4 +18,4 @@ writes these; you can too.
 - "어디까지 됐어?" shows progress and what needs you.
 - `depends_on: [slug]` keeps an item waiting until that one is merged.
 - `test_changes: allowed` lets the change edit existing tests (new tests are always allowed).
-- `size: s|m|l` tells the loop how much effort its sessions spend (the design sets it).
+- `difficulty: easy|normal|hard` tells the loop how hard its sessions think (the design sets it).

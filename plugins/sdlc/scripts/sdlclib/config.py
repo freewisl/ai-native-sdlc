@@ -62,7 +62,7 @@ DEFAULTS: Dict[str, Any] = {
         # no --model / --effort). The 0.x keys loop.model, loop.fix_model and loop.effort still count — see Config.
         "models": {"design": "opus", "build": "sonnet", "fix": "sonnet", "self_check": "opus"},
         "efforts": {"design": "high", "build": "high", "fix": "medium", "self_check": "high"},
-        "auto_effort": True,                     # shift each session's effort from loop.efforts by the item's size, earlier failures and fix rounds
+        "auto_effort": True,                     # shift each session's effort from loop.efforts by the item's difficulty, earlier failures and fix rounds
         "escalate_model": "opus",                # a build for an item that has failed before runs on this one ("" = never)
         "session_max_minutes": 120,
         "max_turns": 500,

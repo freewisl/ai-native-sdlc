@@ -61,7 +61,7 @@ claude plugin update sdlc@ai-native-sdlc      # 열려 있는 세션은 /reload-
 4. **리뷰** — `sdlc-reviewer`(opus)가 `REVIEW.md` 의 세 패스(버그·보안·정합성)를 돌립니다. Important 지적은 새 컨텍스트에서 반박을 시도해 살아남은 것만 세고, 확정된 것은 고칩니다. 결과를 `## Review` 의 집계 줄에 적고 `built` 로 커밋합니다.
 5. **셸 게이트와 머지** — `sdlc.py ship <slug>` 가 루프와 같은 게이트를 돌립니다([아래](#머지-게이트)). 통과하면 엔진이 `done` 을 커밋하고 push 해 PR 을 열고, GitHub 이면 PR 의 체크가 끝나기를 최대 30분(`loop.checks_wait_minutes`) 기다린 뒤 squash 머지합니다(원격이 없으면 이 컴퓨터에서 바로 squash 머지, 팀 저장소는 기다리지 않고 PR 을 ready 로 두어 사람이 머지). 고칠 수 있는 실패는 — 체크가 실패한 것도 — 고쳐 최대 세 번 다시 돌리고, 사람 몫은 이유와 함께 멈춥니다.
 
-작업 문서의 `status` 는 `ready`(큐에 있음) → `planned`(설계됨) → `built`(구현·리뷰 끝, 게이트 차례) → `done`(게이트 통과)로 갑니다. 옆길이 셋입니다: `proposed`(사람이 받아들여야 하는 제안), `needs-input`(답을 기다림), `dropped`(하지 않기로 함 — 이유는 `## Departures` 첫 줄이고, 어느 경로로 접든 기본 브랜치에 기록됩니다). `size`(`s`·`m`·`l`)는 변경의 크기로, 루프가 세션의 effort 를 고르는 데 씁니다([모델과 비용](#모델과-비용)). `/sdlc:run` 이 어림해 적고 설계가 계획을 보고 고치며, 비어 있으면 구현·수정은 인수 조건 수와 계획 단계 수로 어림합니다. 구현이 끝난 문서는 이렇게 생겼습니다. 엔진이 읽는 것은 frontmatter, `## ` 제목으로 나뉜 절, 리뷰 집계 줄이고 나머지는 사람을 위한 글입니다.
+작업 문서의 `status` 는 `ready`(큐에 있음) → `planned`(설계됨) → `built`(구현·리뷰 끝, 게이트 차례) → `done`(게이트 통과)로 갑니다. 옆길이 셋입니다: `proposed`(사람이 받아들여야 하는 제안), `needs-input`(답을 기다림), `dropped`(하지 않기로 함 — 이유는 `## Departures` 첫 줄이고, 어느 경로로 접든 기본 브랜치에 기록됩니다). `difficulty`(`easy`·`normal`·`hard`)는 변경의 난이도로, 루프가 세션의 effort 를 고르는 데 씁니다([모델과 비용](#모델과-비용)). `easy` 는 계획이 고칠 곳을 모두 짚고 틀릴 로직이 없는 기계적인 변경(설정, 이름 바꾸기, 문구, 연결, 이미 있는 패턴 베끼기)이고, `hard` 는 동시성, 보안·인증, 데이터 이전이나 저장 형식, 돈이나 정밀도, 알고리즘, 모듈 사이의 계약, 판단이 필요했던 요구사항 중 하나가 걸린 변경이며, 나머지는 `normal` 입니다. `/sdlc:run` 이 목표를 나눌 때 어림해 적고 설계가 계획을 보고 고칩니다. 대소문자는 가리지 않고, 비어 있거나 다른 값이면 `normal` 입니다. 구현이 끝난 문서는 이렇게 생겼습니다. 엔진이 읽는 것은 frontmatter, `## ` 제목으로 나뉜 절, 리뷰 집계 줄이고 나머지는 사람을 위한 글입니다.
 
 ```markdown
 ---
@@ -70,7 +70,7 @@ title: 월별 합계 카테고리 필터
 status: built
 depends_on: []
 test_changes: none
-size: s
+difficulty: normal
 created: 2026-10-13T02:10:00Z
 source: user
 ---
@@ -149,19 +149,18 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 | 모델 `loop.models` | opus | sonnet | sonnet | opus |
 | 기준 effort `loop.efforts` | high | high | medium | high |
 
-**effort 자동 조정**(`loop.auto_effort`, 기본 켜짐) — 엔진이 띄우는 모든 세션(이어 가는 세션도)의 effort 는 기준값을 아래 표만큼 올리거나 내린 값입니다. 한 칸은 `low` → `medium` → `high` → `xhigh` 순서에서 하나입니다.
+**effort 자동 조정**(`loop.auto_effort`, 기본 켜짐) — 엔진이 띄우는 설계·구현·수정 세션(이어 가는 세션도)의 effort 는 기준값을 아래 표만큼 올리거나 내린 값입니다. 한 칸은 `low` → `medium` → `high` → `xhigh` 순서에서 하나입니다.
 
 | 조건 | 설계 | 구현 | 수정 |
 |---|---|---|---|
-| 작업 문서 `size: s` | -1 | -1 | 0 |
-| 작업 문서 `size: l` | +1 | +1 | +1 |
+| 작업 문서 `difficulty: easy` | -1 | -1 | 0 |
+| 작업 문서 `difficulty: hard` | +1 | +1 | +1 |
 | 이미 실패한 적 있는 항목 | +1 | +1 | +1 |
 | 같은 실패의 두 번째 수정 세션부터 | 0 | 0 | +1 |
 
-- 조정이 겹치면 더한 뒤 `low`~`xhigh` 안으로 맞춥니다(구현 `high` 에 `size: l` 과 실패 이력이 겹치면 `xhigh`). 수정 세션은 실패를 고치는 일이라 `size: s` 여도 내리지 않습니다. 값이 `max` 이거나 `""`(`--effort` 를 넘기지 않음)인 단계는 사람이 정한 값이라 건드리지 않습니다. `loop.auto_effort: false` 면 1.0 처럼 `loop.efforts` 를 그대로 씁니다.
-- `size` 가 없으면 설계는 기준 그대로 돌고, 구현·수정은 인수 조건 수와 계획 단계 수로 어림합니다(조건 2개 이하이고 단계 3개 이하면 `s`, 조건 7개 이상이거나 단계 8개 이상이면 `l`).
-- 자기 점검은 점검 범위가 300줄 미만이면 한 단계 낮추고 2000줄 이상이면 한 단계 올립니다. 이번 실행(또는 직전 점검) 뒤 머지된 항목이 `loop.self_check_min_items`(기본 2)개 미만이면 아예 돌지 않습니다. 항목 하나는 그 항목의 리뷰가 이미 같은 diff 를 봤기 때문입니다.
-- 무엇이 적용됐는지는 실행 로그의 세션 줄에 이유와 함께 남습니다: `BUILD   a-first — session (model sonnet, effort medium — size s)`. 실행 머리줄에는 `efforts=design:high/build:high/fix:medium (auto)`, status 에는 도는 세션의 `(sonnet · medium)` 이 나옵니다.
+- `difficulty` 가 `normal` 이거나 비어 있으면 기준 그대로입니다. 조정이 겹치면 더한 뒤 `low`~`xhigh` 안으로 맞춥니다(구현 `high` 에 `difficulty: hard` 와 실패 이력이 겹치면 `xhigh`). 수정 세션은 실패를 고치는 일이라 `difficulty: easy` 여도 내리지 않습니다. 값이 `max` 이거나 `""`(`--effort` 를 넘기지 않음)인 단계는 사람이 정한 값이라 건드리지 않습니다. `loop.auto_effort: false` 면 1.0 처럼 `loop.efforts` 를 그대로 씁니다.
+- 자기 점검은 기준 effort 그대로 돕니다. 이번 실행(또는 직전 점검) 뒤 머지된 항목이 `loop.self_check_min_items`(기본 2)개 미만이면 아예 돌지 않습니다. 항목 하나는 그 항목의 리뷰가 이미 같은 diff 를 봤기 때문입니다.
+- 무엇이 적용됐는지는 실행 로그의 세션 줄에 이유와 함께 남습니다: `BUILD   a-first — session (model sonnet, effort medium — difficulty easy)`. 이유로 `difficulty easy|hard`, `failed before`, `fix round N` 이 이 순서로 붙습니다. 실행 머리줄에는 `efforts=design:high/build:high/fix:medium (auto)`, status 에는 도는 세션의 `(sonnet · medium)` 이 나옵니다.
 - 이미 실패한 적 있는 항목의 구현은 `loop.escalate_model`(기본 opus, `""` 이면 끔)로 올라갑니다. 값이 `""` 인 단계는 `--model`·`--effort` 를 넘기지 않습니다.
 - 바꿀 때는 `.sdlc/config.json` 에 달라지는 단계만 적습니다: `{"loop": {"models": {"build": "opus"}, "efforts": {"fix": "high"}, "escalate_model": ""}}`. 문자열 하나(`"models": "sonnet"`)는 모든 단계에 적용되고, 0.x 의 `loop.model`·`loop.fix_model`·`loop.effort` 도 읽습니다.
 - 서브에이전트의 모델은 `agents/*.md` 의 `model:` 에 있고 config 로 바꾸지 않습니다: reviewer opus, builder·verifier·simplifier sonnet, researcher haiku. `/sdlc:go` 는 메인 세션이 설계를 맡고 구현은 builder 에, 리뷰는 reviewer 에 넘기며(머지는 엔진의 `ship`), 루프에서는 구현 세션 자신이 구현 모델이라 builder 를 다시 부르지 않습니다.
@@ -205,7 +204,7 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 | `gate.review`·`test_integrity`·`acceptance_frozen`·`checks` · `new_dependencies` | `true`(넷) · `human` | 검사 2·3·4·7 을 끄려면 `false` — `test_integrity` 는 3번 전체(기존 테스트 변경 검사 포함), `acceptance_frozen` 은 4번(인수 조건과 `test_changes` 고정)을 끕니다. `new_dependencies: allow` 면 새 의존성(검사 5)도 통과. 6번의 가드 파일 검사는 끌 수 없습니다(토글 없음) |
 | `risk.human` | `[]` | 글롭 — 걸리는 변경은 사람이 머지(가드 파일은 이 설정과 상관없이 사람 — 검사 6) |
 | `loop.fix_rounds` · `max_failures_per_slug` · `max_consecutive_failures` | `2` · `3` · `3` | 게이트(GitHub 에서는 PR 체크도) 실패 때 수정 세션 횟수 · 항목이 막히는 실패 횟수 · 루프가 멈추는 연속 실패 횟수 |
-| `loop.auto_effort` | `true` | 세션마다 effort 를 항목의 `size`·이전 실패·수정 횟수·점검 범위에 맞춰 조정([모델과 비용](#모델과-비용)). `false` 면 `loop.efforts` 그대로 |
+| `loop.auto_effort` | `true` | 세션마다 effort 를 항목의 `difficulty`·이전 실패·수정 횟수에 맞춰 조정([모델과 비용](#모델과-비용)). `false` 면 `loop.efforts` 그대로 |
 | `loop.self_check` · `self_check_max_items` | `true` · `3` | 루프가 직접 머지한 뒤의 자기 점검(솔로 모드뿐, 팀 모드는 돌지 않음) · 한 번에 `ready` 로 만들 항목 상한(넘치면 `proposed`) |
 | `loop.self_check_min_items` | `2` | 자기 점검이 돌려면 이번 실행(또는 직전 점검) 뒤 머지된 항목이 몇 개 이상이어야 하는지. 항목 하나는 그 항목의 리뷰가 이미 같은 diff 를 봤으므로 건너뜀 |
 | `loop.checks_wait_minutes` | `30` | GitHub: 머지 전에 PR 의 체크를 기다리는 시간(분). `0` 이면 기다리지 않고 머지 |

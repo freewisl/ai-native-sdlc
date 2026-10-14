@@ -7,8 +7,8 @@ Per item (state read from its work doc on `sdlc/<slug>`):
   done    → ship            → push, open the PR; on GitHub wait for its checks (`loop.checks_wait_minutes`): all pass → merge ·
                               one fails → back to `built`, a fix session gets its log, the gate runs again · still running at
                               the limit → a person. No remote: merge here. Team: a person merges, nothing is waited for.
-Each session's effort is `loop.efforts` moved by the item's size, an earlier failure and a second fix round (a self-check: by
-the size of its range) — effort.py, `loop.auto_effort`.
+Each session's effort is `loop.efforts` moved by the item's difficulty, an earlier failure and a second fix round (a self-check
+runs at its base) — effort.py, `loop.auto_effort`.
 A session stopped by a cap continues at once (warm cache, `--resume`); a stop older than `cold_resume_minutes` continues
 in a fresh session; a stop without progress since the last one is a failure. Usage limits: a model-family limit switches
 model, a session/weekly limit is slept out when it resets within `limit_wait_hours`, else the run stops (resumable).
@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 from . import state as st
 from .config import PHASES, Config, NotInitialized
-from .effort import LEVELS, doc_size, shift
+from .effort import LEVELS, doc_difficulty, shift
 from .enqueue import EnqueueError, departure_reason, drain_inbox, enqueue, prepare, record_drop
 from .events import log_event
 from .gate import GateResult, run_gate
@@ -60,7 +60,7 @@ class Outcome:
 
 
 def session_note(model: str, effort: str, why: str = "") -> str:
-    """What the run log says about a session: `model sonnet, effort medium — size s` (the effort, and what moved it)."""
+    """What the run log says about a session: `model sonnet, effort medium — difficulty easy` (the effort, and what moved it)."""
     note = "model %s" % (model or "default")
     if effort:
         note += ", effort %s" % effort + (" — " + why if why else "")
@@ -174,45 +174,31 @@ class Engine:
                     return alt
         return m
 
-    def effort_for(self, phase: str, slug: str = "", fix_round: int = 0, diff_lines: Optional[int] = None) -> Tuple[str, str]:
-        """(effort, why) of the next session of this phase: `loop.efforts` moved by what the loop knows. A small item
-        (`size: s`, or counted so) needs less in design and build, a large one more in all three; an item that has failed
-        before, and every fix round after the first, one more; a self-check reads a small range with less and a large one
-        with more. `why` names what moved it — "" when nothing did. An effort a person set to "" or "max" is left alone,
-        and so is every effort when `loop.auto_effort` is off."""
+    def effort_for(self, phase: str, slug: str = "", fix_round: int = 0) -> Tuple[str, str]:
+        """(effort, why) of the next session of this phase: `loop.efforts` moved by what the loop knows. An easy item
+        (`difficulty: easy` in its work doc) needs less in design and build, a hard one more in all three; an item that
+        has failed before, and every fix round after the first, one more. `why` names what moved it — "" when nothing
+        did. An effort a person set to "" or "max" is left alone, and so is every effort when `loop.auto_effort` is off;
+        so is a self-check's, which has no item and runs at its base."""
         base = self.cfg.effort(phase)
-        if not bool(self.cfg.get("loop.auto_effort", True)) or base not in LEVELS or base == "max":
+        if not bool(self.cfg.get("loop.auto_effort", True)) or base not in LEVELS or base == "max" \
+                or phase not in ("design", "build", "fix"):
             return base, ""
         steps, why = 0, []
-        if phase in ("design", "build", "fix"):
-            size, how = doc_size(self.doc(slug) if slug else None, estimate=(phase != "design"))   # a design runs at its base until the doc says
-            if size == "s" and phase != "fix":      # a fix works on a failure: small items fail like large ones
-                steps -= 1
-                why.append(how)
-            elif size == "l":
-                steps += 1
-                why.append(how)
-            if slug and int(st.item(self.root, slug).get("failures", 0) or 0) > 0:
-                steps += 1
-                why.append("failed before")
-            if fix_round >= 2:
-                steps += 1
-                why.append("fix round %d" % fix_round)
-        elif phase == "self_check" and diff_lines is not None:
-            if diff_lines < 300:
-                steps -= 1
-                why.append("small range (%d line%s)" % (diff_lines, "" if diff_lines == 1 else "s"))
-            elif diff_lines >= 2000:
-                steps += 1
-                why.append("large range (%d lines)" % diff_lines)
+        difficulty = doc_difficulty(self.doc(slug) if slug else None)
+        if difficulty == "easy" and phase != "fix":     # a fix works on a failure: an easy item fails like a hard one
+            steps -= 1
+            why.append("difficulty easy")
+        elif difficulty == "hard":
+            steps += 1
+            why.append("difficulty hard")
+        if slug and int(st.item(self.root, slug).get("failures", 0) or 0) > 0:
+            steps += 1
+            why.append("failed before")
+        if phase == "fix" and fix_round >= 2:
+            steps += 1
+            why.append("fix round %d" % fix_round)
         return shift(base, steps), ", ".join(why)
-
-    def range_lines(self, first: str, last: str) -> Optional[int]:
-        """Lines added plus removed between two commits (`git diff --shortstat`); None when git cannot say."""
-        r = self.git("diff", "--shortstat", "%s..%s" % (first, last))
-        if not r.ok:
-            return None
-        return sum(int(n) for n in re.findall(r"(\d+) (?:insertion|deletion)", r.out))
 
     # ------------------------------------------------------------------ preflight
     def preflight(self) -> None:
@@ -1234,7 +1220,7 @@ class Engine:
         head = self.git.head()
         rng = "%s..%s" % (self.from_sha[:12], head[:12])
         model = self.model_for("self_check")
-        effort, effort_why = self.effort_for("self_check", diff_lines=self.range_lines(self.from_sha, head))
+        effort, effort_why = self.effort_for("self_check")
         self.say("CHECK   reviewing what merged (%s) (%s)" % (rng, session_note(model, effort, effort_why)))
         self.set_status(state="running", item="", phase="self-check", phase_started=now_iso(), model=model, effort=effort)
         before = set(self.git.out("ls-files", "--others", "--exclude-standard").splitlines())
