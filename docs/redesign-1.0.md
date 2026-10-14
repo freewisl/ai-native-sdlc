@@ -297,4 +297,5 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
     - engine 737 tests on Python 3.12 and 3.9
     - `plugin validate --strict` and the marketplace
   - Not tried against a real GitHub repository: the PR-checks wait is tested with the stub `gh` only.
-- [ ] 1.1 release: merge to main, push and update only on the user's go-ahead
+- [x] 1.1 release: merge to main, push and update only on the user's go-ahead
+  - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.1.0 in both profiles.
