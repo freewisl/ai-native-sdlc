@@ -253,6 +253,31 @@ These numbers shaped F5 and F6: the startup prompt is a real cost of every sessi
 - `gh` refuses the log of a run that is still in progress ("logs will be available when it is complete"), which is possible for a few seconds after its last check finished. Such runs are asked again after 10 seconds, up to three times, with the loop's interruptible sleep. A stop or pause meanwhile stops the run before the fix round is counted, as the checks wait does; the doc is `built` already, so the next run gates and ships it again.
 - The rest of the 1.1 reading was confirmed on real pull requests: the rollup's fields (`__typename`, `name`, `status`, `conclusion`, `detailsUrl`, `workflowName` for a check run; `context`, `state`, `targetUrl` for a commit status) and `mergeStateStatus` are what the engine reads.
 
+**1.1.2 — found in the first run on a real repository** (a private web app with GitHub Actions and a Vercel deployment: `/sdlc:init` from 0.x, then two items through `/sdlc:run`)
+- **What worked:**
+  - the 0.x migration and the queue PR;
+  - design on opus and build on sonnet, at the effort `difficulty: easy` gave (medium);
+  - the shell gate;
+  - the wait for the PR's checks, with GitHub Actions and Vercel's commit status and check run alike;
+  - the merge;
+  - a self-check whose three findings were all nits and so became proposals.
+
+  Two items and the self-check took 11 minutes and $2.79.
+- **Concurrent git.**
+  - What happened: the run skill's `status` fetched with `--prune` while the new loop checked out and pulled the default branch. git fails a command that finds another process's `index.lock` or a ref lock, and the loop stopped with a bare "cannot check out or fast-forward".
+  - Measured: a concurrent `git status` makes `git checkout` of the current branch fail 5 times in 200 with `index.lock': File exists`, and 0 times in 200 with `--no-optional-locks`.
+  - Now:
+    - status does not fetch while a loop runs in the checkout;
+    - a git command that failed on a lock is tried again after 1, 2 and 4 s, because two loops in two worktrees can still collide;
+    - git's reason goes into the message (its first `fatal:` or `error:` line);
+    - a fetch out of time gets SIGTERM before SIGKILL, so it does not leave a stale lock.
+- **Reserved slugs.** `readme` and `template` are the stems of the files the work dir keeps (`README.md`, `TEMPLATE.md`). On a case-insensitive file system, `work/readme.md` is `work/README.md`. The run session that wrote it noticed and renamed the item. The engine now refuses those slugs wherever it checks a doc.
+- **0.x REVIEW.md.** Init never overwrites an existing file, so a 0.x REVIEW.md kept telling the reviewer to read `spec.md` and `plan.md`, and that findings never block a PR. The trial's init session rewrote it by itself; the other repositories need it done the same way every time.
+  - The exact 0.x Compliance line and the exact 0.x Approval section are replaced with the template's 1.x text.
+  - Anything edited is left alone, and `--check` warns.
+- **Self-check proposals on GitHub.** `enqueue` does not pull while a loop runs in the checkout, so that it never moves the branch under the loop. That includes the loop itself, so the scan after the self-check missed the queue PR it had just merged. The loop now pulls before it counts what waits.
+- **Found, not changed.** A static site deployed from the repository root serves `CLAUDE.md`, `REVIEW.md`, `work/` and `.sdlc/config.json`. The plugin cannot tell how a repository is deployed, so the README says to keep these files out of the deployment.
+
 ## Known limitations
 
 These were found in the live trial and the D1 work (P7), and while building 1.1. None of them blocks the loop.
@@ -261,6 +286,7 @@ These were found in the live trial and the D1 work (P7), and while building 1.1.
 - **Session logs are not pure JSONL.** claude may print a plain-text warning first: `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. In an untrusted workspace, loop sessions do not get the project's allow list. The engine's `--allowedTools` covers what they need.
 - **PR checks are read from the rollup of the PR's head.** A check that never reports leaves the item pending until `loop.checks_wait_minutes` runs out, and then it goes to a person.
 - **A branch is brought up to date at most once per merge.** A second time behind is left to a person ("merge did not happen").
+- **Lock retries read git's English messages.** A git command is tried again only when its output has `Unable to create '….lock': File exists` or `cannot lock ref '…': is at … but expected …` (not the same words in a hook's or another tool's message), and the reason in a message is git's first `fatal:` or `error:` line. A git that prints translated messages (a build with translations, under a non-English locale) is not retried, and the reason is its last line. Apple's git prints English under any locale.
 - **The deploy gate does not see:**
   - a command made from a text tool's output (`$(echo …)`, or an unquoted `VAR=$(…)` in front of git)
   - a deploy split across two commands (`cd prod && make deploy`)
@@ -313,3 +339,11 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
     - `plugin validate --strict` and the marketplace
 - [x] 1.1.1 release: merge to main, push and update on the user's go-ahead
   - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.1.1 in both profiles.
+- [x] 1.1.2 built: fixes from the first run on a real repository (concurrent git, reserved slugs, 0.x REVIEW.md, self-check proposals on GitHub), with tests and docs
+  - `tests/run.sh` passes:
+    - hooks 1816
+    - scripts 91
+    - engine 861 tests on Python 3.12 and 3.9
+    - `plugin validate --strict` and the marketplace
+  - The REVIEW.md migration was also run in memory on the REVIEW.md files of five 0.x repositories. Each came out with the 1.x Compliance line and sections; nothing was written.
+- [ ] 1.1.2 release: merge to main, push and update on the user's go-ahead

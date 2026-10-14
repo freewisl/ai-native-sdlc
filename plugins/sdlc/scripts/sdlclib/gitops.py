@@ -36,12 +36,60 @@ def dirty_summary(lines: List[str], cap: int = 3) -> str:
     return out + (" … (+%d more)" % (len(lines) - cap) if len(lines) > cap else "")
 
 
+# A git command that fails because another git process holds a lock (the index, a ref) is run again after each of these
+# pauses, in seconds: the other process, a `git fetch` or a second loop, is usually done within one.
+LOCK_RETRY_DELAYS = (1, 2, 4)
+# What git prints, on stdout or stderr, when it lost a race that passes. Git's own words and nothing looser: the commit the engine
+# makes runs the repository's hooks, and what a hook prints is ordinary text (`got 1 but expected 2`,
+# `ln: failed to create symbolic link 'yarn.lock': File exists`).
+#   a lock file that exists:       Unable to create '<path>.lock': File exists       (`cannot lock ref` ends with it too)
+#   a ref another process moved:   cannot lock ref '<ref>': is at <sha> but expected <sha>
+# `cannot lock ref` alone is no match: it also opens failures that never pass, `'refs/heads/a' exists; cannot create
+# 'refs/heads/a/b'` and `reference already exists`.
+LOCK_RE = re.compile(r"Unable to create '.*\.lock': File exists"
+                     r"|cannot lock ref '[^']+': is at [0-9a-f]+ but expected [0-9a-f]+")
+CAUSE_PREFIXES = ("fatal:", "error:")       # how git starts the line that says what went wrong
+TERM_GRACE = 2.0        # seconds a fetch that ran out of time has to remove its lock files after SIGTERM, before SIGKILL
+
+
+def pause(seconds: float) -> None:
+    """The wait before a command is tried again — a function of its own, so that a test does not have to sleep."""
+    time.sleep(seconds)
+
+
+def cause_of(r: CmdResult) -> str:
+    """The line that says why a failed command failed: the first `fatal:` or `error:` line, on stderr before stdout. Git's
+    advice comes after it (the hint about a stale lock file, say), so the last line is the answer only when git printed no
+    such line."""
+    for stream in (r.err, r.out):
+        for line in stream.splitlines():
+            line = line.strip()
+            if line.startswith(CAUSE_PREFIXES):
+                return line
+    return tail(r.err, 1).strip() or tail(r.out, 1).strip()
+
+
 class Git:
     def __init__(self, root: str):
         self.root = root
+        self.last_error = ""        # why the last command failed, in git's words (see cause_of); empty after one that worked
 
     def __call__(self, *args: str, timeout: float = 300, cwd: Optional[str] = None) -> CmdResult:
-        return run(["git", "-C", cwd or self.root] + list(args), timeout=timeout)
+        """Run git. A command that failed on a lock is run again, after each of LOCK_RETRY_DELAYS; the reason it gave the last
+        time is what `last_error` keeps."""
+        cmd = ["git", "-C", cwd or self.root] + list(args)
+        r = run(cmd, timeout=timeout)
+        for delay in LOCK_RETRY_DELAYS:
+            if r.ok or not LOCK_RE.search(r.text()):
+                break
+            pause(delay)
+            r = run(cmd, timeout=timeout)
+        self.last_error = "" if r.ok else cause_of(r)
+        return r
+
+    def with_reason(self, message: str) -> str:
+        """`message`, followed by the reason git gave for the command that just failed — as it stands, when git gave none."""
+        return "%s: %s" % (message, self.last_error) if self.last_error else message
 
     def out(self, *args: str, cwd: Optional[str] = None) -> str:
         r = self(*args, cwd=cwd)
@@ -139,7 +187,9 @@ class Git:
 
     def refresh(self, timeout: float) -> bool:
         """`fetch --prune` for a read-only view: it never asks for a password, says nothing, and does not outlive `timeout` —
-        the whole process group goes (ssh and the https helper included). False on any failure: the view shows what it has."""
+        the whole process group goes (ssh and the https helper included), told to stop first and killed when it does not
+        within TERM_GRACE: git removes its lock files on SIGTERM, a SIGKILL leaves them behind. False on any failure: the view
+        shows what it has. A lock held by someone else is not waited for: the view is not worth a pause."""
         if not self.has_remote():
             return False
         try:
@@ -155,10 +205,17 @@ class Git:
         finally:
             if p.poll() is None:
                 try:
-                    os.killpg(p.pid, signal.SIGKILL)
+                    os.killpg(p.pid, signal.SIGTERM)
                 except OSError:
-                    p.kill()
-                p.wait()
+                    p.terminate()
+                try:
+                    p.wait(timeout=TERM_GRACE)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except OSError:
+                        p.kill()
+                    p.wait()
 
     def base_ref(self, default: str) -> str:
         """What a change is measured against: origin/<default> when it exists, else the local default branch."""
@@ -275,9 +332,10 @@ class LocalForge(Forge):
         g, b = self.git, "sdlc/" + slug
         where = g.root
         if not g.ok("checkout", "-q", self.default):
+            why = g.with_reason("cannot check out " + self.default)
             wt = g.worktree_of(self.default)
             if not wt:
-                return False, "cannot check out " + self.default
+                return False, why
             dirty = g.dirty(cwd=wt)
             if dirty:
                 return False, "%s is checked out in %s with uncommitted changes (%s)" % (self.default, wt, dirty_summary(dirty))

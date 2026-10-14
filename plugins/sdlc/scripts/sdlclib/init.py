@@ -1,5 +1,6 @@
 """`sdlc.py init` — adopt a repository, or move a 0.x one to 1.0. Never overwrites what the user wrote: an existing file
-is SKIPPED, or MERGED (missing CLAUDE.md sections, missing .gitignore lines, missing permissions, empty config values).
+is SKIPPED, or MERGED (missing CLAUDE.md sections, missing .gitignore lines, missing permissions, empty config values, the
+lines of a 0.x REVIEW.md that 1.0 changed — where nobody has edited them).
 
   init [--lang en|ko] [--solo|--team] [--commands build=..,test=..] [--dry-run] [--prune] [--json]
   init --check [--json]          a health report instead
@@ -21,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .config import CONFIG_REL, DEFAULTS, OBJECT_SECTIONS, Config, config_version, migrate_v1
 from .util import now_iso, plugin_root, plugin_version, read_json, read_text, run, write_json
-from .workdoc import SLUG_RE, WorkDoc, list_docs, problems, split_frontmatter
+from .workdoc import RESERVED_FILES, RESERVED_SLUGS, SLUG_RE, WorkDoc, list_docs, problems, split_frontmatter
 
 SECTIONS = ("commands", "conventions", "architecture", "mistakes", "verifying")
 SECTION_TITLES = {"commands": "Commands", "conventions": "Conventions", "architecture": "Architecture",
@@ -47,6 +48,21 @@ OLD_LINES = {
 }
 REMOVED_COMMANDS = re.compile(r"/sdlc:(?:intent|spec|plan|lesson|review|verify|doctor|release|monitor|triage|"
                               r"postmortem|metrics|evals|policy|scan|ship|loop)\b")
+# what 0.x wrote into REVIEW.md that 1.0 changed, by language: the Compliance line (it named spec.md and plan.md) and the
+# Approval section (1.0 asks for the review tally there)
+OLD_COMPLIANCE = {
+    "en": "- Compliance: the change matches spec.md, plan.md and our design principles; CLAUDE.md conventions are followed",
+    "ko": "- Compliance(정합성): 변경이 spec.md·plan.md·우리 설계 원칙과 일치하는지, CLAUDE.md 규약을 따르는지"}
+OLD_APPROVAL = {
+    "en": ("## Approval",
+           "Findings do not approve or block a PR on their own. Approval comes from a",
+           "code owner through branch protection. The agent that wrote the code cannot approve it."),
+    "ko": ("## 승인 (Approval)",
+           "지적 사항만으로 PR 이 승인되거나 차단되지 않습니다. 승인은 브랜치 보호를 통해",
+           "코드 오너가 합니다. 코드를 작성한 에이전트는 그 코드를 승인할 수 없습니다.")}
+REVIEW_SECTIONS = ("New or pre-existing", "Tally")               # the 1.0 sections that take the Approval section's place
+HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*$")
+OLD_REVIEW_FILES = re.compile(r"\b(?:spec|plan)\.md\b")           # a REVIEW.md that still sends the reviewer to files 1.0 lacks
 COMMAND_KEYS = ("build", "test", "lint", "run", "format", "lint_file")
 GITIGNORE = (".sdlc/logs/", ".sdlc/state/", ".sdlc/worktrees/")
 # 0.x: files it generated, local state files, the example eval cases it copied — removed by --prune
@@ -390,6 +406,79 @@ def claude_md(root: str, lang: str, cmds: Dict[str, str], out: Out) -> None:
         out.add("SKIPPED", "CLAUDE.md", "; ".join(notes) or "all 5 sections present")
 
 
+def is_heading(line: str, key: str) -> bool:
+    """`line` is a heading titled `key` — in a Korean file `<title> (key)`; case does not matter."""
+    m = HEADING.match(line)
+    title = m.group(1).lower() if m else ""
+    return title == key.lower() or title.endswith("(%s)" % key.lower())
+
+
+def section_end(lines: List[str], start: int) -> int:
+    """Where the section whose heading is lines[start] ends: before the next heading, without the blank lines in front of it."""
+    end = start + 1
+    while end < len(lines) and not HEADING.match(lines[end]):
+        end += 1
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return end
+
+
+def migrate_review(text: str) -> Tuple[str, List[str]]:
+    """A REVIEW.md as 0.x wrote it, brought to 1.0 where it is still as 0.x wrote it: the Compliance line names the work doc
+    instead of spec.md and plan.md, and the Approval section gives way to the 1.0 sections that carry the review tally
+    rule (each left out where the file has that heading already). The new text is the template's, read from there. A line
+    or section the team has edited is no longer the 0.x one and stays as it is. Returns (the text, what was done)."""
+    lines = text.split("\n")
+    compliance = approval = False
+    for lang in ("en", "ko"):
+        new = (read_text(os.path.join(templates(), lang, "REVIEW.md")) or "").split("\n")
+        if not any(new):
+            continue
+        line = next((l for l in new if l.startswith("- Compliance")), "")
+        if line and OLD_COMPLIANCE[lang] in lines:
+            lines = [line if l == OLD_COMPLIANCE[lang] else l for l in lines]
+            compliance = True
+        heading, body = OLD_APPROVAL[lang][0], list(OLD_APPROVAL[lang][1:])
+        i = 0
+        while i < len(lines):
+            if lines[i] != heading or lines[i + 1:section_end(lines, i)] != body:
+                i += 1
+                continue
+            end = section_end(lines, i)
+            replacement: List[str] = []
+            for key in REVIEW_SECTIONS:
+                at = next((n for n, l in enumerate(new) if is_heading(l, key)), None)
+                if at is not None and not any(is_heading(l, key) for l in lines[:i] + lines[end:]):
+                    replacement += ([""] if replacement else []) + new[at:section_end(new, at)]
+            if not replacement and i and not lines[i - 1] and (end >= len(lines) or not lines[end]):
+                i -= 1                                      # nothing takes its place: the blank line before it goes too
+            lines[i:end] = replacement
+            i += len(replacement)
+            approval = True
+    notes = (["the 0.x compliance line now names the work doc"] if compliance else []) + \
+        (["the 0.x approval section replaced by the review tally rule"] if approval else [])
+    return "\n".join(lines), notes
+
+
+def review_md(root: str, rel: str, lang: str, generated: str, out: Out) -> None:
+    """REVIEW.md: written when there is none; one 0.x wrote, and nobody has edited, is brought to 1.0 (`migrate_review`)."""
+    path = os.path.join(root, rel)
+    if not os.path.exists(path):
+        put(root, rel, render(tpl(lang, "REVIEW.md"), generated_paths=generated), out)
+        return
+    if undecodable(path):
+        out.add("SKIPPED", rel, "not UTF-8 text — left alone")
+        return
+    cur, bom, nl = read_style(path)
+    cur = cur or ""
+    text, notes = migrate_review(cur)
+    if text != cur:
+        out.write(root, rel, styled(text, bom, nl))
+        out.add("MERGED", rel, "; ".join(notes))
+    else:
+        out.add("SKIPPED", rel, "exists")
+
+
 def gitignore(root: str, out: Out) -> None:
     if undecodable(os.path.join(root, ".gitignore")):
         out.add("SKIPPED", ".gitignore", "not UTF-8 text — left alone")
@@ -544,6 +633,10 @@ def migrate_intents(root: str, paths: Dict[str, str], work_rel: str, out: Out, n
                                      "%s/%s" % (paths["intent"], n), notes)
         status = str(meta.get("status", ""))
         if status not in ("approved", "draft") or not SLUG_RE.match(slug):
+            continue
+        if slug in RESERVED_SLUGS:
+            notes.append("%s/%s is not migrated: as a work doc it would be %s/%s on a case-insensitive file system — start it "
+                         "again under another name" % (paths["intent"], n, work_rel, RESERVED_FILES[slug]))
             continue
         pmeta, pbody, pref = artifact(root, "%s/%s" % (paths["plan"], n), "sdlc/" + slug, notes)
         if str(pmeta.get("status", "")) == "implemented" and not pref:
@@ -800,7 +893,7 @@ def init(root: str, lang: str = "", mode: str = "", commands: str = "", dry: boo
     put(root, paths["work"] + "/README.md", tpl(lang, "work-README.md"), out)
     gen = ", ".join((cfg.get("protect") or {}).get("generated_paths") or []) or \
         "TODO: generated paths (also protect.generated_paths in .sdlc/config.json)"
-    put(root, paths["review"], render(tpl(lang, "REVIEW.md"), generated_paths=gen), out)
+    review_md(root, paths["review"], lang, gen, out)
     claude_md(root, lang, cmds, out)
     gitignore(root, out)
     put(root, ".sdlc/frozen-paths.txt", read_text(os.path.join(templates(), "config", "frozen-paths.txt")) or "", out)
@@ -903,12 +996,14 @@ def check(root: str) -> Dict[str, Any]:
     if stale:
         row("warn", "skills", "project skills", stale_text(stale))
     rv = read_text(cfg.path("review"))
-    row("missing" if rv is None else "warn" if "TODO:" in rv else "ok", "review", cfg.rel("review"),
-        "missing" if rv is None else "generated paths still TODO" if "TODO:" in rv else "")
+    issues = ([] if rv is None else (["generated paths still TODO"] if "TODO:" in rv else []) +
+              (["names spec.md/plan.md from 0.x — the reviewer reads the work doc"] if OLD_REVIEW_FILES.search(rv) else []))
+    row("missing" if rv is None else "warn" if issues else "ok", "review", cfg.rel("review"),
+        "missing" if rv is None else "; ".join(issues))
     docs = list_docs(cfg.path("work"))
     bad = []
     for d in docs:
-        p = problems(d, os.path.splitext(os.path.basename(d.path))[0])
+        p = problems(d, os.path.splitext(os.path.basename(d.path))[0], cfg.rel("work"))
         if p:
             bad.append("%s: %s" % (os.path.basename(d.path), "; ".join(p)))
     row("warn" if bad else "ok", "work", cfg.rel("work") + "/",

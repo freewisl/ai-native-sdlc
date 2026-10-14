@@ -4,7 +4,7 @@
 Run it from inside the repository (or pass --root). Standard library only, Python 3.9+.
 
   run [--detach] [--items a,b] [--max-items N] [--max-minutes M] [--dry-run]   work the queue until it is empty
-  status [--json] [--no-fetch]       loop, queue, what needs you, cost (fetches the remote first; --no-fetch stays offline)
+  status [--json] [--no-fetch]       loop, queue, what needs you, cost (fetches the remote first, unless a loop runs here; --no-fetch stays offline)
   enqueue [--new] [FILE.md ...]      put work docs on the queue (--new: every new doc in work/)
   accept SLUG ...                    accept proposed work docs: status ready on the default branch (team: through a PR)
   stop [--after-item]                stop the loop now (the session is resumable) or after the current item
@@ -113,8 +113,10 @@ def cmd_status(a: argparse.Namespace) -> int:
     from sdlclib.gitops import Git
     from sdlclib.status import collect, render
     Config(a.root)                                  # not adopted here: say so before any network use
-    if not a.no_fetch:
-        Git(a.root).refresh(STATUS_FETCH_SECONDS)   # what a person merged or pushed meanwhile; a failure is not reported
+    if not a.no_fetch and not st.loop_pid(a.root):
+        # what a person merged or pushed meanwhile; a failure is not reported. Not while a loop runs here: it fetches
+        # for itself, and a second fetch takes the locks its checkout and pull need
+        Git(a.root).refresh(STATUS_FETCH_SECONDS)
     s = collect(a.root)
     print(json.dumps(s, ensure_ascii=False, indent=2) if a.json else render(s))
     return 0

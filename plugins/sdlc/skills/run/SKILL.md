@@ -25,7 +25,7 @@ Arguments: $ARGUMENTS
    - A new app: item 1 is the skeleton — project setup, one passing test, and the build/test/lint commands recorded in `commands.*` of `.sdlc/config.json` and in CLAUDE.md. Filling a command that is still empty is the one `.sdlc/config.json` change the gate lets through unattended; changing or removing a command that has a value goes to a person. An empty test command makes the gate verify nothing; on an existing repository without one, tell the user.
    - Independent where possible. `depends_on: [slug]` only for a real order: an item starts after its dependencies merged.
    - Acceptance criteria: numbered `R1. WHEN … THE SYSTEM SHALL …`, observable and testable, a handful per item. They freeze once the item is planned, so describe behavior, not implementation. Leave Plan and Proof to the design session.
-3. **Write one doc per item** into the work dir as `<slug>.md` (slug: lowercase ascii, digits, `-`; the file name equals the slug). Format: `${CLAUDE_PLUGIN_ROOT}/skills/go/references/work-doc.md`; skeleton: `${CLAUDE_PLUGIN_ROOT}/templates/<language>/work.md`.
+3. **Write one doc per item** into the work dir as `<slug>.md` (slug: lowercase ascii, digits, `-`; the file name equals the slug; never `readme` or `template` — on macOS that file is the work dir's own README.md or TEMPLATE.md). Format: `${CLAUDE_PLUGIN_ROOT}/skills/go/references/work-doc.md`; skeleton: `${CLAUDE_PLUGIN_ROOT}/templates/<language>/work.md`.
    ```
    ---
    slug: entry-crud

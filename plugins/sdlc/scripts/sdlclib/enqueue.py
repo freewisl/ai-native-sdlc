@@ -40,7 +40,7 @@ def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = ""
             errors.append("%s: cannot read" % p)
             continue
         file_slug = os.path.splitext(os.path.basename(p))[0]
-        errs = problems(d, file_slug)
+        errs = problems(d, file_slug, work)
         committed = git.show(base, "%s/%s.md" % (work, d.slug))
         leaving = committed is not None and _drops(committed, d)
         if d.status not in NEW_STATUSES and not leaving:

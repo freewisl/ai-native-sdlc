@@ -399,6 +399,55 @@ class SessionDrops(RepoCase):
         self.assertEqual((ev["detail"]["merged"], ev["detail"]["pr"]), (False, queue[0]["url"]))
 
 
+class SelfCheck(RepoCase):
+    """The self-check queues what it found through a PR the loop merges itself, and that merge is not pulled while the loop
+    runs here. What the loop does next, and why a run stops, still comes from the default branch as the remote has it."""
+    remote = True
+    config = {"loop": {"self_check": True, "self_check_min_items": 1}}      # one merged item is enough for these tests
+
+    def run_engine(self):
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        with open(e.log_path) as fh:
+            return fh.read()
+
+    def remote_head(self):
+        return self.repo.git("ls-remote", "origin", "refs/heads/main").split()[0]
+
+    def test_findings_that_wait_for_a_person_are_counted_when_the_run_stops_and_main_is_where_origin_is(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"selfcheck_docs": [{"slug": "old-debt", "status": "proposed"},
+                                               {"slug": "more-debt", "status": "proposed"}]})
+        log = self.run_engine()
+        self.assertIn("stop=nothing runnable — 2 item(s) wait for you", log)
+        self.assertNotIn("stop=queue empty", log)
+        self.assertEqual(self.repo.git("rev-parse", "main"), self.remote_head())
+        self.assertEqual(self.repo.git("rev-parse", "origin/main"), self.remote_head())
+        for slug in ("old-debt", "more-debt"):
+            self.assertEqual(self.repo.status_of(slug), "proposed")
+            self.assertEqual(self.repo.status_of(slug, "origin/main"), "proposed")
+        self.assertEqual(self.repo.status_of("a-first"), "done")
+        self.assertEqual([k for k, *_ in self.keys()].count("self-check"), 1)      # reading the queue again is not a second check
+
+    def test_findings_that_are_partly_ready_still_build_the_ready_one_in_the_same_run(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"selfcheck_docs": [{"slug": "fix-one", "status": "ready"}, {"slug": "old-debt", "status": "proposed"}]})
+        log = self.run_engine()
+        self.assertEqual(self.repo.status_of("fix-one"), "done")
+        self.assertEqual(self.repo.status_of("old-debt"), "proposed")
+        self.assertEqual([(p["head"], p["state"]) for p in self.repo.gh_db()["prs"] if p["head"] == "sdlc/fix-one"],
+                         [("sdlc/fix-one", "MERGED")])
+        self.assertIn("stop=nothing runnable — 1 item(s) wait for you", log)
+        self.assertEqual(self.repo.git("rev-parse", "main"), self.remote_head())
+
+    def test_a_check_that_found_nothing_changes_nothing(self):
+        self.repo.add_items("a-first")
+        log = self.run_engine()
+        self.assertIn("CHECK   clean", log)
+        self.assertIn("stop=queue empty", log)
+        self.assertEqual(self.repo.git("rev-parse", "main"), self.remote_head())
+
+
 class StatusFetches(RepoCase):
     """`sdlc.py status` refreshes the remote refs first, so what a person merged on GitHub shows at once. It never asks
     GitHub, says nothing when the remote cannot be reached, gives up on a hanging one, and `--no-fetch` keeps it offline."""
@@ -443,6 +492,36 @@ class StatusFetches(RepoCase):
         self.assertEqual([n["slug"] for n in s["needs_you"]], ["a-first", "b-second"])
         self.assertEqual(self.repo.git("rev-parse", "origin/main"), before)                   # nothing was fetched
         self.assertEqual(self.view()["counts"], {"done": 1, "design": 1})                     # the next plain status is fresh
+
+    def test_a_loop_running_here_fetches_for_itself_and_status_does_not_fetch_beside_it(self):
+        """A second fetch takes the locks the loop's checkout and pull need: while a loop runs in this checkout `status` shows
+        what the clone has, as with --no-fetch."""
+        import sdlc
+        self.merged_by_a_person()
+        before = self.repo.git("rev-parse", "origin/main")
+        st.write_pid(self.repo.root)                                                          # this process is the loop: it is alive
+        try:
+            self.assertEqual(self.view()["counts"], self.stale)
+            self.assertEqual(self.repo.git("rev-parse", "origin/main"), before)               # nothing was fetched
+            with mock.patch("sdlclib.gitops.Git.refresh") as refresh, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(sdlc.main(["--root", self.repo.root, "status", "--json"]), 0)
+            refresh.assert_not_called()
+        finally:
+            st.clear_pid(self.repo.root)
+        self.assertEqual(self.view()["counts"], {"done": 1, "design": 1})                     # the loop is gone: fetched again
+
+    def test_status_fetches_when_no_loop_runs_and_when_the_pid_file_is_a_dead_loops(self):
+        import sdlc
+        self.merged_by_a_person()
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        for pid_file in (None, "%d\n" % gone.pid):
+            if pid_file is not None:
+                with open(self.repo.path(st.PID_REL), "w") as fh:
+                    fh.write(pid_file)
+            with mock.patch("sdlclib.gitops.Git.refresh") as refresh, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(sdlc.main(["--root", self.repo.root, "status", "--json"]), 0)
+            refresh.assert_called_once_with(sdlc.STATUS_FETCH_SECONDS)
 
     def test_an_unreachable_remote_is_ignored_quickly_and_silently(self):
         self.merged_by_a_person()

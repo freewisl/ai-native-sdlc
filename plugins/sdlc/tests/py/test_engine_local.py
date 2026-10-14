@@ -1882,6 +1882,21 @@ class SelfCheck(RepoCase):
         self.assertEqual(self.repo.engine().run(), 0)
         self.assertEqual(self.repo.git("log", "-1", "--format=%s", "--", "work/old-debt.md"), "sdlc: queue 2 work items")
 
+    def test_a_finding_whose_slug_is_a_file_work_keeps_for_itself_is_not_queued(self):
+        """work/README.md is gone first: the finding is then a new file on any file system. Where case does not count, the
+        session writing `work/readme.md` would have replaced README.md, and nothing the loop checks afterwards undoes that."""
+        self.repo.git("rm", "-q", "work/README.md")
+        self.repo.git("commit", "-q", "-m", "no readme")
+        self.repo.add_items("a-first")
+        self.repo.scenario({"selfcheck_docs": [{"slug": "readme", "status": "ready"}, {"slug": "template", "status": "ready"},
+                                               {"slug": "fix-one", "status": "ready"}]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.repo.status_of("fix-one"), "done")
+        for slug in ("readme", "template"):
+            self.assertIsNone(self.repo.show("main", "work/%s.md" % slug))
+            self.assertFalse(os.path.exists(self.repo.path("work/%s.md" % slug)))
+            self.assertNotIn(slug, self.repo.items_state())
+
     def test_a_drop_the_loop_recorded_moves_main_but_is_not_a_merge_so_nothing_is_self_checked(self):
         self.repo.add_items("a-first")
         self.repo.scenario({"a-first:design": ["drop:already there"]})

@@ -3,6 +3,36 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-10-14
+
+Found in the first run on a real repository: a private web app with GitHub Actions and a Vercel deployment, moved from 0.x with `/sdlc:init`, then two items through `/sdlc:run`. Both merged after their pull requests' checks passed: 11 minutes and $2.79 with the self-check.
+
+### Fixed
+- A `sdlc.py status` while the loop was starting stopped the loop with `cannot check out or fast-forward master`. Status fetched (`git fetch --prune`) at the moment the loop checked out and pulled the default branch, and git fails a command that finds another git process's lock file. Now:
+  - `status` does not fetch while a loop runs in the checkout; the loop fetches for itself.
+  - A git command the engine runs is tried again after 1, 2 and 4 seconds when it failed on a lock (`Unable to create '….lock': File exists`, or a ref another process moved meanwhile, `cannot lock ref …: is at … but expected …`; the same words in a commit hook's output do not count). This also covers two loops in two worktrees of one repository.
+  - The reason git gave is kept in the message, for example `cannot check out or fast-forward master: fatal: Unable to create '…/.git/index.lock': File exists.` The same goes for `cannot return to sdlc/<slug> after the session`, `still on sdlc/<slug>: could not check out <default>` and, without a remote, `merge did not happen: cannot check out <default>`.
+  - A fetch that runs out of time (status, init) gets SIGTERM first, so git removes its lock files, and SIGKILL only after 2 seconds.
+- A work doc with the slug `readme` or `template` overwrote `work/README.md` or `work/TEMPLATE.md` on macOS and Windows, whose file systems ignore case. These slugs are refused now: `slug 'readme' names the same file as work/README.md on a case-insensitive file system (macOS, Windows) — pick another`.
+  - The check applies to enqueue, the inbox, the self-check's findings and `init --check`.
+  - A 0.x intent with such a slug is not migrated, and init says so in a note.
+- `/sdlc:init` left a 0.x REVIEW.md as it was, and the 0.x template says two things that are wrong in 1.x:
+  - its Compliance line sends the reviewer to `spec.md` and `plan.md`;
+  - its Approval section says findings never block a PR, but the 1.x merge gate does not merge with an open Important finding.
+
+  Where they are still exactly as 0.x wrote them (English or Korean), init now replaces:
+  - the Compliance line with the 1.x one, which names the work doc;
+  - the Approval section with the 1.x "New or pre-existing" and "Tally" sections, leaving out either one when the file has that heading already.
+
+  The row reads `MERGED  REVIEW.md  (the 0.x compliance line now names the work doc; the 0.x approval section replaced by the review tally rule)`. Edited lines stay as they are, and `init --check` warns `names spec.md/plan.md from 0.x — the reviewer reads the work doc`.
+- On GitHub, a run whose self-check queued only proposals ended with `stop=queue empty` and left the local default branch behind. The findings reach the default branch through a pull request the engine merges, and the loop counted what waits for a person before it pulled them. Now it pulls first and stops with `nothing runnable — 3 item(s) wait for you`.
+
+### Added
+- The plugin README warns that a static site deployed from the repository root also publishes the sdlc files. In the trial, the production site served `CLAUDE.md`, `REVIEW.md`, `work/*.md` and `.sdlc/config.json` to anyone.
+
+### Migration
+Nothing needs migrating. In a repository moved from 0.x with 1.0–1.1.1, run `/sdlc:init` once more to bring its REVIEW.md up to date.
+
 ## [1.1.1] - 2026-10-14
 
 ### Fixed

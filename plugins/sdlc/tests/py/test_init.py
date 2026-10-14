@@ -1065,6 +1065,99 @@ REQUIREMENTS_A = ("- R1. WHEN a customer opens the page THE SYSTEM SHALL show th
 OLD_CLAUDE_MD = ("# Orders\n\n## Commands\n- Test: npm test\n\n## Things Claude gets wrong\n%s\n\n## Verifying your work\n"
                  "Run the tests.\n%s\n" % (list(I.OLD_LINES)[0], list(I.OLD_LINES)[1]))
 
+# REVIEW.md as 0.x's init wrote it (the templates of 0.4.1 to 0.8.3), `{{generated_paths}}` still to be filled in
+OLD_REVIEW = {
+    "en": """\
+# Review instructions
+
+## Passes
+Run three passes and tag each finding with its pass:
+- Bugs: logic errors, broken edge cases, subtle regressions
+- Security: injection risks, authentication gaps, PII in logs, secrets in the diff
+- Compliance: the change matches spec.md, plan.md and our design principles; CLAUDE.md conventions are followed
+
+## What Important means here
+Reserve Important for findings that would break behavior, leak data
+or breach a policy. Style and naming are nits.
+
+## Cap the nits
+Report at most five nits per review; summarize the rest as a count.
+
+## Do not report
+Generated files under {{generated_paths}} and anything CI already enforces (formatting, lint).
+
+## Feedback into CLAUDE.md
+When a review flags a mistake for the second time, add the correction to the
+"Things Claude gets wrong" section of CLAUDE.md as part of that review.
+Also flag when a change has made CLAUDE.md outdated.
+
+## Approval
+Findings do not approve or block a PR on their own. Approval comes from a
+code owner through branch protection. The agent that wrote the code cannot approve it.
+""",
+    "ko": """\
+# 리뷰 지침 (Review instructions)
+
+## 패스 (Passes)
+세 번의 패스를 실행하고 모든 지적에 해당 패스를 태그합니다.
+- Bugs(버그): 논리 오류, 깨진 엣지 케이스, 미묘한 회귀
+- Security(보안): 인젝션 위험, 인증 누락, 로그 속 PII, diff 에 포함된 비밀값
+- Compliance(정합성): 변경이 spec.md·plan.md·우리 설계 원칙과 일치하는지, CLAUDE.md 규약을 따르는지
+
+## 여기서 Important 가 뜻하는 것 (What Important means here)
+Important 는 동작을 깨뜨리거나, 데이터를 유출하거나, 정책을 위반할 지적에만 사용합니다.
+스타일과 이름 짓기는 nit 입니다.
+
+## nit 상한 (Cap the nits)
+리뷰 하나에 nit 은 최대 다섯 건까지만 보고하고, 나머지는 건수로 요약합니다.
+
+## 보고하지 않는 것 (Do not report)
+{{generated_paths}} 아래의 생성 파일과 CI 가 이미 강제하는 것(포매팅, 린트).
+
+## CLAUDE.md 로의 피드백 (Feedback into CLAUDE.md)
+리뷰가 같은 실수를 두 번째로 지적하면, 그 리뷰의 일부로 CLAUDE.md 의
+"Things Claude gets wrong" 섹션에 교정 내용을 추가합니다.
+변경으로 CLAUDE.md 가 낡아졌다면 그것도 지적합니다.
+
+## 승인 (Approval)
+지적 사항만으로 PR 이 승인되거나 차단되지 않습니다. 승인은 브랜치 보호를 통해
+코드 오너가 합니다. 코드를 작성한 에이전트는 그 코드를 승인할 수 없습니다.
+""",
+}
+APPROVAL_HEADING = {"en": "## Approval", "ko": "## 승인 (Approval)"}
+NEW_REVIEW_HEADINGS = {"en": ("## New or pre-existing", "## Tally"),
+                       "ko": ("## 새로 생긴 것과 원래 있던 것 (New or pre-existing)", "## 집계 (Tally)")}
+REVIEW_NOTES = ("the 0.x compliance line now names the work doc", "the 0.x approval section replaced by the review tally rule")
+SPEC_PLAN_NOTE = "names spec.md/plan.md from 0.x — the reviewer reads the work doc"
+
+
+def old_review(lang, generated="src/gen/"):
+    return OLD_REVIEW[lang].replace("{{generated_paths}}", generated)
+
+
+def new_review_template(lang):
+    with open(os.path.join(PLUGIN, "templates", lang, "REVIEW.md"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def review_block(lang, heading):
+    """The 1.x template's section that starts at `heading`: up to the next `## ` line, without the blank line after it."""
+    lines = new_review_template(lang).split("\n")
+    start = lines.index(heading)
+    end = next((n for n in range(start + 1, len(lines)) if lines[n].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end]).rstrip("\n")
+
+
+def compliance_line(text):
+    return next(l for l in text.split("\n") if l.startswith("- Compliance"))
+
+
+def migrated_review(lang, generated="src/gen/"):
+    """What a REVIEW.md as 0.x wrote it becomes: the 1.x Compliance line, and the 1.x sections where Approval was."""
+    old = old_review(lang, generated)
+    head = old[:old.index(APPROVAL_HEADING[lang])].replace(compliance_line(old), compliance_line(new_review_template(lang)))
+    return head + "\n\n".join(review_block(lang, h) for h in NEW_REVIEW_HEADINGS[lang]) + "\n"
+
 
 def make_v1_repo(repo, config=None):
     """A repository as 0.x left it: config version 1, intents/specs/plans, generated files, and one 0.x branch."""
@@ -1466,6 +1559,22 @@ class MigrationDetails(Case):
         self.repo.write("intent/notes.txt", "text\n")
         res = self.repo.init()
         self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+
+    def test_an_intent_whose_slug_names_a_file_work_keeps_for_itself_is_not_migrated_and_the_note_says_why(self):
+        make_v1_repo(self.repo)
+        for name in ("README.md", "TEMPLATE.md"):                 # intent/readme.md and intent/README.md are one file on some systems
+            os.remove(self.repo.path("intent/" + name))
+        self.repo.write("intent/readme.md", intent("readme", "approved", "Read me", "Nobody reads.", "Somebody reads."))
+        self.repo.write("intent/template.md", intent("template", "draft", "Template", "None.", "One."))
+        self.repo.commit("intents named like files of work/")
+        res = self.repo.init()
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+        self.assertNotIn("readme.md", os.listdir(self.repo.path("work")))
+        self.assertNotIn("template.md", os.listdir(self.repo.path("work")))
+        notes = res["notes"]
+        for slug, name in (("readme", "README.md"), ("template", "TEMPLATE.md")):
+            self.assertIn("intent/%s.md is not migrated: as a work doc it would be work/%s on a case-insensitive file system — "
+                          "start it again under another name" % (slug, name), notes)
 
     def test_an_intent_whose_plan_is_implemented_only_on_its_branch_is_still_open(self):
         make_v1_repo(self.repo)
@@ -1909,6 +2018,209 @@ class MigrationLeftovers(Case):
         self.assertTrue(any(n.startswith("docs/intents/triage/ holds 1 0.x triage draft(s) (x.md)") for n in other.init()["notes"]))
 
 
+class ReviewMd(Case):
+    """A REVIEW.md written by 0.x names spec.md and plan.md in its Compliance line and ends in an Approval section 1.0 has no use
+    for. Init brings both up to date where the file is still as 0.x wrote it — what a team edited stays — and says so; `--check`
+    points at what is left."""
+
+    def v1_repo(self, lang, review):
+        """A 0.x repository whose REVIEW.md is `review`."""
+        repo = InitRepo()
+        self.addCleanup(repo.cleanup)
+        make_v1_repo(repo, dict(V1_CONFIG, language=lang))
+        repo.write("REVIEW.md", review)
+        return repo
+
+    def test_an_untouched_0x_file_gets_the_1x_compliance_line_and_the_two_sections_where_approval_was(self):
+        for lang in ("en", "ko"):
+            with self.subTest(lang):
+                repo = self.v1_repo(lang, old_review(lang))
+                res = repo.init()
+                self.assertEqual(rows(res)["REVIEW.md"], ("MERGED", "; ".join(REVIEW_NOTES)))
+                text = repo.read("REVIEW.md")
+                self.assertEqual(text, migrated_review(lang))
+                self.assertNotIn(APPROVAL_HEADING[lang], text)
+                self.assertNotIn("spec.md", text)
+                self.assertEqual(text.count(compliance_line(new_review_template(lang))), 1)
+                self.assertEqual(text.count("SDLC_REVIEW_TALLY"), 1)
+                for heading in NEW_REVIEW_HEADINGS[lang]:
+                    self.assertEqual(text.count(heading), 1, heading)
+                code, got = repo.check()
+                self.assertEqual((got["review"]["status"], got["review"]["detail"]), ("ok", ""))
+
+    def test_the_new_text_is_the_templates_own_in_the_language_of_the_file(self):
+        repo = self.v1_repo("ko", old_review("en"))                  # the config says Korean; the file is English
+        repo.init()
+        self.assertEqual(repo.read("REVIEW.md"), migrated_review("en"))
+        repo = self.v1_repo("en", old_review("ko"))
+        repo.init()
+        self.assertEqual(repo.read("REVIEW.md"), migrated_review("ko"))
+
+    def test_a_second_run_changes_nothing(self):
+        repo = self.v1_repo("en", old_review("en"))
+        repo.init()
+        repo.commit("migrated")
+        before = repo.snapshot()
+        again = repo.init()
+        self.assertEqual(rows(again)["REVIEW.md"], ("SKIPPED", "exists"))
+        self.assertEqual(repo.read_bytes("REVIEW.md"), migrated_review("en").encode("utf-8"))
+        self.assertEqual(repo.snapshot(), before)
+
+    def test_an_edited_compliance_line_stays_and_check_says_it_still_names_the_files(self):
+        old = old_review("en")
+        edited = old.replace(compliance_line(old), compliance_line(old) + " and our SLA")
+        repo = self.v1_repo("en", edited)
+        res = repo.init()
+        self.assertEqual(rows(res)["REVIEW.md"], ("MERGED", REVIEW_NOTES[1]))                # the approval section only
+        want = migrated_review("en").replace(compliance_line(new_review_template("en")), compliance_line(edited))
+        self.assertEqual(repo.read("REVIEW.md"), want)
+        code, got = repo.check()
+        self.assertEqual((got["review"]["status"], got["review"]["detail"]), ("warn", SPEC_PLAN_NOTE))
+        self.assertEqual(code, 0)                                                               # a warning, not a failure
+
+    def test_an_edited_approval_section_stays_and_the_compliance_line_is_still_updated(self):
+        edited = old_review("en") + "Our CODEOWNERS file names the approvers.\n"
+        repo = self.v1_repo("en", edited)
+        res = repo.init()
+        self.assertEqual(rows(res)["REVIEW.md"], ("MERGED", REVIEW_NOTES[0]))
+        text = repo.read("REVIEW.md")
+        self.assertEqual(text, edited.replace(compliance_line(edited), compliance_line(new_review_template("en"))))
+        self.assertIn("Our CODEOWNERS file names the approvers.", text)
+        self.assertNotIn("## Tally", text)
+
+    def test_a_file_in_which_both_were_edited_is_left_as_it_is(self):
+        old = old_review("en")
+        edited = old.replace(compliance_line(old), "- Compliance: ours").replace("Approval comes from a", "Approval comes from the")
+        repo = self.v1_repo("en", edited)
+        res = repo.init()
+        self.assertEqual(rows(res)["REVIEW.md"], ("SKIPPED", "exists"))
+        self.assertEqual(repo.read("REVIEW.md"), edited)
+
+    def test_a_section_the_file_already_has_is_not_added_again(self):
+        old = old_review("en")
+        own = old.replace(APPROVAL_HEADING["en"], "## Tally\nOur own tally rule.\n\n" + APPROVAL_HEADING["en"])
+        repo = self.v1_repo("en", own)
+        repo.init()
+        text = repo.read("REVIEW.md")
+        self.assertEqual((text.count("## Tally"), text.count("## New or pre-existing"), text.count("## Approval")), (1, 1, 0))
+        self.assertIn("Our own tally rule.", text)
+        self.assertNotIn("SDLC_REVIEW_TALLY", text)                                             # theirs is theirs
+        both = old.replace(APPROVAL_HEADING["en"], "## Tally\nOur own tally rule.\n\n## New or pre-existing\nOurs too.\n\n"
+                           + APPROVAL_HEADING["en"])
+        repo = self.v1_repo("en", both)
+        res = repo.init()
+        text = repo.read("REVIEW.md")
+        self.assertEqual(rows(res)["REVIEW.md"], ("MERGED", "; ".join(REVIEW_NOTES)))
+        self.assertTrue(text.endswith("## New or pre-existing\nOurs too.\n"), text[-80:])    # the section is gone, no blank line left
+        self.assertEqual((text.count("## Tally"), text.count("## New or pre-existing"), text.count("Approval")), (1, 1, 0))
+
+    def test_a_dry_run_says_what_it_would_do_and_writes_nothing(self):
+        repo = self.v1_repo("en", old_review("en"))
+        res = repo.init("--dry-run")
+        self.assertEqual(rows(res)["REVIEW.md"], ("WOULD MERGE", "; ".join(REVIEW_NOTES)))
+        self.assertEqual(repo.read("REVIEW.md"), old_review("en"))
+
+    def test_crlf_and_a_byte_order_mark_stay_as_the_file_had_them(self):
+        repo = self.v1_repo("en", "")
+        repo.write_bytes("REVIEW.md", b"\xef\xbb\xbf" + old_review("en").replace("\n", "\r\n").encode("utf-8"))
+        repo.init()
+        self.assertEqual(repo.read_bytes("REVIEW.md"),
+                         b"\xef\xbb\xbf" + migrated_review("en").replace("\n", "\r\n").encode("utf-8"))
+
+    def test_a_file_that_is_not_utf_8_is_left_alone(self):
+        raw = old_review("en").encode("utf-8").replace(b"Passes", b"Pass\xe9s")                  # one byte that is not UTF-8
+        repo = self.v1_repo("en", "")
+        repo.write_bytes("REVIEW.md", raw)
+        res = repo.init()
+        self.assertEqual(rows(res)["REVIEW.md"], ("SKIPPED", "not UTF-8 text — left alone"))
+        self.assertEqual(repo.read_bytes("REVIEW.md"), raw)
+
+    def test_every_init_run_does_it_and_not_only_the_move_from_0x(self):
+        self.node_repo()
+        self.repo.init()                                                                        # a 1.x repository, version 2 config
+        self.repo.write("REVIEW.md", old_review("en", "src/gen/"))
+        res = self.repo.init()
+        self.assertEqual(rows(res)["REVIEW.md"], ("MERGED", "; ".join(REVIEW_NOTES)))
+        self.assertEqual(self.repo.read("REVIEW.md"), migrated_review("en"))
+
+    def test_a_1x_file_is_not_touched_and_the_row_names_the_configured_path(self):
+        self.node_repo()
+        self.repo.init()
+        before = self.repo.read("REVIEW.md")
+        self.assertEqual(rows(self.repo.init())["REVIEW.md"], ("SKIPPED", "exists"))
+        self.assertEqual(self.repo.read("REVIEW.md"), before)
+        cfg = dict(V1_CONFIG, paths=dict(V1_CONFIG["paths"], review="docs/REVIEW.md"))
+        repo = InitRepo()
+        self.addCleanup(repo.cleanup)
+        make_v1_repo(repo, cfg)
+        repo.write("docs/REVIEW.md", old_review("en"))
+        res = repo.init()
+        self.assertEqual(rows(res)["docs/REVIEW.md"], ("MERGED", "; ".join(REVIEW_NOTES)))
+        self.assertEqual(repo.read("docs/REVIEW.md"), migrated_review("en"))
+
+    def test_check_warns_while_the_file_names_spec_md_or_plan_md_and_says_so_beside_the_todo(self):
+        self.node_repo()
+        self.repo.init()                                                                        # generated paths are still a TODO
+        base = self.repo.read("REVIEW.md")
+        self.repo.write("REVIEW.md", base + "Read docs/spec.md first.\n")
+        _, got = self.repo.check()
+        self.assertEqual((got["review"]["status"], got["review"]["detail"]),
+                         ("warn", "generated paths still TODO; " + SPEC_PLAN_NOTE))
+        self.repo.write("REVIEW.md", base.replace("TODO: generated paths (also protect.generated_paths in .sdlc/config.json)",
+                                                  "src/gen/") + "Compare with `plan.md`.\n")
+        _, got = self.repo.check()
+        self.assertEqual((got["review"]["status"], got["review"]["detail"]), ("warn", SPEC_PLAN_NOTE))
+        self.repo.write("REVIEW.md", base.replace("TODO: generated paths (also protect.generated_paths in .sdlc/config.json)",
+                                                  "src/gen/") + "See myspec.md and floorplan.md and the spec.mdx notes.\n")
+        _, got = self.repo.check()
+        self.assertEqual((got["review"]["status"], got["review"]["detail"]), ("ok", ""))        # other names are not those files
+
+
+class MigrateReview(unittest.TestCase):
+    """`migrate_review` on its own: text in, (text, what was done) out."""
+
+    EN = "\n".join(I.OLD_APPROVAL["en"])
+
+    def test_the_section_in_the_middle_is_replaced_in_place(self):
+        text = "# R\n\n%s\n\n## After\nstuff\n" % self.EN
+        got, notes = I.migrate_review(text)
+        want = "# R\n\n%s\n\n%s\n\n## After\nstuff\n" % tuple(review_block("en", h) for h in NEW_REVIEW_HEADINGS["en"])
+        self.assertEqual((got, notes), (want, [REVIEW_NOTES[1]]))
+
+    def test_a_file_without_a_final_newline_ends_the_way_it_did(self):
+        got, _ = I.migrate_review("# R\n\n" + self.EN)
+        self.assertEqual(got, "# R\n\n%s\n\n%s" % tuple(review_block("en", h) for h in NEW_REVIEW_HEADINGS["en"]))
+
+    def test_nothing_that_is_not_the_0x_text_is_touched(self):
+        for text in ("", "# R\n", "# R\n\n## Approval\nWe approve by hand.\n", "# R\n\n## Approval  \n" + "\n".join(I.OLD_APPROVAL["en"][1:]) + "\n",
+                     "- Compliance: the change matches spec.md, plan.md and our design principles\n",
+                     " " + I.OLD_COMPLIANCE["en"] + "\n", I.OLD_COMPLIANCE["en"] + " \n", "#" + I.OLD_COMPLIANCE["en"] + "\n"):
+            self.assertEqual(I.migrate_review(text), (text, []), repr(text))
+
+    def test_the_compliance_line_is_replaced_wherever_it_stands_as_a_whole_line(self):
+        en, ko = I.OLD_COMPLIANCE["en"], I.OLD_COMPLIANCE["ko"]
+        got, notes = I.migrate_review("a\n%s\nb\n%s\n%s\n" % (en, ko, en))
+        new_en, new_ko = (compliance_line(new_review_template(lang)) for lang in ("en", "ko"))
+        self.assertEqual(got, "a\n%s\nb\n%s\n%s\n" % (new_en, new_ko, new_en))
+        self.assertEqual(notes, [REVIEW_NOTES[0]])
+
+    def test_a_heading_counts_as_there_in_any_case_level_and_language(self):
+        for have in ("## TALLY", "### Tally", "## 집계 (Tally)", "# tally"):
+            got, _ = I.migrate_review("# R\n\n%s\nmine\n\n%s\n" % (have, self.EN))
+            self.assertEqual(got.count("SDLC_REVIEW_TALLY"), 0, have)
+            self.assertIn("## New or pre-existing", got, have)
+
+    def test_trailing_blank_lines_after_the_section_are_not_part_of_it(self):
+        got, notes = I.migrate_review("# R\n\n%s\n  \n\n" % self.EN)
+        self.assertEqual(notes, [REVIEW_NOTES[1]])
+        self.assertTrue(got.startswith("# R\n\n## New or pre-existing\n"), got)
+
+    def test_the_text_is_what_the_templates_hold(self):
+        got, _ = I.migrate_review("# R\n\n" + "\n".join(I.OLD_APPROVAL["ko"]) + "\n")
+        for heading in NEW_REVIEW_HEADINGS["ko"]:
+            self.assertIn(review_block("ko", heading), got)
+
+
 class ProjectSkills(Case):
     """Skills, commands and agents of the project that still name a command 1.0 removed."""
 
@@ -2264,6 +2576,32 @@ class Check(Case):
         self.assertIn("bad-one.md: status 'maybe' is not one of", got["work"]["detail"])
         self.assertIn("no Goal section", got["work"]["detail"])
         self.assertNotIn("ok-one.md:", got["work"]["detail"])
+
+    def test_a_work_doc_whose_slug_is_a_file_work_keeps_for_itself_is_listed(self):
+        self.ready()
+        os.remove(self.repo.path("work/README.md"))               # gone, so work/readme.md is a file of its own on any file system
+        self.repo.write("work/readme.md", "---\nslug: readme\nstatus: ready\n---\n\n## Goal\ng\n")
+        _, got = self.repo.check()
+        self.assertEqual(got["work"]["status"], "warn")
+        self.assertIn("readme.md: slug 'readme' names the same file as work/README.md on a case-insensitive file system "
+                      "(macOS, Windows) — pick another", got["work"]["detail"])
+
+    def test_the_refusal_names_the_configured_work_directory(self):
+        self.ready()
+        cfg = self.repo.config()
+        cfg["paths"] = {"work": "sdlc-work"}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.write("sdlc-work/template.md", "---\nslug: template\nstatus: ready\n---\n\n## Goal\ng\n")
+        _, got = self.repo.check()
+        self.assertEqual(got["work"]["status"], "warn")
+        self.assertIn("template.md: slug 'template' names the same file as sdlc-work/TEMPLATE.md on a case-insensitive", got["work"]["detail"])
+
+    def test_the_files_work_keeps_for_itself_are_not_work_docs_and_are_not_reported(self):
+        self.ready()
+        for name, slug in (("README.md", "readme"), ("TEMPLATE.md", "template")):
+            self.repo.write("work/" + name, "---\nslug: %s\nstatus: ready\n---\n\n## Goal\ng\n" % slug)      # even one that reads like a doc
+        _, got = self.repo.check()
+        self.assertEqual((got["work"]["status"], got["work"]["detail"]), ("ok", "0 work docs"))
 
     def test_missing_gitignore_lines_are_a_warning(self):
         self.ready()

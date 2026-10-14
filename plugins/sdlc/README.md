@@ -231,6 +231,11 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
   - 상태: 승인된 것은 `ready`(승인된 plan 이 있으면 `planned`), 초안은 `proposed` 입니다.
   - 내용: Problem·Proposed outcome 이 Goal 이, spec 의 요구사항이 인수 조건이, plan 의 Proof 가 증명이 됩니다. 한글 템플릿의 `## 문제 (Problem)` 같은 제목도 읽습니다.
   - `depends_on` 은 유지하되, 0.x 에서 이미 머지된 항목을 가리키는 것만 뺍니다.
+- **REVIEW.md** — 0.x 템플릿 그대로인 줄만 고칩니다.
+  - spec.md·plan.md 를 가리키던 정합성(Compliance) 줄은 작업 문서를 가리키게 합니다.
+  - "지적만으로는 PR 을 막지 않는다"던 승인(Approval) 절은 1.x 의 "새로 생긴 것과 원래 있던 것"·"집계" 절로 바꿉니다. 1.x 게이트는 열린 Important 지적이 있으면 머지하지 않습니다.
+  - 손댄 줄은 그대로 두고, `--check` 가 경고합니다.
+  - 1.0~1.1.1 로 이미 올린 저장소도 init 을 한 번 더 돌리면 고쳐집니다.
 - **그대로 두는 것** — `intent/`·`spec/`·`plan/` 의 끝난 기록은 건드리지 않습니다.
   - 0.x 가 만든 파일(`.sdlc/bands.json`, CI 워크플로, 예시 evals, 손대지 않은 `LESSONS.md` 템플릿 등)은 `LEFTOVER` 로 알려 주고, 사용자가 허락할 때만 `sdlc.py init --prune` 으로 지웁니다.
   - 내용이 있는 `.sdlc/LESSONS.md` 는 1.0 이 읽지 않으니, 쓸 만한 줄을 CLAUDE.md 의 "Things Claude gets wrong"으로 옮기십시오.
@@ -254,12 +259,13 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 ## 문제 해결
 
 - **설치 상태** — `/sdlc:init --check`("점검해줘")가 FAIL·WARN 줄마다 고치는 법을 알려 줍니다. 아무것도 바꾸지 않습니다.
-- **진행 상황** — `sdlc.py status`("어디까지 됐어?")는 사람이 머지한 PR 이 바로 반영되도록 원격을 먼저 가져오고(최대 10초, 실패하면 가진 것만 보여 줌), 오프라인이면 `--no-fetch` 를 씁니다. "내가 할 일"에는 항목마다 표시·이유·PR 이 나오고, 풀어 주는 답은 `/sdlc:status` 가 덧붙입니다. 표시는 `?` 질문 · `!` 사람 확인 필요 · `✓` 설계 승인 대기 · `⇢` 머지 대기 · `✗` 3회 실패로 막힘 · `+` 제안 · `…` 사람을 기다리거나 빠졌거나 문서가 없는 항목에 걸린 의존입니다.
+- **진행 상황** — `sdlc.py status`("어디까지 됐어?")는 사람이 머지한 PR 이 바로 반영되도록 원격을 먼저 가져오고(최대 10초, 실패하면 가진 것만 보여 줌), 오프라인이면 `--no-fetch` 를 씁니다. 루프가 이 체크아웃에서 도는 동안에는 가져오지 않습니다. 루프가 스스로 가져오고, 동시에 가져오면 루프의 checkout·pull 이 git 잠금 파일에 걸리기 때문입니다. 엔진은 잠금 때문에 실패한 git 명령을 1·2·4초 뒤 다시 시도합니다. "내가 할 일"에는 항목마다 표시·이유·PR 이 나오고, 풀어 주는 답은 `/sdlc:status` 가 덧붙입니다. 표시는 `?` 질문 · `!` 사람 확인 필요 · `✓` 설계 승인 대기 · `⇢` 머지 대기 · `✗` 3회 실패로 막힘 · `+` 제안 · `…` 사람을 기다리거나 빠졌거나 문서가 없는 항목에 걸린 의존입니다.
 - **루프가 시작하지 않으면** — `sdlc.py run --detach` 가 이유를 그대로 출력합니다: git 저장소가 아님, 0.x 레이아웃(`/sdlc:init`), `loop.enabled` 가 false, 작업 트리에 커밋 안 된 변경(걸린 파일 이름을 보여 줌. 테스트가 남기는 `__pycache__`·`.pyc`·`.pytest_cache` 는 세지 않음), `.sdlc/state/pause` 가 있음(`sdlc.py resume`), 팀 모드인데 GitHub 원격이 없음, `gh` 미로그인(`gh auth login --hostname <호스트>`), `claude` 를 못 찾음(PATH, `SDLC_CLAUDE_BIN`, `--claude-bin`). 같은 체크아웃에서 이미 루프가 돌면 그 사실만 알리고 끝납니다. `sdlc.py run --dry-run` 은 무엇이 돌고 무엇이 기다리는지만 보여 줍니다.
 - **시작을 거절당한 기록** — 거절된 시작은 직전 실행의 "마지막 멈춤"을 덮어쓰지 않습니다. status 의 loop 줄이 `loop: not running · last stop: queue empty · start refused 5m ago: the working tree has …` 처럼 둘을 따로 보여 주고, 루프가 다시 시작하면 거절 표시는 사라집니다.
 - **테스트 잠금이 막을 때** — 테스트 자체가 틀렸거나 새 동작이 기존 테스트를 바꿔야 한다면 설계에서 `test_changes: allowed` 로 푸는 것이 정식 경로입니다. 사용자가 직접 띄운 세션에서만 마지막 수단으로 `SDLC_ALLOW_TEST_EDIT=1` 을 씁니다(환경에 두는 값이라 세션 안의 명령으로는 켤 수 없습니다). 잠금은 sdlc 작업 중에만 걸리고, 프로젝트 전체에서 끄려면 `protect.protect_tests: false` 입니다(게이트의 기존 테스트 변경 검사도 함께 꺼집니다).
 - **PR 체크가 머지를 막을 때** — GitHub 에서 엔진은 게이트를 통과한 PR 의 체크를 `loop.checks_wait_minutes`(30분)까지 기다립니다. 모두 통과하면 머지합니다. 실패가 있으면 아직 도는 체크가 끝난 뒤 항목이 `built` 로 돌아가 실패한 체크의 로그를 받은 수정 세션이 돌고(`loop.fix_rounds` 번까지), 그래도 실패하면 사람 몫입니다. 한도 안에 끝나지 않거나 `gh` 로 체크를 끝내 읽지 못해도(사유에 그렇게 적힘) 사람 몫이며, 체크가 통과한 뒤 직접 머지하면 루프가 알아챕니다. 체크가 늘 오래 걸리면 `loop.checks_wait_minutes` 를 늘리고, 기다리지 않으려면 `0` 으로 둡니다. 체크가 하나도 없는 PR 은 `.github/workflows/` 파일이 있으면 2분 뒤, 없으면 바로 통과로 칩니다. 끝내 보고하지 않는 체크가 있으면 한도까지 대기 상태로 남습니다.
 - **CLAUDE.md 가 길 때** — 세션마다(루프 세션도) 파일 전체를 읽으므로 길수록 매번 컨텍스트를 씁니다. `/sdlc:init --check`("점검해줘")가 `claude_md.max_lines`(120줄) 초과를 알리면 init 이 줄이기를 제안합니다. 동의하면 일부 변경에만 필요한 상세를 `docs/claude/<주제>.md` 로 옮기고 그 자리에는 포인터 한 줄(`- <주제>: read docs/claude/<주제>.md before changing <경로>.`)만 남깁니다. `@` 로 불러오면 다시 모든 세션에 실리므로 쓰지 않습니다. 낡았거나 README.md·AGENTS.md 와 겹치거나 린터가 지키는 줄은 지웁니다. 남길 것·옮길 것·지울 것을 먼저 보여 주고, 사용자가 쓴 규칙은 목록에 올리지 않고는 빼지 않으며, `docs: trim CLAUDE.md` 로 커밋합니다(GitHub 이면 PR).
+- **저장소 루트를 그대로 배포할 때** — 빌드 없이 저장소 루트를 내보내는 정적 배포(예: 그런 설정의 Vercel 프로젝트)는 sdlc 파일도 공개합니다. `CLAUDE.md`·`REVIEW.md`·`work/`·`docs/claude/`·`.sdlc/` 를 배포 제외 목록(`.vercelignore` 등)에 넣으십시오. 저장소가 어떻게 배포되는지는 플러그인이 알 수 없어 대신 해 주지 않습니다.
 - **로그** — `.sdlc/logs/` 아래 `run-<시각>.log`(루프가 한 일, 한 줄씩), `sessions/*.jsonl`(세션 전체 스트림), `events.jsonl`(감사 기록 — 세션 이벤트에 effort 와 그 이유, 이어 간 창인지가 들어 있고 이어 가기는 `loop.continue` 로 따로 남음), 백그라운드 루프의 표준 출력 `loop-*.out`. `.sdlc/logs/` 와 `.sdlc/state/` 는 git 에 올라가지 않습니다.
 
 ## 구조

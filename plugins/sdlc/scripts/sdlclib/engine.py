@@ -299,11 +299,8 @@ class Engine:
                     order = runnable(items, self.only, skip=self.failed_now + [s for s in items if self.claims.owner(s)])
                     it = order[0] if order else None
                 if it is None:
-                    if self.self_check_due():
-                        added = self.self_check()
-                        items = self.scan()               # findings that wait for a person count in what the run reports
-                        if added:
-                            continue
+                    if self.self_check_due() and self.self_check():
+                        continue                          # what it queued is read again, from the default branch brought up to date
                     pollable = self.pollable(items)
                     if pollable and not self.only:
                         idle_since = idle_since or epoch()
@@ -414,7 +411,7 @@ class Engine:
         elif self.git.ok("checkout", "-q", self.default) or self.git.ok("checkout", "-q", "--detach", self.base()):
             self.say("BACK    on %s again" % self.default)
         else:
-            self.say("LEFT    still on %s: could not check out %s" % (b, self.default))
+            self.say("LEFT    still on %s: %s" % (b, self.git.with_reason("could not check out " + self.default)))
 
     def start_tree(self) -> str:
         """A clean tree, or the uncommitted work of this loop's own stopped item (continued in place first)."""
@@ -431,7 +428,7 @@ class Engine:
         if dirty:
             raise StopRun("the working tree is not clean on %s: %s" % (self.git.branch() or "HEAD", dirty_summary(dirty)), 2)
         if not self.git.to_default(self.default):
-            raise StopRun("cannot check out or fast-forward %s" % self.default, 2)
+            raise StopRun(self.git.with_reason("cannot check out or fast-forward " + self.default), 2)
         self.refresh_config()
 
     def refresh_config(self) -> None:
@@ -510,7 +507,7 @@ class Engine:
             raise StopRun("the session left %s with uncommitted changes (%s; expected %s) — sort it out by hand" %
                           (self.git.branch() or "a detached HEAD", dirty_summary(dirty), b), 2)
         if not self.git.ok("checkout", "-q", b):
-            raise StopRun("cannot return to %s after the session" % b, 2)
+            raise StopRun(self.git.with_reason("cannot return to %s after the session" % b), 2)
 
     def leave_item(self, slug: str) -> None:
         if self.git.dirty() and self.git.branch() == "sdlc/" + slug:
@@ -1226,7 +1223,9 @@ class Engine:
         return True
 
     def self_check(self) -> int:
-        """Review what merged in this run; validated Important findings on changed lines become new items."""
+        """Review what merged in this run; validated Important findings on changed lines become new items. Returns how many were
+        queued, ready or waiting for a person: on GitHub the queue PR is merged on the remote and not pulled while this loop runs,
+        so until the default branch is brought up to date neither the local branch nor origin's ref shows them."""
         self.self_checks += 1
         self.merged_since_check = []
         self.to_default()
@@ -1268,7 +1267,7 @@ class Engine:
         kept = []
         for p in paths:
             d = WorkDoc.load(p)
-            if d is None or problems(d, os.path.splitext(os.path.basename(p))[0]):
+            if d is None or problems(d, os.path.splitext(os.path.basename(p))[0], work):
                 if os.path.exists(p):
                     os.remove(p)
                 continue
@@ -1295,7 +1294,7 @@ class Engine:
         ready = [d.slug for d in docs if d.status == "ready"]
         self.say("CHECK   %d new item(s): %s" % (len(docs), ", ".join("%s (%s)" % (d.slug, d.status) for d in docs)))
         self.event("self_check", "allow", rng, {"items": [d.slug for d in docs], "ready": ready})
-        return len(ready)
+        return len(docs)
 
 
 def _after_setting(line: str) -> str:

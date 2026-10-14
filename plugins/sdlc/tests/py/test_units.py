@@ -58,6 +58,33 @@ class WorkDocs(unittest.TestCase):
         for want in ("kebab-case", "does not match", "status 'maybe'", "no Goal"):
             self.assertIn(want, p)
 
+    def test_a_slug_that_names_a_file_work_keeps_for_itself_is_refused(self):
+        for slug, name in (("readme", "README.md"), ("template", "TEMPLATE.md")):
+            d = W.WorkDoc.parse(self.TEXT.replace("entry-crud", slug), "work/%s.md" % slug)
+            msg = "slug '%s' names the same file as %s/%s on a case-insensitive file system (macOS, Windows) — pick another"
+            self.assertEqual(W.problems(d, slug), [msg % (slug, "work", name)])
+            self.assertEqual(W.problems(d, slug, "sdlc-work"), [msg % (slug, "sdlc-work", name)])
+            self.assertEqual(W.problems(d), [msg % (slug, "work", name)])                       # with no file name to compare
+
+    def test_the_reserved_slugs_are_the_files_that_are_skipped_without_their_extension_and_in_lower_case(self):
+        self.assertEqual(W.SKIP_FILES, {"README.md", "TEMPLATE.md"})
+        self.assertEqual(W.RESERVED_SLUGS, {"readme", "template"})
+        self.assertEqual(W.RESERVED_SLUGS, {os.path.splitext(n)[0].lower() for n in W.SKIP_FILES})
+        for slug in ("readme-first", "my-template", "readmes", "templates", "a-readme", "read-me", "readme.v2"):
+            d = W.WorkDoc.parse(self.TEXT.replace("entry-crud", slug), "work/%s.md" % slug)
+            self.assertEqual(W.problems(d, slug), [], slug)
+
+    def test_the_files_work_keeps_for_itself_are_skipped_and_never_reported(self):
+        with tempfile.TemporaryDirectory() as work:
+            for name, slug in (("README.md", "readme"), ("TEMPLATE.md", "template")):
+                with open(os.path.join(work, name), "w", encoding="utf-8") as fh:
+                    fh.write(self.TEXT.replace("entry-crud", slug))                             # even one that reads like a doc
+            with open(os.path.join(work, "real-one.md"), "w", encoding="utf-8") as fh:
+                fh.write(self.TEXT.replace("entry-crud", "real-one"))
+            docs = W.list_docs(work)
+            self.assertEqual([d.slug for d in docs], ["real-one"])
+            self.assertEqual([W.problems(d, d.slug) for d in docs], [[]])
+
     def test_quoted_values_survive(self):
         d = W.WorkDoc({"slug": "a", "title": "x: y # z"}, "## Goal\ng\n")
         self.assertEqual(W.WorkDoc.parse(d.dumps()).title, "x: y # z")
@@ -704,6 +731,37 @@ class EnqueueChecks(RepoCase):
         self.repo.write("work/old-one.md", self.repo.doc_text("old-one", goal="changed"))
         with self.assertRaises(EnqueueError):
             self.prep(self.repo.path("work/old-one.md"))
+
+    def test_refuses_a_slug_that_would_overwrite_a_file_work_keeps_for_itself(self):
+        """On a file system that ignores case work/readme.md is work/README.md: the doc would replace it. The scratch copies
+        are written below .sdlc/state/ — in work/ the test itself would be the thing that overwrites the file."""
+        from sdlclib.enqueue import EnqueueError
+        for slug, name in (("readme", "README.md"), ("template", "TEMPLATE.md")):
+            p = self.repo.write(".sdlc/state/new/%s.md" % slug, self.repo.doc_text(slug))
+            with self.assertRaises(EnqueueError) as cm:
+                self.prep(p)
+            self.assertIn("%s: slug '%s' names the same file as work/%s on a case-insensitive file system (macOS, Windows) — "
+                          "pick another" % (p, slug, name), str(cm.exception))
+
+    def test_the_work_directory_in_the_refusal_is_the_configured_one(self):
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["paths"] = {"work": "sdlc-work"}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        p = self.repo.write(".sdlc/state/new/readme.md", self.repo.doc_text("readme"))
+        from sdlclib.enqueue import EnqueueError
+        with self.assertRaises(EnqueueError) as cm:
+            self.prep(p)
+        self.assertIn("names the same file as sdlc-work/README.md", str(cm.exception))
+
+    def test_the_enqueue_command_refuses_it_and_queues_nothing(self):
+        p = self.repo.write(".sdlc/state/new/readme.md", self.repo.doc_text("readme"))
+        r = self.repo.cli("enqueue", p)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("not queued", r.stderr)
+        self.assertIn("slug 'readme' names the same file as work/README.md", r.stderr)
+        self.assertIsNone(self.repo.show("main", "work/readme.md"))
+        self.assertEqual(self.repo.show("main", "work/README.md"), "work items\n")
+        self.assertEqual(self.repo.read("work/README.md"), "work items\n")
 
     def test_local_enqueue_commits_on_main_and_fills_fields(self):
         p = self.repo.write("work/new-one.md", "---\nslug: new-one\ntitle: New\nstatus: ready\n---\n\n## Goal\ng\n")

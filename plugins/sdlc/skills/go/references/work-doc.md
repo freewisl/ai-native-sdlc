@@ -17,7 +17,7 @@ source: user
 ---
 ```
 
-- `slug`: the file name; kebab-case ascii (a-z 0-9 - . _), at most five words.
+- `slug`: the file name; kebab-case ascii (a-z 0-9 - . _), at most five words. Not `readme` or `template`: on a case-insensitive file system (macOS, Windows) those are the work dir's own `README.md` and `TEMPLATE.md`, and the engine refuses them.
 - `title`: in `language`; quote it when it contains `: ` or ` #`.
 - `depends_on`: `[slug, slug]` — the item waits until those are done.
 - `test_changes`: `none` or `allowed` — decided by the design and frozen with it: the gate sends a later change to a person.

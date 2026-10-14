@@ -34,6 +34,10 @@ STATUSES = ("proposed", "ready", "planned", "built", "done", "dropped", "needs-i
 FIELD_ORDER = ("slug", "title", "status", "depends_on", "test_changes", "difficulty", "created", "source")
 SECTION_ORDER = ("Goal", "Acceptance criteria", "Plan", "Proof", "Review", "Departures", "Learned", "Questions")
 SKIP_FILES = {"README.md", "TEMPLATE.md"}
+# the slugs those files would have as work docs, with the file each one collides with: on a file system that ignores case
+# (macOS, Windows) work/readme.md is work/README.md
+RESERVED_FILES = {os.path.splitext(n)[0].lower(): n for n in SKIP_FILES}
+RESERVED_SLUGS = frozenset(RESERVED_FILES)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 TALLY_RE = re.compile(r"SDLC_REVIEW_TALLY\s+important=(\d+)\s+nits=(\d+)(?:\s+validated=(\w+))?")
 
@@ -176,11 +180,15 @@ class WorkDoc:
         write_text(path or self.path, self.dumps())
 
 
-def problems(doc: WorkDoc, file_slug: str = "") -> List[str]:
-    """What is wrong with a document the loop is about to queue."""
+def problems(doc: WorkDoc, file_slug: str = "", work: str = "work") -> List[str]:
+    """What is wrong with a document the loop is about to queue. `work` is the work directory, for the message about a slug
+    that would overwrite one of its own files."""
     p = []
     if not SLUG_RE.match(doc.slug):
         p.append("slug '%s' must be kebab-case ascii (a-z 0-9 - . _)" % doc.slug)
+    if doc.slug in RESERVED_SLUGS:
+        p.append("slug '%s' names the same file as %s/%s on a case-insensitive file system (macOS, Windows) — pick another"
+                 % (doc.slug, work, RESERVED_FILES[doc.slug]))
     if file_slug and doc.slug != file_slug:
         p.append("slug '%s' does not match the file name %s.md" % (doc.slug, file_slug))
     if doc.status not in STATUSES:
