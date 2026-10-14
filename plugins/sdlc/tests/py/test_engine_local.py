@@ -1126,6 +1126,20 @@ class Stopping(RepoCase):
         self.assertEqual(self.repo.engine().run(), 2)
         self.assertEqual(self.repo.calls(), [])
 
+    def test_the_uncommitted_work_of_a_stopped_item_is_continued_first_and_said_after_the_header(self):
+        """The branch of the item a session stopped in, with that session's work uncommitted: the run continues it there — and
+        its log still opens with the header line, as every run's does."""
+        from sdlclib import state as st
+        self.repo.add_items("a-first")
+        self.repo.git("checkout", "-q", "-b", "sdlc/a-first")
+        self.repo.write("wip.txt", "half done\n")
+        st.update(self.repo.root, "a-first", stop={"sid": "", "phase": "design", "at": 0, "why": "turn cap", "fp": "", "model": ""})
+        self.assertEqual(self.repo.engine().run(), 0)
+        said = [line.split(" ", 1)[1] for line in latest_run_log(self.repo).splitlines()]      # past the time of day
+        self.assertTrue(said[0].startswith("== sdlc run"), said[:2])
+        self.assertEqual(said[1], "RESUME  a-first — the session stopped last time left uncommitted changes here; continuing it first")
+        self.assertEqual(self.repo.status_of("a-first"), "done")
+
     def start_and_stop(self, first):
         """Detach a loop whose build session sits in the stub action `first` until `stop` comes; what stop printed."""
         self.repo.add_items("a-first")
@@ -1832,7 +1846,7 @@ class FinishRun(RepoCase):
 
 
 class SelfCheck(RepoCase):
-    config = {"loop": {"self_check": True}}
+    config = {"loop": {"self_check": True, "self_check_min_items": 1}}      # one merged item is enough for these tests
 
     def test_findings_become_items_capped_and_built_in_the_same_run(self):
         self.repo.add_items("a-first")
@@ -1878,6 +1892,348 @@ class SelfCheck(RepoCase):
         self.assertEqual(e.done["merged"], [])
         self.assertNotEqual(e.git.head(), e.from_sha)                                        # the drop's commit moved main
         self.assertFalse(e.self_check_due())
+
+
+class SelfCheckMinItems(RepoCase):
+    """One merged item is not reviewed again by the self-check — its own review covered the whole diff. It takes
+    `loop.self_check_min_items` of them (2 unless the config says otherwise), counted from the run's start or the last check."""
+    config = {"loop": {"self_check": True}}
+    SKIPPED = "CHECK   skipped — 1 item merged since the last check; its own review covered it (loop.self_check_min_items 2)"
+
+    def checks(self):
+        return [k for k, *_ in self.keys()].count("self-check")
+
+    def set_loop(self, **loop):
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["loop"].update(loop)
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.git("commit", "-qam", "loop config")
+
+    def test_a_single_merged_item_is_not_self_checked_and_the_log_says_so(self):
+        self.repo.add_items("a-first")
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.status_of("a-first"), "done")
+        self.assertEqual(self.checks(), 0)
+        self.assertEqual(e.self_checks, 0)
+        self.assertEqual(e.merged_since_check, ["a-first"])
+        self.assertEqual(latest_run_log(self.repo).count(self.SKIPPED), 1)
+
+    def test_the_skip_is_said_once_per_run_however_often_the_question_is_asked(self):
+        def skips(e):
+            said = []
+            e.say = said.append
+            e.from_sha, e.merged_since_check = "0" * 40, ["a-first"]
+            self.assertEqual([e.self_check_due() for _ in range(3)], [False] * 3)
+            return [l for l in said if l.startswith("CHECK   skipped")]
+
+        self.assertEqual(skips(self.repo.engine()), [self.SKIPPED])
+        self.assertEqual(skips(self.repo.engine()), [self.SKIPPED])                   # the next run says it again
+
+    def test_two_merged_items_are_self_checked_and_the_count_is_cleared(self):
+        self.repo.add_items("a-first", "b-second")
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.checks(), 1)
+        self.assertEqual(e.merged_since_check, [])
+        self.assertNotIn("CHECK   skipped", latest_run_log(self.repo))
+
+    def test_one_item_is_checked_when_the_config_asks_for_one_and_zero_never_means_none(self):
+        for value in (1, 0):
+            self.set_loop(self_check_min_items=value)
+            slug = "item-%d" % value
+            self.repo.add_items(slug)
+            before = self.checks()
+            self.assertEqual(self.repo.engine().run(), 0)
+            self.assertEqual(self.checks(), before + 1, value)
+
+    def test_a_value_that_is_not_a_number_is_the_default(self):
+        self.set_loop(self_check_min_items="a couple")
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.checks(), 0)
+        self.assertIn(self.SKIPPED, latest_run_log(self.repo))
+
+    def test_a_higher_minimum_skips_more_and_the_line_counts_them(self):
+        self.set_loop(self_check_min_items=3)
+        self.repo.add_items("a-first", "b-second")
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual(self.checks(), 0)
+        self.assertIn("CHECK   skipped — 2 items merged since the last check; their own reviews covered them "
+                      "(loop.self_check_min_items 3)", latest_run_log(self.repo))
+
+    def test_the_count_starts_over_after_a_self_check(self):
+        self.repo.add_items("a-first", "b-second")
+        self.repo.scenario({"selfcheck_docs": [{"slug": "fix-one", "status": "ready"}]})
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.status_of("fix-one"), "done")                  # the check found it, the loop built it
+        self.assertEqual(self.checks(), 1)                                        # and that one item is not checked again
+        self.assertEqual(e.merged_since_check, ["fix-one"])
+        self.assertIn(self.SKIPPED, latest_run_log(self.repo))
+
+    def test_every_condition_still_counts(self):
+        e = self.repo.engine()
+        e.from_sha = "0" * 40
+        self.assertFalse(e.self_check_due())                                      # nothing merged
+        e.merged_since_check = ["a-first"]
+        self.assertFalse(e.self_check_due())                                      # one is not enough
+        e.merged_since_check = ["a-first", "b-second"]
+        self.assertTrue(e.self_check_due())
+        e.self_checks = 2
+        self.assertFalse(e.self_check_due())                                      # two a run
+        e.self_checks = 0
+        e.only = ["a-first"]
+        self.assertFalse(e.self_check_due())                                      # an --items run
+        e.only = None
+        e.team = True
+        self.assertFalse(e.self_check_due())                                      # a person merges in team mode
+        e.team = False
+        e.cfg.data["loop"]["self_check"] = False
+        self.assertFalse(e.self_check_due())
+        e.cfg.data["loop"]["self_check"] = True
+        e.from_sha = e.git.head()
+        self.assertFalse(e.self_check_due())                                      # main has not moved since the run began
+        e.from_sha = "0" * 40
+        self.assertTrue(e.self_check_due())
+
+
+class FixBlocked(RepoCase):
+    """`SDLC_FIX_BLOCKED <why>` ends a fix session as references/fix.md promises: the item goes to a person with the note."""
+
+    def blocked_run(self, action):
+        self.repo.add_items("a-first", "b-second")
+        self.repo.scenario({"a-first:build": ["fail_gate"], "a-first:fix": [action]})
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        return e
+
+    def test_the_item_goes_to_a_person_with_the_reason_and_gets_no_further_fix_round(self):
+        why = "the test needs a database the loop does not have"
+        e = self.blocked_run("fix_blocked:" + why)
+        self.assertEqual([k for k, *_ in self.keys()].count("a-first:fix"), 1)           # fix_rounds allows two: this is not a round
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"]), ("needs-human", ["the fix session could not fix it: " + why]))
+        self.assertNotIn("failures", rec)                                                 # a person's call, not a failed attempt
+        self.assertEqual(self.repo.status_of("a-first"), "ready")                         # nothing was merged
+        self.assertIn(why, self.repo.show("sdlc/a-first", "work/a-first.md"))             # the note in Departures went with the branch
+        self.assertEqual(self.repo.status_of("b-second"), "done")                         # and the loop went on
+        log = latest_run_log(self.repo)
+        self.assertIn("HUMAN   a-first — the fix session could not fix it: " + why, log)
+        self.assertEqual(log.count("GATE    a-first"), 1)                                 # the gate did not run again
+        self.assertNotIn("FAILED  a-first", log)
+        s = json.loads(self.repo.cli("status", "--json").stdout)
+        self.assertEqual([(n["slug"], n["kind"], n["text"]) for n in s["needs_you"]],
+                         [("a-first", "human", ["the fix session could not fix it: " + why])])
+        with open(self.repo.path(".sdlc/logs/events.jsonl")) as fh:
+            items = [json.loads(l) for l in fh if '"loop.item"' in l and '"a-first"' in l]
+        self.assertEqual([(i["decision"], i["detail"]["reasons"]) for i in items], [("needs-human", ["the fix session could not fix it: " + why])])
+
+    def test_a_marker_without_text_sends_the_person_to_departures(self):
+        self.blocked_run("fix_blocked")
+        self.assertEqual(self.repo.items_state()["a-first"]["reasons"], ["the fix session could not fix it: see Departures"])
+
+    def test_a_note_the_session_left_uncommitted_is_committed_on_the_branch(self):
+        self.blocked_run("fix_blocked_dirty:waiting on a vendor fix")
+        self.assertIn("waiting on a vendor fix", self.repo.show("sdlc/a-first", "work/a-first.md"))
+        self.assertEqual(self.repo.git("log", "-1", "--format=%s", "sdlc/a-first"), "sdlc(a-first): fix session changes")
+        self.assertEqual(self.repo.git("status", "--porcelain"), "")
+
+    def test_a_long_reason_is_cut_to_a_line_a_person_can_read(self):
+        self.blocked_run("fix_blocked:" + "x" * 500)
+        self.assertEqual(self.repo.items_state()["a-first"]["reasons"], ["the fix session could not fix it: " + "x" * 300])
+
+    def test_a_person_who_merges_the_branch_by_hand_finishes_it(self):
+        self.blocked_run("fix_blocked:cannot run the suite here")
+        self.repo.git("merge", "-q", "--no-edit", "sdlc/a-first")
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([k for k, *_ in self.keys()].count("a-first:fix"), 1)             # nothing was run for it again
+
+
+class Continued(RepoCase):
+    """A window that continues a stopped one says so in its `loop.session` event, and the engine logs the continuation."""
+
+    def events(self, name):
+        with open(self.repo.path(".sdlc/logs/events.jsonl")) as fh:
+            return [e for e in map(json.loads, fh) if e["event"] == name]
+
+    def builds(self):
+        return [e["detail"] for e in self.events("loop.session") if e["detail"]["phase"] == "build"]
+
+    def test_a_warm_resume_after_a_cap_is_continued_and_the_continuation_is_an_event(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["max_turns", "ok"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        builds = self.builds()
+        self.assertEqual([(b["status"], b["resumed"], b["continued"]) for b in builds], [("max_turns", False, False), ("ok", True, True)])
+        cont = self.events("loop.continue")
+        self.assertEqual(len(cont), 1)
+        self.assertEqual((cont[0]["decision"], cont[0]["reason"]), ("allow", "turn cap"))
+        self.assertEqual(cont[0]["detail"], {"slug": "a-first", "phase": "build", "sid": builds[0]["sid"], "fresh": False,
+                                             "continuations": 1})
+        self.assertEqual([e["detail"]["continued"] for e in self.events("loop.session") if e["detail"]["phase"] == "design"], [False])
+        self.assertIn("STOPPED a-first — turn cap; continuing (warm resume)", latest_run_log(self.repo))
+
+    def test_a_cold_continuation_is_a_fresh_session_and_still_continued(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["max_turns", "ok"]})
+        e = self.repo.engine()
+        e.cold_seconds = 0
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([(b["resumed"], b["continued"]) for b in self.builds()], [(False, False), (False, True)])
+        self.assertIs(self.events("loop.continue")[0]["detail"]["fresh"], True)
+
+    def test_a_usage_limit_that_is_waited_out_is_a_continuation_too(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["limit_session:1", "ok"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        cont = self.events("loop.continue")
+        self.assertEqual(len(cont), 1)
+        self.assertIn("session limit", cont[0]["reason"])
+        self.assertEqual((cont[0]["detail"]["slug"], cont[0]["detail"]["phase"], cont[0]["detail"]["continuations"]), ("a-first", "build", 0))
+        self.assertEqual([(b["status"], b["continued"]) for b in self.builds()], [("limited", False), ("ok", True)])
+
+    def test_every_continuation_of_a_session_is_an_event(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:design": ["max_turns", "max_turns", "ok"]})
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual([e["detail"]["continuations"] for e in self.events("loop.continue")], [1, 2])
+
+    def test_a_stop_that_a_later_run_continues_marks_that_runs_first_window_though_nothing_continued_in_between(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:build": ["limit_session:7200", "ok"]})
+        e = self.repo.engine()
+        e.limit_wait = 60
+        self.assertEqual(e.run(), 0)                                                     # the wait is beyond the limit: the run stops
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual([(b["status"], b["resumed"], b["continued"]) for b in self.builds()],
+                         [("limited", False, False), ("ok", True, True)])
+        self.assertEqual(self.events("loop.continue"), [])
+
+    def test_the_first_session_of_an_item_is_not_a_continuation(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertEqual({e["detail"]["continued"] for e in self.events("loop.session")}, {False})
+        self.assertEqual(self.events("loop.continue"), [])
+
+
+class RefusedStart(RepoCase):
+    """A start that is refused is not a run: loop-status.json keeps the last run's `stop` and `ended` and gains `refused` and
+    `refused_at`; `status` says both; the next run that does start writes a record without it."""
+
+    def record(self):
+        with open(self.repo.path(".sdlc/state/loop-status.json")) as fh:
+            return json.load(fh)
+
+    def a_finished_run(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)
+        before = self.record()
+        self.assertEqual(before["stop"], "queue empty")
+        return before
+
+    def test_a_dirty_tree_keeps_the_last_stop_and_adds_why_it_was_refused(self):
+        before = self.a_finished_run()
+        self.repo.write("scratch.txt", "mine\n")
+        self.assertEqual(self.repo.engine().run(), 2)
+        after = self.record()
+        self.assertEqual((after["state"], after["stop"], after["ended"], after["done"]),
+                         ("stopped", "queue empty", before["ended"], before["done"]))
+        self.assertEqual(after["refused"], "the working tree has uncommitted changes (?? scratch.txt) — commit or stash them first")
+        self.assertRegex(after["refused_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertFalse(os.path.exists(self.repo.path(".sdlc/state/loop.pid")))
+        out = self.repo.cli("status").stdout
+        self.assertRegex(out.splitlines()[0], r"^loop: not running · last stop: queue empty · start refused \d+s ago: "
+                                              r"the working tree has uncommitted changes \(\?\? scratch\.txt\)")
+        loop = json.loads(self.repo.cli("status", "--json").stdout)["loop"]
+        self.assertEqual((loop["running"], loop["last_stop"], loop["refused"]), (False, "queue empty", after["refused"]))
+        self.assertRegex(loop["refused_ago"], r"^\d+s$")
+
+    def test_a_run_that_starts_afterwards_writes_a_record_without_it(self):
+        self.a_finished_run()
+        self.repo.write("scratch.txt", "mine\n")
+        self.assertEqual(self.repo.engine().run(), 2)
+        os.remove(self.repo.path("scratch.txt"))
+        self.repo.add_items("b-second")
+        self.assertEqual(self.repo.engine().run(), 0)
+        after = self.record()
+        self.assertNotIn("refused", after)
+        self.assertNotIn("refused_at", after)
+        self.assertEqual(after["stop"], "queue empty")
+        out = self.repo.cli("status").stdout
+        self.assertIn("loop: not running · last stop: queue empty\n", out + "\n")
+        self.assertNotIn("refused", out)
+        self.assertEqual(json.loads(self.repo.cli("status", "--json").stdout)["loop"]["refused"], "")
+
+    def test_a_checkout_that_never_ran_has_no_last_stop_to_keep(self):
+        self.repo.add_items("a-first")
+        self.repo.write("scratch.txt", "mine\n")
+        self.assertEqual(self.repo.engine().run(), 2)
+        rec = self.record()
+        self.assertEqual((rec["state"], "stop" in rec, "ended" in rec), ("stopped", False, False))
+        self.assertRegex(self.repo.cli("status").stdout.splitlines()[0],
+                         r"^loop: not running · start refused \d+s ago: the working tree has uncommitted changes")
+
+    def test_a_refusal_before_the_tree_is_looked_at_is_kept_the_same_way(self):
+        from sdlclib.engine import Engine
+        before = self.a_finished_run()
+        e = Engine(self.repo.root, claude_bin="/nonexistent/claude")
+        self.assertEqual(e.run(), 2)
+        after = self.record()
+        self.assertEqual((after["stop"], after["ended"]), ("queue empty", before["ended"]))
+        self.assertIn("claude executable not found", after["refused"])
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["loop"]["enabled"] = False
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.git("commit", "-qam", "loop off")
+        self.assertEqual(self.repo.engine().run(), 2)
+        self.assertIn("the loop is switched off", self.record()["refused"])
+        self.assertEqual(self.record()["stop"], "queue empty")
+
+    def test_a_loop_that_is_already_running_is_not_a_refusal_and_its_record_is_left_alone(self):
+        self.a_finished_run()
+        path = self.repo.path(".sdlc/state/loop-status.json")
+        with open(path) as fh:
+            before = fh.read()
+        self.repo.write(".sdlc/state/loop.pid", "%d\n" % os.getppid())               # a live process that is not this one
+        self.assertEqual(self.repo.engine().run(), 2)
+        with open(path) as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertIn("a loop is already running in this checkout", latest_run_log(self.repo))
+
+    def test_a_pause_is_no_refusal(self):
+        self.a_finished_run()
+        self.repo.cli("stop", "--after-item")
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertNotIn("refused", self.record())
+
+    def test_a_dry_run_on_a_dirty_tree_still_works_and_writes_no_record(self):
+        self.repo.add_items("a-first")
+        self.repo.write("scratch.txt", "mine\n")
+        self.assertEqual(self.repo.engine(dry_run=True).run(), 0)
+        self.assertFalse(os.path.exists(self.repo.path(".sdlc/state/loop-status.json")))
+        self.assertEqual(self.repo.calls(), [])
+
+    def test_status_shows_a_refusal_only_when_it_is_the_latest_word_and_no_loop_runs(self):
+        from sdlclib.status import collect, render
+        root = self.repo.root
+
+        def loop(**rec):
+            self.repo.write(".sdlc/state/loop-status.json", json.dumps(dict({"state": "stopped", "stop": "queue empty"}, **rec)))
+            return collect(root)["loop"]
+
+        refused = dict(refused="no claude", refused_at="2026-10-14T10:00:00Z")
+        self.assertEqual(loop(ended="2026-10-14T09:00:00Z", **refused)["refused"], "no claude")        # after the last run
+        self.assertEqual(loop(ended="2026-10-14T10:00:00Z", **refused)["refused"], "no claude")        # the same second
+        shown = loop(ended="2026-10-14T11:00:00Z", **refused)                                          # a run ended after it
+        self.assertEqual((shown["refused"], shown["refused_ago"]), ("", ""))
+        self.assertEqual(loop(**refused)["refused"], "no claude")                                      # no run ever ended
+        self.assertEqual(loop(refused="no claude")["refused"], "")                                     # undated: not shown
+        self.assertEqual(loop(ended="2026-10-14T09:00:00Z")["refused"], "")
+        self.repo.write(".sdlc/state/loop.pid", "%d\n" % os.getpid())                                  # a loop is running now
+        self.assertEqual(loop(ended="2026-10-14T09:00:00Z", **refused)["refused"], "")
+        self.assertNotIn("refused", render(collect(root)))
 
 
 class Adoption(RepoCase):

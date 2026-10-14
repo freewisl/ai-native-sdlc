@@ -14,7 +14,7 @@ Run it from inside the repository (or pass --root). Standard library only, Pytho
   drop SLUG [REASON]                 take an item off the queue: dropped on the default branch (team: through a PR), PR closed
   rate SLUG good|fix|reject [NOTE]   rate an auto-merged change; fix/reject with a note queues a follow-up
   gate SLUG [--json]                 run the merge gate on sdlc/SLUG (checked out, clean) — exit 0 pass, 1 fix, 2 person
-  ship SLUG                          gate, then merge (team: hand to a person) — the end of an interactive /sdlc:go
+  ship SLUG                          gate, then merge (GitHub: once the PR's checks pass; team: hand to a person) — the end of /sdlc:go
   init [...]                         adopt the repository (see init --help)
 """
 from __future__ import annotations
@@ -233,7 +233,7 @@ def cmd_answer(a: argparse.Namespace) -> int:
 
 
 def cmd_retry(a: argparse.Namespace) -> int:
-    st.update(a.root, a.slug, failures=None, state=None, reasons=None, last_error=None, stop=None)
+    st.update(a.root, a.slug, failures=None, state=None, reasons=None, last_error=None, stop=None, ci_rounds=None)
     print("%s: failures and waits cleared — the loop takes it again" % a.slug)
     return 0
 

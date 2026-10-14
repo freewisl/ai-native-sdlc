@@ -57,7 +57,7 @@ body{height:824px}
     <div class="box core"><svg viewBox="0 0 40 40"><path d="M7 16 h26 l-4 17 h-18 z" fill="var(--sun)" stroke="var(--ink)" stroke-width="2"/><rect x="12" y="6" width="9" height="12" rx="1.5" fill="#fff" stroke="var(--ink)" stroke-width="1.5"/><rect x="19" y="5" width="9" height="13" rx="1.5" fill="#fff" stroke="var(--ink)" stroke-width="1.5"/></svg><b>큐</b><span><code>work/*.md</code> 를 읽어<br>순서와 의존성을 정함</span></div>
     <div class="box core"><svg viewBox="0 0 40 40"><rect x="5" y="7" width="30" height="26" rx="5" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M11 15 l5 4 l-5 4 M19 24 h10" stroke="var(--ink)" stroke-width="2" fill="none" stroke-linecap="round"/></svg><b><code style="font-size:.85em">claude -p</code> 세션</b><span>설계 · 구현 · 수정 · <span class="nb">자기 점검</span>을<br>항목마다 새로 띄움</span></div>
     <div class="box force"><svg viewBox="0 0 40 40"><rect x="4" y="8" width="32" height="24" rx="4.5" fill="var(--ink)"/><path d="M10 16 l6 4.5 l-6 4.5" fill="none" stroke="var(--mint)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><line x1="19" y1="26" x2="28" y2="26" stroke="var(--sun)" stroke-width="3" stroke-linecap="round"/></svg><b>셸 게이트</b><span>토큰 0 — 7가지를 직접 확인</span></div>
-    <div class="box core"><svg viewBox="0 0 40 40"><path d="M7 20 h14" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round"/><path d="M17 12 l8 8 l-8 8" fill="none" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="31" cy="20" r="4.5" fill="var(--ok)"/></svg><b>머지</b><span>머지하고, 머지됐는지까지 확인</span></div>
+    <div class="box core"><svg viewBox="0 0 40 40"><path d="M7 20 h14" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round"/><path d="M17 12 l8 8 l-8 8" fill="none" stroke="var(--ok)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="31" cy="20" r="4.5" fill="var(--ok)"/></svg><b>머지</b><span>PR 체크를 기다려 머지하고, 머지됐는지까지 확인</span></div>
     <div class="box core"><svg viewBox="0 0 40 40"><rect x="5" y="7" width="30" height="26" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><rect x="10" y="22" width="5" height="7" fill="var(--mint)" stroke="var(--ink)" stroke-width="1.5"/><rect x="18" y="16" width="5" height="13" fill="var(--sun)" stroke="var(--ink)" stroke-width="1.5"/><rect x="26" y="12" width="5" height="17" fill="var(--accent)" stroke="var(--ink)" stroke-width="1.5"/></svg><b>상태</b><span><code>status</code> · 비용 · 멈춤과 이어서</span></div>
   </div>
 
@@ -81,7 +81,7 @@ body{height:824px}
   <!-- D: GitHub or local -->
   <div class="col">
     <div class="head"><h3>GitHub · 또는 로컬</h3><small>기본 브랜치로 가는 길은 PR<br>훅과 룰셋이 양쪽에서 지킴</small></div>
-    <div class="box force"><svg viewBox="0 0 40 40"><circle cx="12" cy="10" r="4" fill="var(--ink)"/><circle cx="12" cy="30" r="4" fill="var(--ink)"/><circle cx="28" cy="20" r="4" fill="var(--ok)"/><path d="M12 14 v12 M12 14 q0 6 16 6" fill="none" stroke="var(--ink)" stroke-width="2"/></svg><b>브랜치 → PR → 머지</b><span><code>sdlc/&lt;slug&gt;</code> 브랜치<br>squash 머지, 머지 뒤 삭제</span></div>
+    <div class="box force"><svg viewBox="0 0 40 40"><circle cx="12" cy="10" r="4" fill="var(--ink)"/><circle cx="12" cy="30" r="4" fill="var(--ink)"/><circle cx="28" cy="20" r="4" fill="var(--ok)"/><path d="M12 14 v12 M12 14 q0 6 16 6" fill="none" stroke="var(--ink)" stroke-width="2"/></svg><b>브랜치 → PR → 머지</b><span><code>sdlc/&lt;slug&gt;</code> 브랜치<br>체크 통과 뒤 squash 머지, 머지 뒤 삭제</span></div>
     <div class="box force"><svg viewBox="0 0 40 40"><rect x="9" y="18" width="22" height="16" rx="4" fill="var(--stop)"/><path d="M14 18 v-4 q0 -6 6 -6 q6 0 6 6 v4" fill="none" stroke="var(--ink)" stroke-width="2.5"/></svg><b>룰셋 · auto-merge</b><span>PR 필수 · force-push 금지<br><code>init</code> 이 설정을 제안</span></div>
     <div class="box"><svg viewBox="0 0 40 40"><rect x="6" y="12" width="28" height="20" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M6 20 h28" stroke="var(--ink)" stroke-width="2"/><text x="20" y="18" text-anchor="middle" font-size="7">local</text></svg><b>원격이 없으면</b><span>로컬 squash 머지<br>같은 게이트를 거침</span></div>
     <div class="box dev"><svg viewBox="0 0 64 64"><circle cx="32" cy="22" r="11" fill="var(--sun)" stroke="var(--ink)" stroke-width="3"/><path d="M10 56 q0 -20 22 -20 q22 0 22 20z" fill="var(--mint)" stroke="var(--ink)" stroke-width="3"/></svg><b>팀 저장소</b><span>설계 PR 승인과 머지는<br>사람 몫</span></div>
@@ -96,6 +96,8 @@ body{height:824px}
   <span class="it">자기 점검 <span class="m opus">opus</span></span>
   <span class="sep">|</span>
   <span class="up">다시 실패한 항목의 구현은 <span class="m opus">opus</span> 로 승격</span>
+  <span class="sep">|</span>
+  <span class="up">effort 는 항목마다 자동</span>
 </div>
 <div class="legend"><span><i style="background:#fff;border:2px solid var(--mint)"></i>권고(스킬 · 에이전트)</span><span><i style="background:#fff;border:2px solid var(--stop)"></i>강제(훅 · 게이트 · 룰셋)</span><span><i style="background:#fff;border:2px solid var(--accent)"></i>엔진 · 단일 설정</span><span>· 마켓플레이스: github.com/freewisl/ai-native-sdlc</span></div>
 </body></html>

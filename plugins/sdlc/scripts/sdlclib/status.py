@@ -15,6 +15,8 @@ from .gitops import Git, make_forge
 from .queue import Item, counts, runnable, scan
 from .util import epoch, parse_iso, read_json
 
+SESSION_PHASES = ("design", "build", "fix", "self-check")      # the phases a claude session runs in (the gate, the merge do not)
+
 
 def _ago(iso: str) -> str:
     d = parse_iso(iso)
@@ -46,11 +48,18 @@ def collect(root: str) -> Dict[str, Any]:
     pause = os.path.join(root, str(cfg.get("loop.pause_file", ".sdlc/state/pause")))
     out: Dict[str, Any] = {"root": root, "mode": "solo" if cfg.solo else "team", "default_branch": default,
                            "legacy_config": cfg.legacy}
+    in_session = bool(pid) and loop.get("phase") in SESSION_PHASES
     out["loop"] = {"running": bool(pid), "pid": pid, "paused": os.path.exists(pause), "state": loop.get("state", ""),
                    "item": loop.get("item", "") if pid else "", "phase": loop.get("phase", "") if pid else "",
                    "for": _ago(str(loop.get("phase_started", ""))) if pid else "", "log": loop.get("log", ""),
                    "session_log": loop.get("session_log", "") if pid else "", "wake_at": loop.get("wake_at", "") if pid else "",
+                   "model": loop.get("model", "") if in_session else "", "effort": loop.get("effort", "") if in_session else "",
                    "last_stop": loop.get("stop", "") if not pid else "", "run_cost_usd": loop.get("cost_usd", 0)}
+    # a start that was refused after the last run ended (a run that started since has written its record without `refused`)
+    refused_at, ended = parse_iso(str(loop.get("refused_at") or "")), parse_iso(str(loop.get("ended") or ""))
+    refused = bool(loop.get("refused")) and not pid and refused_at is not None and (ended is None or refused_at >= ended)
+    out["loop"]["refused"] = str(loop["refused"]) if refused else ""
+    out["loop"]["refused_ago"] = _ago(str(loop["refused_at"])) if refused else ""
     out["counts"] = counts(items)
     out["next"] = [it.slug for it in runnable(items)][:5]
     out["needs_you"] = needs_you(items, local=make_forge(git, default, str(cfg.get("loop.forge", "auto"))).kind == "local")
@@ -140,13 +149,22 @@ def render(s: Dict[str, Any]) -> str:
     L: List[str] = []
     lp = s["loop"]
     if lp["running"]:
-        what = "%s %s for %s" % (lp["phase"] or "between items", lp["item"], lp["for"]) if lp["item"] else (lp["state"] or "running")
+        if lp["item"]:
+            what = "%s %s for %s" % (lp["phase"] or "between items", lp["item"], lp["for"])
+        elif lp["phase"] == "self-check":
+            what = "self-check for %s" % lp["for"]
+        else:
+            what = lp["state"] or "running"
+        if lp.get("model") or lp.get("effort"):
+            what += " (%s)" % " · ".join(x for x in (lp.get("model") or "default", lp.get("effort")) if x)
         if lp.get("wake_at"):
             what += " (usage limit — wakes %s)" % lp["wake_at"]
         L.append("loop: running (pid %s) — %s · this run $%.2f" % (lp["pid"], what, float(lp.get("run_cost_usd") or 0)))
     else:
-        L.append("loop: not running%s%s" % (" · paused" if lp["paused"] else "",
-                                             " · last stop: %s" % lp["last_stop"] if lp.get("last_stop") else ""))
+        L.append("loop: not running%s%s%s" % (" · paused" if lp["paused"] else "",
+                                               " · last stop: %s" % lp["last_stop"] if lp.get("last_stop") else "",
+                                               " · start refused %s ago: %s" % (lp["refused_ago"], lp["refused"])
+                                               if lp.get("refused") else ""))
     if s.get("legacy_config"):
         L.append("config: version 1 — run /sdlc:init once to migrate")
     c = s["counts"]

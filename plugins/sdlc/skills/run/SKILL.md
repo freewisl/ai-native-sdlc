@@ -33,6 +33,7 @@ Arguments: $ARGUMENTS
    status: ready
    depends_on: [project-skeleton]
    test_changes: none
+   size: m
    created: 2026-10-12T09:30:02Z
    source: goal:a1b2c3
    ---
@@ -42,7 +43,7 @@ Arguments: $ARGUMENTS
    ## Acceptance criteria
    R1. WHEN … THE SYSTEM SHALL …
    ```
-   No comments after frontmatter values (they would become part of the value); the title is in `language` and quoted when it contains `: `. `created` is UTC and ascending, a second apart, in the order you want the items worked; `source` carries one short id shared by every item of this goal.
+   No comments after frontmatter values (they would become part of the value); the title is in `language` and quoted when it contains `: `. `created` is UTC and ascending, a second apart, in the order you want the items worked; `source` carries one short id shared by every item of this goal. `size` is your guess of the change — `s` a few lines in one or two files and nothing risky, `m` an ordinary PR, `l` many files or a migration, concurrency or security-sensitive change; the design revises it, and the loop sizes each session's effort from it.
 4. **Show the list** — slug, title, depends_on — in a few lines. No approval round: the user delegated the split, and "그건 빼" works later.
 5. **Queue it:** `sdlc.py enqueue --new`. "not queued: …" → fix the docs it names and run it again. The end of its output says how the items joined the queue:
    - `committed on <branch>`, `merged <PR>` or `inbox (…)` → they are on the queue.

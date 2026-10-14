@@ -10,9 +10,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from .util import CmdResult, run
+from .util import CmdResult, run, tail
 
 IGNORED_DIRTY = (".sdlc/state/", ".sdlc/logs/", ".sdlc/worktrees/")
 # pathspecs that keep the same noise out of a commit the engine makes for a session
@@ -232,6 +232,20 @@ class Forge:
     def approved(self, slug: str) -> bool:
         return False
 
+    def checks(self, slug: str, head: str = "") -> Tuple[str, List[Dict[str, str]]]:
+        """The item's PR checks as (state, entries) — state pass | fail | pending | none | unknown, an entry {"name", "bucket",
+        "link", "workflow"}. With `head` (the commit just pushed), what GitHub shows for another commit is `unknown`. Only a
+        forge with CI to ask has any checks: here there is nothing to wait for."""
+        return "none", []
+
+    def check_logs(self, failed: List[Dict[str, str]], lines: int = 60) -> str:
+        """What the failed checks printed, for the session that has to fix them."""
+        return ""
+
+    def merge_state(self, slug: str) -> str:
+        """The forge's answer to "can the PR be merged now" (GitHub: CLEAN, BEHIND, BLOCKED, DIRTY, …); empty when unknown."""
+        return ""
+
     def url(self, slug: str) -> str:
         return "sdlc/" + slug
 
@@ -280,6 +294,40 @@ class LocalForge(Forge):
             return False, "commit failed: " + r.text()[-300:]
         g("branch", "-D", b)
         return True, g.out("rev-parse", "HEAD", cwd=where)
+
+
+RUN_LINK = re.compile(r"/actions/runs/(\d+)")
+CHECK_LOG_RUNS = 3          # runs whose log is read: every `gh run view` is a slow call
+CHECK_LOGS_CAP = 6000       # characters of CI output a fix brief carries
+
+
+def _check_entry(raw: dict) -> Dict[str, str]:
+    """One `statusCheckRollup` entry as {"name", "bucket", "link", "workflow"}. A CheckRun (Actions and most apps) is pending
+    until it completes and then passes only on SUCCESS, NEUTRAL or SKIPPED — anything else, an empty conclusion included, is
+    a failure. A StatusContext (the older commit status) carries its verdict in `state`; EXPECTED and PENDING are still open."""
+    def text(key: str) -> str:
+        return str(raw.get(key) or "")
+    if raw.get("__typename") == "StatusContext" or ("context" in raw and "name" not in raw):
+        state = text("state").upper()
+        bucket = "pass" if state == "SUCCESS" else "fail" if state in ("FAILURE", "ERROR") else "pending"
+        return {"name": text("context"), "bucket": bucket, "link": text("targetUrl"), "workflow": ""}
+    if text("status").upper() != "COMPLETED":
+        bucket = "pending"
+    else:
+        bucket = "pass" if text("conclusion").upper() in ("SUCCESS", "NEUTRAL", "SKIPPED") else "fail"
+    return {"name": text("name"), "bucket": bucket, "link": text("detailsUrl"), "workflow": text("workflowName")}
+
+
+def end_of(text: str, n: int) -> str:
+    """The last n characters of text, from the start of a line when there is one — a log's end says why it failed."""
+    if n <= 0:
+        return ""
+    if len(text) <= n:
+        return text
+    cut = text[len(text) - n:]
+    if text[len(text) - n - 1] != "\n" and "\n" in cut:
+        cut = cut.split("\n", 1)[1]
+    return cut
 
 
 class GitHubForge(Forge):
@@ -394,6 +442,82 @@ class GitHubForge(Forge):
             if who and who != author:
                 latest[who] = rv.get("state")
         return any(v == "APPROVED" for v in latest.values()) and "CHANGES_REQUESTED" not in latest.values()
+
+    def _view(self, slug: str, fields: str) -> Dict[str, object]:
+        """The comma-separated `fields` of `gh pr view` for the item's open PR. RuntimeError — as `_pr` raises it — when there
+        is no open PR, gh fails or what it printed is not the JSON object asked for: the callers turn that into `unknown`."""
+        pr = self._pr(slug, "open")
+        if not pr:
+            raise RuntimeError("no open PR for sdlc/" + slug)
+        r = self._gh("pr", "view", str(pr["number"]), "--json", fields, timeout=60)
+        if not r.ok:
+            raise RuntimeError(r.text())
+        try:
+            data = json.loads(r.out)
+        except ValueError:
+            raise RuntimeError("unreadable gh output")
+        if not isinstance(data, dict) or any(f not in data for f in fields.split(",")):
+            raise RuntimeError("unreadable gh output")
+        return data
+
+    def checks(self, slug: str, head: str = "") -> Tuple[str, List[Dict[str, str]]]:
+        """State of the open PR's checks: fail if any failed, else pending if any is still open, else pass; `none` when the
+        PR has none (yet) — an empty or null rollup is how GitHub says so. Whatever cannot be read is `unknown`, never a
+        guess a merge could go through on. With `head`, a PR that still shows another commit is `unknown` too: right after
+        a push GitHub keeps the previous commit and its checks for a while, and its old failure is not this push's."""
+        try:
+            data = self._view(slug, "headRefOid,statusCheckRollup" if head else "statusCheckRollup")
+        except RuntimeError:
+            return "unknown", []
+        if head and data["headRefOid"] != head:
+            return "unknown", []
+        rollup = data["statusCheckRollup"]
+        if rollup is None:
+            rollup = []
+        if not isinstance(rollup, list) or not all(isinstance(e, dict) for e in rollup):
+            return "unknown", []
+        found = [_check_entry(e) for e in rollup]
+        if not found:
+            return "none", []
+        buckets = {c["bucket"] for c in found}
+        return ("fail" if "fail" in buckets else "pending" if "pending" in buckets else "pass"), found
+
+    def check_logs(self, failed: List[Dict[str, str]], lines: int = 60) -> str:
+        """The tail of the log of each failed Actions run (its jobs share one log, and every `gh run view` is a slow call, so
+        at most CHECK_LOG_RUNS of them), headed with the failed checks' names; any other check by name and link. Within
+        CHECK_LOGS_CAP characters: a log's end says why it failed, so what goes is the front of each."""
+        logs: Dict[str, str] = {}            # run id -> the tail of its failed-step log ("" when it could not be read)
+        names: Dict[str, List[str]] = {}     # run id -> the failed checks that ran in it
+        rest: List[str] = []
+        for c in failed:
+            name, link = (c.get("name") or "check")[:120], c.get("link") or ""
+            m = RUN_LINK.search(link)
+            rid = m.group(1) if m else ""
+            if rid and rid not in logs and len(logs) < CHECK_LOG_RUNS:
+                r = self._gh("run", "view", rid, "--log-failed", timeout=60)
+                logs[rid] = tail(r.out, lines) if r.ok else ""
+            if logs.get(rid):
+                names.setdefault(rid, []).append(name)
+            else:
+                rest.append(name + (" — " + link[:240] if link else "") + (" (no log)" if rid in logs else ""))
+        rest_text = "\n".join(rest)
+        if len(rest_text) > CHECK_LOGS_CAP // 4:
+            kept = rest_text[:CHECK_LOGS_CAP // 4].rsplit("\n", 1)[0].count("\n") + 1
+            rest_text = "\n".join(rest[:kept]) + "\n… and %d more" % (len(rest) - kept)
+        heads = ["== %s ==" % ", ".join(n) for n in names.values()]
+        heads = [h if len(h) <= 300 else h[:299] + "…" for h in heads]
+        room = CHECK_LOGS_CAP - len(rest_text) - sum(len(h) + 3 for h in heads)     # a head, its newline, the gap after it
+        per = max(room, 0) // max(len(heads), 1)
+        parts = ["%s\n%s" % (h, end_of(logs[rid], per)) for h, rid in zip(heads, names)]
+        return "\n\n".join(parts + ([rest_text] if rest_text else []))
+
+    def merge_state(self, slug: str) -> str:
+        """GitHub's answer to "can the open PR be merged now": CLEAN, BEHIND (the branch has to be brought up to date first),
+        BLOCKED, DIRTY, … — empty when it cannot be read."""
+        try:
+            return str(self._view(slug, "mergeStateStatus")["mergeStateStatus"] or "")
+        except RuntimeError:
+            return ""
 
 
 def make_forge(git: Git, default: str, prefer: str = "auto") -> Forge:

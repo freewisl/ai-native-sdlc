@@ -6,6 +6,7 @@
     status: ready
     depends_on: []
     test_changes: none
+    size: m
     created: 2026-10-12T09:30:00Z
     source: user
     ---
@@ -17,6 +18,8 @@
     ## Departures
     ## Learned
     ## Questions
+
+`size` (s, m or l) is optional and never validated: the loop reads it to pick a session's effort (effort.py).
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ from typing import Dict, List, Optional, Tuple
 from .util import read_text, write_text
 
 STATUSES = ("proposed", "ready", "planned", "built", "done", "dropped", "needs-input")
-FIELD_ORDER = ("slug", "title", "status", "depends_on", "test_changes", "created", "source")
+FIELD_ORDER = ("slug", "title", "status", "depends_on", "test_changes", "size", "created", "source")
 SECTION_ORDER = ("Goal", "Acceptance criteria", "Plan", "Proof", "Review", "Departures", "Learned", "Questions")
 SKIP_FILES = {"README.md", "TEMPLATE.md"}
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")

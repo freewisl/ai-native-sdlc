@@ -43,6 +43,7 @@ title: 수입·지출 입력/수정/삭제
 status: ready          # proposed | ready | planned | built | done | dropped | needs-input
 depends_on: []
 test_changes: none     # none | allowed (design decides; existing test files stay locked otherwise)
+size: m                # s | m | l (optional, since 1.1: the loop sizes a session's effort from it)
 created: 2026-10-12T09:30:00Z
 source: user           # user | goal:<id> | self-check
 ---
@@ -112,6 +113,7 @@ Engine state (`.sdlc/state/items.json`) holds only what the repository cannot sa
 - Design and self-check run on the strongest model; build and fix run on a cheaper one. Config:
   `loop.models` = `{design: opus, build: sonnet, fix: sonnet, self_check: opus}` and
   `loop.efforts` = `{design: high, build: high, fix: medium, self_check: high}`.
+- **Since 1.1** `loop.efforts` is the baseline: the loop shifts each session's effort by the item's size, earlier failures and fix rounds (see "1.1" below).
 - **Escalation:** a build for an item that has failed before runs on `loop.escalate_model` (opus; "" turns it off).
 - The old keys still work. A string `loop.model` applies to design, build and self-check, `loop.fix_model` to fix, and a string `loop.effort` to every phase. Migration from 0.x carries them only when they differ from the 0.x defaults (opus / sonnet / high).
 - A model-family limit switches the session to another configured model of a different family, else sonnet, else opus.
@@ -131,10 +133,10 @@ Every check below runs before any merge, by both `go` and `run`:
 6. No changed file matches `risk.human` globs, and no guard file changed: `.sdlc/config.json`, the frozen-paths file, `.claude/settings.json`, `.claude/settings.local.json`, the gate's checks directory. Either sends the PR to a human — a session must not loosen its own guardrails and merge that unattended. One exception (P7, 2026-10-13): a `.sdlc/config.json` change that only fills `commands.<name>` entries that were missing or empty at the merge base. A new app's skeleton item records its build, test and lint commands that way. It adds checks and removes none, and that item's own gate already runs the filled commands. Changing or removing a command that had a value still goes to a person. The loop re-reads the config after each merge, so the next items are gated with the filled commands.
 7. `checks/*` executables pass.
 
-Fixable failures (1, 2, 7) get a fix session on `loop.models.fix`, up to `fix_rounds`, then count as a failure. Failures for a person (3–6) send the item to "needs a person": PR comment + `sdlc:needs-human` label, item state `needs-human`, and the loop moves on. A pass leads to a merge, and the engine verifies that the merge happened. Repositories without a remote squash-merge locally (in a linked worktree: where the default branch is checked out), and the same gate applies.
+Fixable failures (1, 2, 7) get a fix session on `loop.models.fix`, up to `fix_rounds`, then count as a failure. Failures for a person (3–6) send the item to "needs a person": PR comment + `sdlc:needs-human` label, item state `needs-human`, and the loop moves on. A pass leads to a merge, and the engine verifies that the merge happened. Since 1.1 the engine first waits, on GitHub, for the PR's checks (see "1.1" below). Repositories without a remote squash-merge locally (in a linked worktree: where the default branch is checked out), and the same gate applies.
 
 **Self-check**
-- After merges the engine did itself (so solo mode; in team mode a person merged and reviewed), the engine reviews the merged diff.
+- After merges the engine did itself (so solo mode; in team mode a person merged and reviewed), the engine reviews the merged diff. Since 1.1 it does so only after at least `loop.self_check_min_items` (2) merged items (see "1.1" below).
 - Only validated Important findings that touch changed lines become new items, at most 3 per pass, deduplicated against existing items.
 - Pre-existing problems become `proposed` items, even in solo mode.
 
@@ -196,14 +198,63 @@ The status view shows:
 - **Agent:** diagnoser.
 - The plugin-level trigger evals are rewritten in the current `prompt.md` + `graders/` format.
 
-## Known limitations (P7, not fixed)
+## 1.1 (2026-10-14)
 
-These were found in the live trial and the D1 work. None of them blocks the loop.
+Branch `improve-1.1`. The user (2026-10-14): "그건 루프에서 자동으로 파악해서 정하게 가능해? 그리고 개선할거있으면 다 추가해" (asked about choosing each session's effort), then "다 수정하고 문서들도 전부다 최신화해". The first became F1. "Add whatever is worth improving" was filled from what the live trial and the 1.0 known limitations had left: F2–F6. Every new key has a default, so nothing needs migrating: `loop.auto_effort: false` restores 1.0's fixed efforts and `loop.checks_wait_minutes: 0` merges without waiting.
+
+**Measured first** (claude 2.1.296, haiku, one turn, 2026-10-14)
+- A loop session starts with about 25k tokens of prompt: system prompt, tools, skills, plugins and CLAUDE.md.
+- The user's other plugins and MCP servers are about 4.8k of it (about 19%); MCP servers alone are about 300.
+- `--exclude-dynamic-system-prompt-sections` gave no measurable reuse between sessions, so it is not used.
+
+These numbers shaped F5 and F6: the startup prompt is a real cost of every session, but the part sdlc could cut on its own is small and has a price (F5), and the part the project controls is its own CLAUDE.md (F6).
+
+**F1 — The loop picks each session's effort** (`loop.auto_effort`)
+- **Effort is shifted; the model is not switched.** The model per phase already says who does the work (design and self-check think, build and fix execute), and `escalate_model` already covers "this item failed". The question was how hard a session thinks. `--effort` is a per-window flag, so the engine can pass another value to every window, a `--resume` included, while a different model forces a fresh session and loses the cache. Effort is also a finer dial than a choice between two models. The shift starts from the user's `loop.efforts` (now the baseline), moves one step per reason along `low`, `medium`, `high`, `xhigh` and stops there. A `""` or `max` the user wrote is left alone, because a person chose it, and no shift reaches `max`. `xhigh` is safe to pass: claude lowers it by itself on a model without it.
+- **Size.** A work doc may carry `size: s|m|l`. `/sdlc:run` guesses it when it splits a goal; the design session sets it from its Plan and may revise the guess, because only then is there something to measure. `s` lowers design and build one step. `l` raises design, build and fix one step. A fix session is not lowered for `s`: it works on a failure, and small items fail too. An item that has failed before raises design, build and fix one step, and so does a second fix round. The rules are pure functions in `scripts/sdlclib/effort.py`, applied to every window, so a continuation can differ from the first window.
+- **A design without an explicit size runs at its base.** The estimate counts acceptance criteria and Plan steps, and the Plan does not exist yet when a design starts; the criteria alone say little about how hard the design is. Build and fix do see a Plan, so without a `size` they estimate one: `s` for at most two criteria and three steps, `l` for seven or more criteria or eight or more steps, `m` otherwise (and when there are no Plan steps).
+- **`size` is a hint, not a field the engine polices.** `problems()` does not validate it and an unknown value counts as missing, so a typo cannot park an item. A wrong guess costs one effort step.
+- **A self-check is sized by its range:** fewer than 300 changed lines (`git diff --shortstat`) one step lower, 2,000 or more one step higher.
+- **The reason is visible.** Effort now varies per window, so a surprising bill has to be explainable from the log: the session line says why (`effort medium — size s`), the run header shows the baseline and `(auto)`, `loop-status.json` and `status` show the running session's model and effort, and the `loop.session` event carries `effort` and `effort_reason`.
+
+**F2 — The self-check needs two merged items** (`loop.self_check_min_items`)
+- A self-check looks for what the per-item reviews missed, above all how merged changes interact: a contract one changed and another still assumes. One merged item has nothing to interact with, and its own review (reviewer plus validation) has just read that diff. A second pass over it is the same diff and the same criteria on a stronger model. So the minimum is two, counted from the start of the run or from the last self-check (`merged_since_check`); `1` runs it after any merge, as 1.0 did.
+- A run that merged fewer logs `CHECK   skipped — …` once, so a missing self-check is explained.
+
+**F3 — Three small fixes**
+- **`SDLC_FIX_BLOCKED`.** `references/fix.md` tells a fix session to print it when the fix would break a rule, and promises that the item then goes to a person with the note. The 1.0 engine ignored the marker: any fix session that ended ok counted as advanced and the gate ran again, so a session that had rightly refused to weaken a test got another round for nothing. The marker is now handled before the "advanced" check: the engine clears the stop record, commits what is left and hands the item to a person with "the fix session could not fix it: <why>".
+- **A continued window is marked.** `loop.session` events carry `continued`, and a new `loop.continue` event (why the window stopped, warm or fresh, how many continuations) is written where the run log prints `STOPPED … continuing`. The audit log used to say `max_turns` whether or not the engine went on; only the run log knew.
+- **A refused start no longer replaces "last stop".** `run` reads the previous `loop-status.json` first and makes its start checks before it writes a pid or a status. A refusal writes the previous status back with `refused` and `refused_at`; `stop` and `ended` stay the previous run's, and `status` shows both. "A loop is already running" is not a refusal in this sense: the running loop's own status is the truth.
+
+**F4 — GitHub: wait for the PR's checks before merging** (`loop.checks_wait_minutes`)
+- **Why.** In 1.0 the engine ran `gh pr merge` right after the shell gate. A repository without required checks could get its PR merged while its CI was still running, or red; one with required checks refused the merge and the item went to a person as "merge did not happen". The shell gate runs the project's own commands, but CI often runs more (other platforms, integration, scanners), so passing the gate is not passing CI.
+- **Why the shell waits, not a session.** It costs no tokens, like the gate itself. A model polling `gh pr checks` pays per poll, and a loop session runs every command in the foreground and loses a background wait when it ends or hits a cap. The decision to merge also stays mechanical: a session's report is not a gate.
+- **Reading the checks.** From `statusCheckRollup` of the open PR. A check run is pending until COMPLETED, then pass for SUCCESS, NEUTRAL or SKIPPED and fail for anything else (timed out, cancelled and stale count as failures). A commit status is pass for SUCCESS, fail for FAILURE or ERROR, pending otherwise. Any fail makes it fail, else any pending makes it pending, else pass; no entries is "none"; no open PR or an unreadable answer is "unknown". The engine polls every `max(1, min(30, limit / 10))` seconds with the interruptible sleep, so a stop request ends the wait (the doc stays `done`, and the next run ships again). Pending and "unknown" wait until the limit. "none" counts as pass after a grace of 120 seconds when the checkout has workflow files (they start a few seconds after the push), and after one look otherwise.
+- **Only the pushed commit counts.** Each look asks for `headRefOid` together with the rollup and reads "unknown" while the PR still shows another commit: right after a push GitHub can still show the previous commit and its checks, and the push after a fix would otherwise be judged by the old failure.
+- **A failure waits for the rest.** It is acted on when nothing is pending any more, or at the limit. `gh run view --log-failed` gives a run's log only once the run has finished, and a fix session should see every failure at once. Checks that could not be read for the whole wait go to a person as "could not be read", not as "still running". A person who merges or closes the PR during the wait ends it (`merged-by-person`, `closed-by-person`), and that merge is not the loop's, so it does not count toward the self-check.
+- **A failure goes back through the gate.** The doc returns to `built` with a commit, and a fix session gets the failed checks (name, workflow, link) and the tail of the failed log (`gh run view --log-failed`, at most three checks and about 6,000 characters). The fix may have broken something local, so the shell gate runs again before the next merge attempt. The brief says to reproduce with the command the workflow runs and forbids weakening a test or editing `.github/workflows/` to get green; a failure that is not the change's (the CI environment, a missing secret, a flaky external service) is `SDLC_FIX_BLOCKED`. Rounds are counted per item (`ci_rounds`, cleared at the merge and by `retry`) against `loop.fix_rounds`; an interactive ship does not count them, because the calling session has its own limit.
+- **Still running at the limit goes to a person**, with the check names: the engine cannot tell a slow check from a stuck one, and `loop.checks_wait_minutes` is the knob. The loop notices when the person merges.
+- **Behind the default branch.** When the merge fails and `mergeStateStatus` says BEHIND, the engine merges the default branch into the branch once (a conflict is aborted and goes to a person), publishes again, waits again and merges. Once, because a branch that is behind again is racing other merges, and a person should look. The shell gate does not run again on the updated branch: the item's own diff is the same, and the PR's checks, which BEHIND implies the repository requires, test the merged result.
+- **Team mode is unchanged.** The engine marks the PR ready and a person merges, before any wait; the checks are in front of that person in the PR.
+- **Interactive `sdlc.py ship` waits too**, so it can take up to the limit. The go skill runs it in the background and waits for the notification, and exit 1 can now be the PR checks' brief (the doc is back to `built`: fix, commit, ship again). It sleeps plainly — the loop's pause file is not about it — and does not write the loop's status file.
+
+**F5 — Optional session isolation** (`loop.isolate_sessions`)
+- When `true`, a loop session starts with `--setting-sources project,local`, `--strict-mcp-config` and the sdlc plugin through `--plugin-dir`. The plugin is not added when a plugin directory is already given or the project's settings enable an `sdlc@…` plugin (it would load twice). A claude without `--setting-sources` is left as it was. `--strict-mcp-config` drops every MCP server, the project's `.mcp.json` too. A loop session is only allowed `loop.allowed_tools` unless the project's settings allow more, so this costs nothing unless a project allows an MCP tool there.
+- **Why it is opt-in.** It saves about 4.8k of the ~25k tokens, and only for a user who has other plugins and MCP servers. The price is that user settings stop loading. Permissions are fine (the engine passes its own) and so is the model (passed per phase), but an `apiKeyHelper`, or a proxy or base URL in `env`, would silently be missing in an unattended loop. A small saving is not worth a loop that cannot authenticate by surprise, so the user turns it on knowing that.
+
+**F6 — Trimming a long CLAUDE.md** (skills only)
+- Every session, each loop session too, reads the whole file, and it is the one part of the startup prompt that belongs to the project. The procedure is in `skills/init/references/claude-md-guide.md`. `/sdlc:init` offers it when `--check` reports the file over `claude_md.max_lines` and after adoption when the file ends up over; nothing changes without the user's yes.
+- **Keep** the sdlc sections and what every change needs. **Move** what only some changes need (a module's internals, runbooks, long examples, API references, history) to `docs/claude/<topic>.md` behind one pointer line, `- <Topic>: read docs/claude/<topic>.md before changing <paths>.` Never an `@` import: it loads the file into every session again. **Delete** what is stale, what README.md or AGENTS.md already say (CLAUDE.md imports AGENTS.md) and what a linter enforces.
+- **Why a procedure and not an engine feature.** Only a person can say which lines are rules, and moving one silently drops it from the sessions that needed it. So the plan is shown first, a rule the user wrote is never dropped without being listed, and the commit is `docs: trim CLAUDE.md` (a PR on GitHub). 0.8.0 had this as `/sdlc:lesson --trim`; it went with the skill in 1.0, and the init health check already reports the length.
+
+## Known limitations
+
+These were found in the live trial and the D1 work (P7), and while building 1.1. None of them blocks the loop.
 - **No progress needs a baseline.** The check compares a stop with the previous stop, so the first window has nothing to compare with. With a very small turn cap, a window that only reads is normal. Two such windows in a row fail the phase. The default caps make this unlikely.
-- **`events.jsonl` does not mark a continued window.** A window that hit its cap is logged as `max_turns`, whether the engine continued it or not. The run log says which.
 - **`num_turns` is not the cap unit.** claude reports N + 1 turns for a window capped at N.
 - **Session logs are not pure JSONL.** claude may print a plain-text warning first: `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. In an untrusted workspace, loop sessions do not get the project's allow list. The engine's `--allowedTools` covers what they need.
-- **A refused start replaces "last stop".** When `run` refuses to start (on a dirty tree, for example), `status` shows the refusal as the last stop.
+- **PR checks are read from the rollup of the PR's head.** A check that never reports leaves the item pending until `loop.checks_wait_minutes` runs out, and then it goes to a person.
+- **A branch is brought up to date at most once per merge.** A second time behind is left to a person ("merge did not happen").
 - **The deploy gate does not see:**
   - a command made from a text tool's output (`$(echo …)`, or an unquoted `VAR=$(…)` in front of git)
   - a deploy split across two commands (`cd prod && make deploy`)
@@ -236,6 +287,14 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
     - engine 475 tests on Python 3.12 and 3.9
     - `plugin validate --strict` and the marketplace
   - The limitations still open are listed under Known limitations.
-- [x] P8 hand-off to the user: migration notes per repo (pilot, solar-next, …), merge to main, push and update only on the user's go-ahead
+- [x] P8 hand-off to the user: migration notes per repository, merge to main, push and update only on the user's go-ahead
   - A survey of the six 0.x repositories (init run in throwaway clones only) found 14 migration defects; all are fixed. The per-repository notes went to the user, not into this repository: they hold details of a company repository.
   - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.0.0 in both profiles.
+- [x] 1.1 built: auto effort, self-check min items, PR checks wait, FIX_BLOCKED, events and refused start, opt-in isolation, CLAUDE.md trim, with tests and docs
+  - `tests/run.sh` passes:
+    - hooks 1816
+    - scripts 91
+    - engine 743 tests on Python 3.12 and 3.9
+    - `plugin validate --strict` and the marketplace
+  - Not tried against a real GitHub repository: the PR-checks wait is tested with the stub `gh` only.
+- [ ] 1.1 release: merge to main, push and update only on the user's go-ahead

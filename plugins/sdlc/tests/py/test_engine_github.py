@@ -5,12 +5,17 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from unittest import mock
 
-from helpers import RepoCase, SDLC
+from helpers import RepoCase, SDLC, STUBS
+from sdlclib import state as st
+from sdlclib.engine import CI_BRIEF_CAP, Outcome, StopRun, check_names
 from sdlclib.enqueue import EnqueueError
+from sdlclib.events import read_events
+from test_checks import check_run, run_link, status_context
 
 
 def clone_status(case):
@@ -677,15 +682,906 @@ class Team(RepoCase):
     def test_the_self_check_is_solo_only_whatever_else_says_it_is_due(self):
         e = self.repo.engine()
         e.cfg.data["loop"]["self_check"] = True
-        e.done["merged"] = ["a-first"]                                            # whatever put a merge on record
+        e.merged_since_check = ["a-first", "b-second"]                            # whatever put two merges on record
         e.from_sha = "0" * 40                                                     # and main is not where this run began
         self.assertFalse(e.self_check_due())                                      # team mode: a person merges, nothing to review
         e.team = False
         self.assertTrue(e.self_check_due())                                       # the same state in solo mode is due
 
+    def test_the_engine_does_not_wait_for_the_pr_checks_in_team_mode(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)                             # the design PR waits for approval
+        self.approve(1)
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "awaiting-merge")   # a person merges: nothing to wait for
+        calls = [" ".join(c) for c in self.repo.gh_db()["calls"]]
+        self.assertEqual([c for c in calls if c.startswith(("pr view", "run view")) or "statusCheckRollup" in c], [])
+        with open(e.log_path) as fh:
+            self.assertNotIn("CHECKS", fh.read())
+
     def test_team_mode_without_a_remote_is_refused(self):
         self.repo.git("remote", "remove", "origin")
         self.assertEqual(self.repo.engine().run(), 2)
+
+
+class ChecksBase(RepoCase):
+    """What the tests of the PR-checks wait share. The stub gh plays CI (see its docstring); `fast` is an engine that polls at
+    once and does not wait for checks to show up unless the test says so."""
+    remote = True
+
+    def script(self, slug, *snapshots):
+        """The snapshots of checks the stub plays for sdlc/<slug>, one per look; the last one stays."""
+        db = self.repo.gh_db()
+        db.setdefault("checks", {})["sdlc/" + slug] = list(snapshots)
+        self.repo.gh_db_write(db)
+
+    def db_set(self, **keys):
+        db = self.repo.gh_db()
+        db.update(keys)
+        self.repo.gh_db_write(db)
+
+    def fast(self, limit=None, **kw):
+        e = self.repo.engine(**kw)
+        e.checks_poll, e.checks_grace = 0.05, 0.0
+        if limit is not None:
+            e.cfg.data["loop"]["checks_wait_minutes"] = limit
+        return e
+
+    def log(self, e):
+        try:
+            with open(e.log_path) as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    def gh_calls(self):
+        return [" ".join(c) for c in self.repo.gh_db().get("calls", [])]
+
+    def looks(self):
+        """How often the PR's checks were read."""
+        return len([c for c in self.gh_calls() if c.startswith("pr view") and "statusCheckRollup" in c])
+
+    def person(self, *args):
+        """What somebody does on GitHub meanwhile: the stub, run the way the command line would."""
+        r = subprocess.run([os.path.join(STUBS, "gh")] + list(args), cwd=self.repo.root, env=self.repo.env(), capture_output=True,
+                           text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def watch_looks(self, e, then=None):
+        """Every look the engine takes at the checks, as (head, time it ended, time it began). `then` = {n: action} runs the
+        action right after the n-th look — a person acting while the engine waits."""
+        looks, orig = [], e.forge.checks
+
+        def checks(slug, head=""):
+            began = time.time()
+            out = orig(slug, head)
+            looks.append((head, time.time(), began))
+            if len(looks) in (then or {}):
+                then[len(looks)]()
+            return out
+        e.forge.checks = checks
+        return looks
+
+    def events(self, name):
+        return list(read_events(self.repo.root, name))
+
+
+class PrChecks(ChecksBase):
+    """Solo on GitHub: after the shell gate the loop waits for the PR's checks before it merges."""
+    config = {"loop": {"checks_wait_minutes": 0.3}}
+
+    def watch_fix(self, e):
+        """What the world looks like when the engine starts a fix session — recorded, then the session runs as usual."""
+        seen, orig = [], e.session
+
+        def session(slug, phase, extra="", fix_round=0):
+            if phase == "fix":
+                seen.append({"status": e.doc_status(slug), "subject": self.repo.git("log", "-1", "--format=%s"),
+                             "ci_rounds": self.repo.items_state()[slug].get("ci_rounds"), "extra": extra, "round": fix_round,
+                             "looks": self.looks()})
+            return orig(slug, phase, extra, fix_round)
+        e.session = session
+        return seen
+
+    def fix_prompts(self, slug="a-first"):
+        return [c["prompt"] for c in self.repo.calls() if c["key"] == slug + ":fix"]
+
+    def advance_main(self, path="other.txt", text="newer\n"):
+        """origin's main moves on while the item is being shipped: a commit pushed from a clone of its own, as a colleague would."""
+        clone, env = tempfile.mkdtemp(prefix="colleague-", dir=self.repo.tmp), self.repo.env()
+
+        def git(*args):
+            subprocess.run(["git", "-C", clone] + list(args), check=True, env=env, capture_output=True)
+        subprocess.run(["git", "clone", "-q", self.repo.origin, clone], check=True, env=env, capture_output=True)
+        os.makedirs(os.path.dirname(os.path.join(clone, path)), exist_ok=True)
+        with open(os.path.join(clone, path), "w") as fh:
+            fh.write(text)
+        git("add", "-A")
+        git("commit", "-q", "-m", "main moves on")
+        git("push", "-q", "origin", "main")
+
+    def built_branch(self, slug="a-first"):
+        """What an interactive /sdlc:go leaves on sdlc/<slug>: a built work doc with its review tally, committed."""
+        r = self.repo
+        r.add_items(slug)
+        r.git("checkout", "-q", "-b", "sdlc/" + slug)
+        r.write("work/%s.md" % slug, r.doc_text(slug, status="built") +
+                "\n## Plan\n1. Write src/%s.txt.\n\n## Proof\n| R | check | kind |\n|---|---|---|\n| R1 | test command | auto |\n"
+                "\n## Review\nSDLC_REVIEW_TALLY important=0 nits=1 validated=yes\n" % slug)
+        r.write("src/%s.txt" % slug, "built\n")
+        r.git("add", "-A")
+        r.git("commit", "-q", "-m", "build " + slug)
+
+    # ---------- waiting, then merging ----------
+    def test_pending_checks_are_waited_for_and_the_item_is_merged_when_they_pass(self):
+        self.repo.add_items("a-first")
+        running = [check_run("build", "IN_PROGRESS", ""), check_run("test", "QUEUED", "")]
+        self.script("a-first", running, running, [check_run("build"), check_run("test")])
+        e = self.fast()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        log = self.log(e)
+        self.assertEqual(log.count("CHECKS  a-first — waiting for build, test\n"), 1)                  # said once, at the first look
+        self.assertIn("CHECKS  a-first — passed: build, test\n", log)
+        self.assertLess(log.index("waiting for build, test"), log.index("passed: build, test"))
+        self.assertLess(log.index("passed: build, test"), log.index("MERGED  a-first"))
+        self.assertEqual(self.looks(), 3)
+        (ev,) = self.events("loop.checks")
+        self.assertEqual((ev["decision"], ev["reason"]), ("pass", "build, test"))
+        self.assertEqual([c["name"] for c in ev["detail"]["checks"]], ["build", "test"])
+        self.assertEqual(ev["detail"]["slug"], "a-first")
+        self.assertGreaterEqual(ev["detail"]["waited_s"], 0)
+
+    def test_a_pr_with_no_checks_and_no_workflow_files_is_merged_at_once(self):
+        self.repo.add_items("a-first")
+        e = self.repo.engine()
+        e.checks_poll = 0.05                                    # the grace stays what it is by default: none without workflows
+        self.assertEqual(e.run(), 0)
+        log = self.log(e)
+        self.assertIn("CHECKS  a-first — no checks\n", log)
+        self.assertNotIn("waiting for", log)
+        self.assertEqual(self.looks(), 1)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        (ev,) = self.events("loop.checks")
+        self.assertEqual((ev["decision"], ev["detail"]["checks"]), ("none", []))
+
+    def test_a_pr_with_no_checks_yet_waits_the_grace_when_the_repository_has_workflows_and_then_merges(self):
+        self.repo.write(".github/workflows/ci.yml", "name: CI\non: pull_request\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "ci")
+        self.repo.git("push", "-q", "origin", "main")
+        self.repo.add_items("a-first")
+        e = self.repo.engine()
+        e.checks_poll, e.checks_grace = 0.05, 0.6
+        looks = self.watch_looks(e)
+        self.assertEqual(e.run(), 0)
+        self.assertGreaterEqual(looks[-1][1] - looks[0][2], 0.6 - 0.02)                                # nothing showed up for the whole grace
+        self.assertGreater(len(looks), 1)
+        log = self.log(e)
+        self.assertEqual(log.count("CHECKS  a-first — waiting for checks to start\n"), 1)
+        self.assertLess(log.index("waiting for checks to start"), log.index("CHECKS  a-first — no checks"))
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+
+    def test_checks_that_show_up_during_the_grace_are_waited_for_like_any_other(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [], [check_run("build", "IN_PROGRESS", "")], [check_run("build")])
+        e = self.repo.engine()
+        e.checks_poll, e.checks_grace = 0.05, 30.0
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.looks(), 3)                                                                # the grace did not make it wait on
+        log = self.log(e)
+        self.assertEqual(log.count("waiting for"), 1)
+        self.assertIn("CHECKS  a-first — waiting for checks to start\n", log)
+        self.assertIn("CHECKS  a-first — passed: build\n", log)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+
+    # ---------- a failed check ----------
+    def test_a_failed_check_sends_the_item_through_a_fix_session_and_the_gate_again_before_it_merges(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", conclusion="FAILURE", workflow="CI")], [check_run("build")])
+        self.db_set(run_logs={"100": "build\tTests\t2026-10-14T10:00:02Z FAILED tests/test_pay.py::test_total - AssertionError: 3 != 4\n"
+                                     "build\tTests\t2026-10-14T10:00:03Z ##[error]Process completed with exit code 1.\n"})
+        e = self.fast(max_items=1)                                             # the whole cycle is one visit to the item
+        seen = self.watch_fix(e)
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(len(seen), 1)
+        s = seen[0]
+        self.assertEqual((s["status"], s["subject"]), ("built", "sdlc(a-first): PR checks failed — back to built"))
+        self.assertEqual((s["ci_rounds"], s["round"]), (1, 1))
+        brief = s["extra"]
+        self.assertTrue(brief.startswith("The PR's checks failed on GitHub after the shell gate had passed (they run on GitHub, not here):\n"))
+        self.assertIn("- `build` (workflow CI) — " + run_link(100) + "\n", brief)
+        self.assertIn("test_total - AssertionError: 3 != 4", brief)
+        self.assertIn("Process completed with exit code 1.", brief)
+        for word in ("SDLC_FIXED", "SDLC_FIX_BLOCKED", ".github/workflows/", "never weaken, skip or delete a test"):
+            self.assertIn(word, brief)
+        (prompt,) = self.fix_prompts()
+        self.assertTrue(prompt.startswith("/sdlc:go --item a-first --fix"))
+        self.assertIn(brief, prompt)                                                                   # the session is told exactly this
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build", "a-first:fix"])
+        self.assertEqual([g["decision"] for g in self.events("loop.gate")], ["pass", "pass"])          # the gate ran again after the fix
+        self.assertEqual([c["decision"] for c in self.events("loop.checks")], ["fail", "pass"])
+        log = self.log(e)
+        self.assertIn("CHECKS  a-first — failed: build\n", log)
+        self.assertEqual(log.count("GATE    a-first"), 2)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        self.assertNotIn("ci_rounds", self.repo.items_state()["a-first"])                              # a merge clears the count
+        self.assertIn("\nstatus: done\n", self.repo.origin_show("main", "work/a-first.md"))
+        self.assertIsNotNone(self.repo.origin_show("main", "FIXED-a-first"))                          # the fix is in what was merged
+
+    def test_checks_that_keep_failing_end_with_a_person_after_the_fix_rounds_and_the_pr_is_flagged(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", conclusion="FAILURE"), check_run("lint")])
+        e = self.fast()
+        seen = self.watch_fix(e)
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([s["round"] for s in seen], [1, 2])                                           # loop.fix_rounds is 2
+        reason = "the PR's checks still fail after 2 fix round(s): build"
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"], rec["ci_rounds"]), ("needs-human", [reason], 2))
+        pr = self.repo.gh_db()["prs"][0]
+        self.assertEqual(pr["state"], "OPEN")
+        self.assertFalse(pr["isDraft"])
+        self.assertIn({"name": "sdlc:needs-human"}, pr["labels"])
+        self.assertIn(reason, pr["comments"][0])
+        self.assertIn("HUMAN   a-first — " + reason + "\n", self.log(e))
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "built")                      # not done: it is not
+        self.assertEqual(self.repo.git("log", "-1", "--format=%s", "origin/sdlc/a-first"),             # and what the person gets is pushed
+                         "sdlc(a-first): PR checks failed — back to built")
+
+    def test_with_no_fix_rounds_a_failed_check_goes_straight_to_a_person(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", conclusion="FAILURE"), check_run("test", conclusion="TIMED_OUT")])
+        e = self.fast()
+        e.fix_rounds = 0
+        self.assertEqual(e.run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"]), ("needs-human", ["the PR's checks failed: build, test"]))
+        self.assertNotIn("ci_rounds", rec)
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build"])            # no fix session
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "built")
+
+    def test_a_fix_session_that_says_it_cannot_fix_it_hands_the_item_to_a_person(self):
+        self.repo.add_items("a-first")
+        self.repo.scenario({"a-first:fix": ["fix_blocked:the deploy secret is missing in CI"]})
+        self.script("a-first", [check_run("deploy", conclusion="FAILURE")])
+        self.assertEqual(self.fast().run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"]), ("needs-human", ["the fix session could not fix it: the deploy secret is missing in CI"]))
+        self.assertEqual(rec["ci_rounds"], 1)
+        self.assertEqual([k for k, *_ in self.keys()].count("a-first:fix"), 1)                         # and no second round
+
+    def test_a_failure_waits_for_the_checks_still_running_before_the_fix_session_starts(self):
+        self.repo.add_items("a-first")
+        bad = check_run("build", conclusion="FAILURE")
+        self.script("a-first", [bad, check_run("test", "IN_PROGRESS", "")], [bad, check_run("test", "IN_PROGRESS", "")],
+                    [bad, check_run("test")], [check_run("build"), check_run("test")])
+        e = self.fast()
+        seen = self.watch_fix(e)
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([s["looks"] for s in seen], [3])                    # not at the first look, which already had the failure
+        self.assertIn("- `build`", seen[0]["extra"])
+        self.assertNotIn("`test`", seen[0]["extra"])                          # what passed is nothing to fix
+        log = self.log(e)
+        self.assertEqual(log.count("CHECKS  a-first — waiting for test\n"), 1)
+        self.assertIn("CHECKS  a-first — failed: build\n", log)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+
+    def test_checks_read_before_the_pushed_commit_shows_up_are_not_taken_for_its_own(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", conclusion="FAILURE")], [check_run("build")])
+        self.db_set(head_lag={"sdlc/a-first": 2})                             # after the fix is pushed GitHub shows the old commit twice
+        e = self.fast()
+        seen = self.watch_fix(e)
+        looks = self.watch_looks(e)
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(len(seen), 1)                                        # the old failure was not read again: no second fix round
+        heads = [h for h, *_ in looks]
+        self.assertEqual(len(heads), 4)                                       # the first push, then the new one three times (2 held back)
+        self.assertNotEqual(heads[0], heads[1])
+        self.assertEqual(heads[1], heads[2])
+        self.assertEqual(heads[2], heads[3])
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+
+    # ---------- the limit ----------
+    def test_checks_still_running_at_the_limit_hand_the_item_to_a_person_and_the_loop_notices_the_merge(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", "IN_PROGRESS", ""), check_run("test"), check_run("lint", "QUEUED", "")])
+        e = self.fast(limit=0.03)
+        self.assertEqual(e.run(), 0)
+        reason = ("the PR's checks were still running after 0.03 min (build, lint) — merge the PR when they pass (the loop notices), "
+                  "or raise loop.checks_wait_minutes")
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"]), ("needs-human", [reason]))
+        pr = self.repo.gh_db()["prs"][0]
+        self.assertEqual(pr["state"], "OPEN")
+        self.assertIn({"name": "sdlc:needs-human"}, pr["labels"])
+        self.assertIn(reason, pr["comments"][0])
+        log = self.log(e)
+        self.assertIn("CHECKS  a-first — waiting for build, lint\n", log)
+        self.assertNotIn("passed:", log)
+        self.assertNotIn("failed:", log)                                       # the HUMAN line says it
+        self.assertIn("HUMAN   a-first — " + reason + "\n", log)
+        (ev,) = self.events("loop.checks")
+        self.assertEqual((ev["decision"], ev["reason"]), ("pending", "build, lint"))
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "done")                       # the gate had passed: the PR is shippable
+        self.person("pr", "merge", "1", "--squash", "--delete-branch")                                  # the checks pass and a person merges
+        e2 = self.repo.engine()
+        self.assertEqual(e2.run(), 0)
+        self.assertIn("MERGED  a-first — merged by a person\n", self.log(e2))
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "merged")
+        self.assertEqual(len(self.repo.gh_db()["prs"]), 1)
+
+    # ---------- a branch that is behind ----------
+    def test_a_branch_that_is_behind_gets_the_default_branch_merged_in_and_its_checks_waited_for_again(self):
+        self.repo.add_items("a-first")
+        self.db_set(behind=["sdlc/a-first"])
+        e = self.fast()
+        snap = {}
+
+        def after_the_update():
+            snap["subject"] = self.repo.git("log", "-1", "--format=%s")
+            snap["parents"] = len(self.repo.git("rev-list", "--parents", "-n", "1", "HEAD").split()) - 1
+            snap["pushed"] = self.repo.git("rev-parse", "origin/sdlc/a-first") == self.repo.git("rev-parse", "HEAD")
+        looks = self.watch_looks(e, {1: self.advance_main, 2: after_the_update})
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        self.assertEqual(snap, {"subject": "sdlc(a-first): merge main", "parents": 2, "pushed": True})
+        heads = [h for h, *_ in looks]
+        self.assertEqual(len(heads), 2)
+        self.assertNotEqual(heads[0], heads[1])                                # the second wait is for the commit that was pushed
+        self.assertEqual(self.log(e).count("UPDATE  a-first — behind main; merged it in, waiting for the checks again\n"), 1)
+        self.assertEqual(self.repo.origin_show("main", "other.txt"), "newer\n")
+        self.assertEqual(self.repo.origin_show("main", "src/a-first.txt"), "built a-first\n")
+        self.assertEqual(self.repo.items_state()["a-first"].get("state"), None)
+
+    def test_a_behind_branch_whose_update_fails_its_checks_goes_through_the_fix_session_like_any_other(self):
+        self.repo.add_items("a-first")
+        self.db_set(behind=["sdlc/a-first"])
+        self.script("a-first", [check_run("build")], [check_run("build", conclusion="FAILURE")], [check_run("build")])
+        e = self.fast()
+        seen = self.watch_fix(e)
+        self.watch_looks(e, {1: self.advance_main})
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(len(seen), 1)                                         # the update's own checks failed: a fix round, as before
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+
+    def test_a_branch_that_is_behind_and_conflicts_with_the_default_branch_is_left_to_a_person(self):
+        self.repo.add_items("a-first")
+        self.db_set(behind=["sdlc/a-first"])
+        e = self.fast()
+        looks = self.watch_looks(e, {1: lambda: self.advance_main("src/a-first.txt", "main wrote this one too\n")})
+        self.assertEqual(e.run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual((rec["state"], rec["reasons"]), ("needs-human", ["the branch is behind main and merging it conflicts"]))
+        self.assertEqual(len(looks), 1)                                        # no second wait
+        self.assertNotIn("UPDATE", self.log(e))
+        self.assertEqual(self.repo.git("status", "--porcelain"), "")           # the merge was undone
+        self.assertFalse(os.path.exists(self.repo.path(".git/MERGE_HEAD")))
+        self.assertEqual(self.repo.git("rev-parse", "sdlc/a-first"), self.repo.git("rev-parse", "origin/sdlc/a-first"))   # nothing was added
+        self.assertEqual(self.repo.show("sdlc/a-first", "src/a-first.txt"), "built a-first\n")                         # no markers committed
+        pr = self.repo.gh_db()["prs"][0]
+        self.assertEqual(pr["state"], "OPEN")
+        self.assertIn({"name": "sdlc:needs-human"}, pr["labels"])
+        self.assertIn("the branch is behind main and merging it conflicts", pr["comments"][0])
+
+    def test_a_merge_refused_again_after_the_update_is_told_as_it_is_and_the_update_is_made_once(self):
+        os.environ["STUB_GH_MERGE_FAIL"] = "1"
+        self.repo.add_items("a-first")
+        self.db_set(behind=["sdlc/a-first"])
+        e = self.fast()
+        looks = self.watch_looks(e, {1: self.advance_main})
+        self.assertEqual(e.run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec["state"], "needs-human")
+        self.assertEqual(rec["reasons"], ["merge did not happen: gh pr merge: GraphQL: Pull request is not mergeable"])
+        self.assertEqual(self.log(e).count("UPDATE  a-first"), 1)
+        self.assertEqual(len(looks), 2)
+
+    def test_a_merge_that_fails_for_another_reason_is_not_an_update(self):
+        os.environ["STUB_GH_MERGE_FAIL"] = "1"
+        self.repo.add_items("a-first")
+        e = self.fast()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["reasons"], ["merge did not happen: gh pr merge: GraphQL: Pull request is not mergeable"])
+        self.assertNotIn("UPDATE", self.log(e))
+        self.assertEqual(self.looks(), 1)
+
+    # ---------- no waiting ----------
+    def test_a_wait_of_zero_minutes_merges_without_asking_for_the_checks(self):
+        self.repo.add_items("a-first")
+        e = self.fast(limit=0)
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([c for c in self.gh_calls() if c.startswith(("pr view", "run view"))], [])
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        self.assertNotIn("CHECKS", self.log(e))
+        self.assertEqual(self.events("loop.checks"), [])
+
+    def test_the_gate_is_all_there_is_for_a_repository_without_a_remote(self):
+        # the forge is local there: nothing to wait for, merged here (the engine tests of the local forge go on to show the rest)
+        self.repo.git("remote", "remove", "origin")
+        self.repo.add_items("a-first", push=False)
+        e = self.fast()
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.status_of("a-first", "main"), "done")
+        self.assertEqual(self.repo.gh_db().get("calls", []), [])
+        self.assertNotIn("CHECKS", self.log(e))
+
+    # ---------- stop, pause, and what a person does meanwhile ----------
+    def test_a_stop_request_while_waiting_leaves_the_item_done_and_the_next_run_ships_it(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        e = self.fast()
+        looks = self.watch_looks(e, {2: lambda: setattr(e, "stopping", "stop requested")})
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(len(looks), 2)
+        self.assertIn("stop=stop requested", self.log(e))
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "done")
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+        rec = self.repo.items_state()["a-first"]
+        self.assertNotIn("state", rec)                                         # not waiting for a person, not merged
+        self.assertNotIn("merged", rec)
+        self.assertEqual(self.events("loop.checks"), [])                       # a wait that was cut short ended with no verdict
+        self.script("a-first", [check_run("build")])                           # the checks have passed by the next run
+        e2 = self.fast()
+        self.assertEqual(e2.run(), 0)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build"])            # shipped again, nothing redone
+
+    def test_a_pause_while_waiting_stops_the_run_the_same_way(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        e = self.fast()
+        self.watch_looks(e, {1: lambda: self.repo.write(".sdlc/state/pause", "")})
+        self.assertEqual(e.run(), 0)
+        self.assertIn("stop=paused", self.log(e))
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "done")
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+
+    def test_a_pr_a_person_merges_while_the_loop_waits_is_theirs_not_the_loops(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        e = self.fast()
+        self.watch_looks(e, {2: lambda: self.person("pr", "merge", "1", "--squash", "--delete-branch")})
+        self.assertEqual(e.run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec["state"], "merged")
+        self.assertIn("merged", rec)
+        self.assertNotIn("reasons", rec)
+        self.assertNotIn("ci_rounds", rec)
+        log = self.log(e)
+        self.assertIn("MERGED  a-first — merged by a person\n", log)
+        self.assertNotIn("passed:", log)
+        self.assertEqual((e.merged_since_check, e.done["merged"]), ([], []))                           # not a merge the loop made
+        self.assertEqual([x["decision"] for x in self.events("loop.item") if x["decision"] == "merged-by-person"], ["merged-by-person"])
+        self.assertEqual([x["decision"] for x in self.events("loop.checks")], ["merged"])
+        self.assertEqual(self.events("loop.merge"), [])
+        self.assertEqual(len(self.repo.gh_db()["prs"]), 1)
+        e2 = self.repo.engine()
+        self.assertEqual(e2.run(), 0)
+        self.assertNotIn("ITEM    a-first", self.log(e2))                                              # it is done: the loop leaves it
+
+    def test_a_pr_a_person_closes_while_the_loop_waits_closes_the_item(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        e = self.fast()
+        self.watch_looks(e, {2: lambda: self.person("pr", "close", "1")})
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "closed")
+        self.assertIn("CLOSED  a-first — PR closed by a person\n", self.log(e))
+        self.assertEqual(e.merged_since_check, [])
+        self.assertEqual([x["decision"] for x in self.events("loop.item") if x["decision"] == "closed-by-person"], ["closed-by-person"])
+        self.assertEqual([x["decision"] for x in self.events("loop.checks")], ["closed"])
+
+    # ---------- an interactive ship ----------
+    def test_an_interactive_ship_hands_back_the_failed_checks_and_ships_after_the_fix(self):
+        self.built_branch()
+        self.script("a-first", [check_run("build", conclusion="FAILURE")])
+        self.db_set(run_logs={"100": "build\tTests\t2026-10-14T10:00:02Z FAILED tests/test_pay.py::test_total - AssertionError: 3 != 4\n"})
+        r = self.repo.cli("ship", "a-first")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("The PR's checks failed on GitHub after the shell gate had passed", r.stdout)
+        self.assertIn("- `build` (workflow CI) — " + run_link(100), r.stdout)
+        self.assertIn("test_total - AssertionError: 3 != 4", r.stdout)
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "built")                      # back to built, and committed
+        self.assertEqual(self.repo.git("log", "-1", "--format=%s"), "sdlc(a-first): PR checks failed — back to built")
+        self.assertEqual(self.repo.git("status", "--porcelain"), "")
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+        rec = self.repo.items_state().get("a-first", {})
+        self.assertNotIn("state", rec)                                         # nobody is waiting for a person
+        self.assertNotIn("ci_rounds", rec)                                     # and the loop's rounds are not the caller's
+        self.assertEqual(self.repo.calls(), [])                                # the caller fixes: no session of the engine's
+        self.assertFalse(os.path.exists(self.repo.path(".sdlc/state/loop-status.json")))                # an interactive ship is no loop
+        self.repo.write("src/fix.txt", "fixed\n")                              # the caller fixes, commits, ships again
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "fix the failing check")
+        self.script("a-first", [check_run("build")])
+        r = self.repo.cli("ship", "a-first")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("CHECKS  a-first — passed: build\n", r.stdout)                                   # what the engine said on the way
+        self.assertEqual(r.stdout.strip().splitlines()[-1], "merged — https://github.test/o/r/pull/1")
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        self.assertIn("\nstatus: done\n", self.repo.origin_show("main", "work/a-first.md"))
+        self.assertEqual(self.repo.origin_show("main", "src/fix.txt"), "fixed\n")
+
+    def test_an_interactive_ship_that_runs_out_of_time_waiting_exits_2_with_the_reason(self):
+        self.built_branch()
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        e = self.fast(limit=0.03)
+        code, msg = e.ship_now("a-first")
+        self.assertEqual(code, 2)
+        self.assertEqual(msg, "the PR's checks were still running after 0.03 min (build) — merge the PR when they pass "
+                              "(the loop notices), or raise loop.checks_wait_minutes")
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "needs-human")
+
+    def test_an_interactive_ship_exits_0_when_a_person_merged_the_pr_while_it_waited(self):
+        self.built_branch()
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        e = self.fast()
+        self.watch_looks(e, {2: lambda: self.person("pr", "merge", "1", "--squash", "--delete-branch")})
+        self.assertEqual(e.ship_now("a-first"), (0, "merged by a person — https://github.test/o/r/pull/1"))
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "merged")
+
+    def test_an_interactive_ship_exits_2_when_a_person_closed_the_pr_while_it_waited(self):
+        self.built_branch()
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        e = self.fast()
+        self.watch_looks(e, {2: lambda: self.person("pr", "close", "1")})
+        self.assertEqual(e.ship_now("a-first"), (2, "the PR was closed by a person"))
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "closed")
+
+    def test_retry_clears_the_fix_rounds_the_checks_used_up(self):
+        st.update(self.repo.root, "a-first", ci_rounds=2, failures=1, state="needs-human", reasons=["x"], last_error="y", stop={"sid": "s"})
+        r = self.repo.cli("retry", "a-first")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual([k for k in rec if k != "updated"], [])
+
+
+class WaitChecks(ChecksBase):
+    """`wait_checks` on its own: sdlc/a-first is checked out and pushed, its PR is open on the stub."""
+
+    def setUp(self):
+        super().setUp()
+        r = self.repo
+        r.git("checkout", "-q", "-b", "sdlc/a-first")
+        r.write("feature.txt", "feature\n")
+        r.git("add", "-A")
+        r.git("commit", "-q", "-m", "feature")
+        self.e = self.fast()
+        ok, url = self.e.forge.publish("a-first", "A title", "A body")
+        self.assertTrue(ok, url)
+
+    def wait(self, limit=0.3, interactive=False):
+        self.e.cfg.data["loop"]["checks_wait_minutes"] = limit
+        return self.e.wait_checks("a-first", interactive=interactive)
+
+    def test_everything_passing_at_the_first_look_is_a_pass_with_no_waiting(self):
+        self.script("a-first", [check_run("build"), check_run("test")])
+        state, found = self.wait()
+        self.assertEqual((state, [c["name"] for c in found]), ("pass", ["build", "test"]))
+        log = self.log(self.e)
+        self.assertIn("CHECKS  a-first — passed: build, test\n", log)
+        self.assertNotIn("waiting", log)
+        self.assertEqual(self.looks(), 1)
+
+    def test_the_names_are_cut_at_six(self):
+        many = [check_run("c%d" % i, "IN_PROGRESS", "") for i in range(8)]
+        self.script("a-first", many, [check_run("c%d" % i) for i in range(8)])
+        self.wait()
+        log = self.log(self.e)
+        self.assertIn("CHECKS  a-first — waiting for c0, c1, c2, c3, c4, c5, …\n", log)
+        self.assertIn("CHECKS  a-first — passed: c0, c1, c2, c3, c4, c5, …\n", log)
+
+    def test_a_failure_at_the_first_look_with_nothing_pending_returns_at_once(self):
+        self.script("a-first", [check_run("build", conclusion="FAILURE"), check_run("lint")])
+        state, found = self.wait()
+        self.assertEqual((state, [(c["name"], c["bucket"]) for c in found]), ("fail", [("build", "fail"), ("lint", "pass")]))
+        log = self.log(self.e)
+        self.assertIn("CHECKS  a-first — failed: build\n", log)
+        self.assertNotIn("waiting", log)
+        self.assertEqual(self.looks(), 1)
+        (ev,) = self.events("loop.checks")
+        self.assertEqual((ev["decision"], ev["reason"]), ("fail", "build"))
+
+    def test_a_failure_with_a_check_still_running_waits_for_it_and_then_returns_every_entry(self):
+        bad = check_run("build", conclusion="FAILURE")
+        self.script("a-first", [bad, check_run("test", "IN_PROGRESS", "")], [bad, check_run("test", "IN_PROGRESS", "")],
+                    [bad, check_run("test", conclusion="CANCELLED")])
+        state, found = self.wait()
+        self.assertEqual((state, [(c["name"], c["bucket"]) for c in found]), ("fail", [("build", "fail"), ("test", "fail")]))
+        self.assertEqual(self.looks(), 3)
+        log = self.log(self.e)
+        self.assertEqual(log.count("waiting for test\n"), 1)
+        self.assertIn("CHECKS  a-first — failed: build, test\n", log)
+
+    def test_a_failure_with_a_check_still_running_at_the_limit_returns_the_failure(self):
+        self.script("a-first", [check_run("build", conclusion="FAILURE"), check_run("test", "IN_PROGRESS", "")])
+        state, found = self.wait(limit=0.02)
+        self.assertEqual((state, [c["bucket"] for c in found]), ("fail", ["fail", "pending"]))
+        self.assertIn("CHECKS  a-first — failed: build\n", self.log(self.e))
+        self.assertEqual([x["decision"] for x in self.events("loop.checks")], ["fail"])
+
+    def test_pending_at_the_limit_returns_pending_with_the_entries_and_no_verdict_line(self):
+        self.script("a-first", [check_run("build", "IN_PROGRESS", ""), check_run("lint")])
+        state, found = self.wait(limit=0.02)
+        self.assertEqual((state, [c["bucket"] for c in found]), ("pending", ["pending", "pass"]))
+        self.assertEqual([l for l in self.log(self.e).splitlines() if "CHECKS" in l and "waiting for" not in l], [])
+        (ev,) = self.events("loop.checks")
+        self.assertEqual((ev["decision"], ev["reason"]), ("pending", "build"))
+
+    def test_no_checks_without_workflow_files_is_a_pass_after_one_look(self):
+        self.e.checks_grace = None
+        self.assertEqual(self.wait(), ("pass", []))
+        self.assertEqual(self.looks(), 1)
+        self.assertIn("CHECKS  a-first — no checks\n", self.log(self.e))
+        (ev,) = self.events("loop.checks")
+        self.assertEqual(ev["decision"], "none")
+
+    def test_no_checks_is_a_pass_only_once_the_grace_is_over(self):
+        self.e.checks_grace = 0.6
+        looks = self.watch_looks(self.e)
+        self.assertEqual(self.wait(), ("pass", []))
+        self.assertGreaterEqual(looks[-1][1] - looks[0][2], 0.6 - 0.02)
+        self.assertGreater(len(looks), 1)
+        log = self.log(self.e)
+        self.assertEqual(log.count("CHECKS  a-first — waiting for checks to start\n"), 1)
+        self.assertIn("CHECKS  a-first — no checks\n", log)
+
+    def test_a_grace_longer_than_the_wait_is_cut_to_the_wait(self):
+        self.e.checks_grace = 100
+        t = time.time()
+        self.assertEqual(self.wait(limit=0.02), ("pass", []))
+        self.assertLess(time.time() - t, 10)
+
+    def test_checks_that_start_during_the_grace_are_waited_for(self):
+        self.e.checks_grace = 30
+        self.script("a-first", [], [], [check_run("build", "IN_PROGRESS", "")], [check_run("build")])
+        state, found = self.wait()
+        self.assertEqual((state, [c["name"] for c in found]), ("pass", ["build"]))
+        self.assertEqual(self.looks(), 4)
+
+    def test_what_cannot_be_read_is_waited_out_not_taken_for_a_pass(self):
+        self.script("a-first", {"error": "HTTP 502"}, {"error": "HTTP 502"}, [check_run("build")])
+        state, found = self.wait()
+        self.assertEqual((state, [c["name"] for c in found]), ("pass", ["build"]))
+        self.assertEqual(self.looks(), 3)
+        self.assertEqual(self.log(self.e).count("CHECKS  a-first — waiting for checks to start\n"), 1)
+
+    def test_what_cannot_be_read_until_the_limit_is_unknown_with_nothing_to_show(self):
+        self.script("a-first", {"error": "HTTP 502"})
+        self.assertEqual(self.wait(limit=0.02), ("unknown", []))
+        (ev,) = self.events("loop.checks")
+        self.assertEqual((ev["decision"], ev["reason"], ev["detail"]["checks"]), ("unknown", "", []))
+
+    def test_a_pr_that_shows_another_commit_is_waited_out_too(self):
+        self.script("a-first", [check_run("build", conclusion="FAILURE")], [check_run("build")])
+        self.wait()                                                            # look at the commit as pushed: the failure
+        self.script("a-first", [check_run("build", conclusion="FAILURE")], [check_run("build")])
+        self.db_set(head_lag={"sdlc/a-first": 2})
+        self.repo.write("feature.txt", "feature, again\n")
+        self.repo.git("commit", "-q", "-am", "fix")
+        self.repo.git("push", "-q", "origin", "sdlc/a-first")
+        looks = self.watch_looks(self.e)
+        state, found = self.wait()
+        self.assertEqual(state, "fail")                                        # (the script starts over: the failure, now for the new head)
+        self.assertEqual(len(looks), 3)                                        # two views of the old commit were held back first
+
+    def test_a_pr_a_person_merged_or_closed_ends_the_wait(self):
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        self.watch_looks(self.e, {2: lambda: self.person("pr", "merge", "1", "--squash", "--delete-branch")})
+        self.assertEqual(self.wait(), ("merged", []))
+        self.assertEqual([x["decision"] for x in self.events("loop.checks")], ["merged"])
+        self.assertNotIn("passed", self.log(self.e))
+
+    def test_a_pr_closed_by_a_person_ends_the_wait(self):
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        self.watch_looks(self.e, {1: lambda: self.person("pr", "close", "1")})
+        self.assertEqual(self.wait(), ("closed", []))
+        self.assertEqual([x["decision"] for x in self.events("loop.checks")], ["closed"])
+
+    def test_no_wait_to_do_is_a_pass_and_not_one_gh_call(self):
+        calls = len(self.repo.gh_db()["calls"])
+        self.assertEqual(self.wait(limit=0), ("pass", []))
+        self.assertEqual(len(self.repo.gh_db()["calls"]), calls)
+        self.assertEqual(self.events("loop.checks"), [])
+
+    def test_the_loop_says_it_is_in_the_checks_phase_and_an_interactive_ship_does_not_say_anything(self):
+        self.script("a-first", [check_run("build")])
+        self.wait()
+        status = st.read_status(self.repo.root)
+        self.assertEqual(status["phase"], "checks")
+        self.assertTrue(status["phase_started"])
+        os.remove(self.repo.path(".sdlc/state/loop-status.json"))
+        self.wait(interactive=True)
+        self.assertFalse(os.path.exists(self.repo.path(".sdlc/state/loop-status.json")))
+
+    def test_a_stop_request_ends_the_wait_with_its_reason_and_a_pause_with_paused(self):
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        self.watch_looks(self.e, {1: lambda: setattr(self.e, "stopping", "stop requested")})
+        with self.assertRaises(StopRun) as cm:
+            self.wait()
+        self.assertEqual((cm.exception.reason, cm.exception.code), ("stop requested", 0))
+        self.e.stopping = ""
+        self.repo.write(".sdlc/state/pause", "")
+        with self.assertRaises(StopRun) as cm:
+            self.wait()
+        self.assertEqual(cm.exception.reason, "paused")
+
+    def test_an_interactive_wait_sleeps_plainly_and_is_not_stopped_by_the_loops_flags(self):
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")], [check_run("build")])
+        self.e.stopping = "stop requested"                                     # only a loop has one
+        self.e.checks_poll = 0.0517                                            # no other sleep in the process has this length
+        with mock.patch.object(self.e, "sleep", side_effect=AssertionError("the loop's sleep")):
+            with mock.patch("sdlclib.engine.time.sleep", wraps=time.sleep) as plain:
+                self.assertEqual(self.wait(interactive=True)[0], "pass")
+        self.assertEqual([c[0][0] for c in plain.call_args_list if c[0][0] == 0.0517], [0.0517])
+
+    def test_ship_names_the_checks_that_were_still_running_when_it_gives_the_pr_to_a_person(self):
+        self.script("a-first", [check_run("build", "IN_PROGRESS", ""), check_run("test"), check_run("lint", "QUEUED", "")])
+        self.e.cfg.data["loop"]["checks_wait_minutes"] = 0.02
+        self.assertEqual(self.e.ship("a-first"), Outcome.HUMAN)
+        self.assertEqual(self.repo.items_state()["a-first"]["reasons"],
+                         ["the PR's checks were still running after 0.02 min (build, lint) — merge the PR when they pass "
+                          "(the loop notices), or raise loop.checks_wait_minutes"])
+
+    def test_ship_leaves_the_names_out_when_no_check_had_shown_up_by_the_last_look_it_could_read(self):
+        self.script("a-first", [], {"error": "HTTP 502"})                     # no check yet, then gh fails until the limit
+        self.e.checks_grace = 60.0
+        self.e.cfg.data["loop"]["checks_wait_minutes"] = 0.02
+        self.assertEqual(self.e.ship("a-first"), Outcome.HUMAN)
+        self.assertEqual(self.repo.items_state()["a-first"]["reasons"],
+                         ["the PR's checks were still running after 0.02 min — merge the PR when they pass "
+                          "(the loop notices), or raise loop.checks_wait_minutes"])
+
+    def test_checks_that_could_never_be_read_are_not_called_running(self):
+        self.script("a-first", {"error": "HTTP 502"})
+        self.e.cfg.data["loop"]["checks_wait_minutes"] = 0.02
+        self.assertEqual(self.wait(limit=0.02), ("unknown", []))
+        self.assertEqual(self.e.ship("a-first"), Outcome.HUMAN)
+        self.assertEqual(self.repo.items_state()["a-first"]["reasons"],
+                         ["the PR's checks could not be read for 0.02 min (`gh pr view` failed, or the PR never showed the "
+                          "pushed commit) — look at the PR, and merge it when its checks pass (the loop notices)"])
+
+    def test_a_look_that_fails_at_the_end_keeps_what_the_last_good_look_saw(self):
+        self.script("a-first", [check_run("build", "IN_PROGRESS", ""), check_run("lint")], {"error": "HTTP 502"})
+        state, found = self.wait(limit=0.02)
+        self.assertEqual((state, [(c["name"], c["bucket"]) for c in found]), ("pending", [("build", "pending"), ("lint", "pass")]))
+
+    def test_the_limit_is_said_in_minutes_the_way_a_person_wrote_it(self):
+        pending = [{"name": "build", "bucket": "pending", "link": "", "workflow": ""}]
+        self.e.wait_checks = lambda slug, interactive=False: ("pending", pending)         # the wait itself is not what is tested
+        for minutes, said in ((30, "30"), (0.5, "0.5"), (45.0, "45")):
+            self.e.cfg.data["loop"]["checks_wait_minutes"] = minutes
+            self.e.ship("a-first")
+            self.assertIn("after %s min (build) — " % said, self.repo.items_state()["a-first"]["reasons"][0])
+
+    def test_it_never_sleeps_past_the_limit(self):
+        self.e.checks_poll = 5.0                                               # a poll interval far longer than the wait
+        self.script("a-first", [check_run("build", "IN_PROGRESS", "")])
+        wakes, orig = [], self.e.sleep
+
+        def sleep(seconds):
+            wakes.append(seconds)
+            return orig(seconds)
+        self.e.sleep = sleep
+        t = time.time()
+        self.assertEqual(self.wait(limit=0.01)[0], "pending")                   # 0.6 s
+        self.assertLess(time.time() - t, 4)
+        self.assertLessEqual(wakes[0], 0.6)
+        self.assertLessEqual(sum(wakes), 0.7)
+
+
+class Timing(RepoCase):
+    """How long the engine waits for checks and how often it looks."""
+
+    def test_the_interval_is_a_tenth_of_the_wait_kept_between_one_and_thirty_seconds(self):
+        e = self.repo.engine()
+        self.assertEqual([e.checks_timing(s)[0] for s in (2, 5, 60, 300, 1800, 7200)], [1.0, 1.0, 6.0, 30.0, 30.0, 30.0])
+
+    def test_the_interval_can_be_set(self):
+        e = self.repo.engine()
+        e.checks_poll = 0.1
+        self.assertEqual(e.checks_timing(1800)[0], 0.1)
+
+    def test_the_grace_is_two_minutes_with_workflow_files_and_none_without(self):
+        e = self.repo.engine()
+        self.assertEqual(e.checks_timing(1800)[1], 0.0)
+        self.repo.write(".github/workflows/notes.md", "not a workflow\n")
+        self.assertFalse(e.has_workflows())
+        self.repo.write(".github/workflows/ci.yaml", "name: CI\n")
+        self.assertTrue(e.has_workflows())
+        self.assertEqual(e.checks_timing(1800)[1], 120.0)
+        os.remove(self.repo.path(".github/workflows/ci.yaml"))
+        self.repo.write(".github/workflows/ci.yml", "name: CI\n")
+        self.assertEqual(e.checks_timing(1800)[1], 120.0)
+
+    def test_a_directory_named_like_a_workflow_is_none(self):
+        os.makedirs(self.repo.path(".github/workflows/odd.yml"))
+        self.assertFalse(self.repo.engine().has_workflows())
+
+    def test_the_grace_is_never_longer_than_the_wait_and_can_be_set(self):
+        e = self.repo.engine()
+        self.repo.write(".github/workflows/ci.yml", "name: CI\n")
+        self.assertEqual(e.checks_timing(60)[1], 60.0)
+        e.checks_grace = 5
+        self.assertEqual(e.checks_timing(1800)[1], 5.0)
+        self.assertEqual(e.checks_timing(2)[1], 2.0)
+        e.checks_grace = 0
+        self.assertEqual(e.checks_timing(1800)[1], 0.0)
+
+    def test_a_config_file_that_says_zero_turns_the_wait_off(self):
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["loop"]["checks_wait_minutes"] = 0
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.assertEqual(self.repo.engine().checks_limit(), 0.0)
+
+    def test_the_wait_is_read_from_the_config_as_minutes(self):
+        e = self.repo.engine()
+        self.assertEqual(e.checks_limit(), 1800.0)                             # the default is 30 minutes
+        for value, seconds in ((0.5, 30.0), ("0.5", 30.0), (0, 0.0), (-3, 0.0), ("soon", 1800.0), (None, 1800.0)):
+            e.cfg.data["loop"]["checks_wait_minutes"] = value
+            self.assertEqual(e.checks_limit(), seconds, repr(value))
+
+
+class Brief(RepoCase):
+    """What a fix session is told about the failed checks."""
+
+    def brief(self, failed, logs):
+        e = self.repo.engine()
+        e.forge.check_logs = lambda f, lines=60: logs
+        return e.ci_brief(failed)
+
+    def test_the_sentence_the_checks_and_the_log_in_a_fenced_block_then_what_to_do(self):
+        failed = [{"name": "build", "bucket": "fail", "link": run_link(7), "workflow": "CI"},
+                  {"name": "ci/jenkins", "bucket": "fail", "link": "https://ci.example.test/1", "workflow": ""},
+                  {"name": "lint", "bucket": "fail", "link": "", "workflow": ""}]
+        text = self.brief(failed, "== build ==\nFAILED test_x\n")
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "The PR's checks failed on GitHub after the shell gate had passed (they run on GitHub, not here):")
+        self.assertEqual(lines[1:4], ["- `build` (workflow CI) — " + run_link(7), "- `ci/jenkins` — https://ci.example.test/1", "- `lint`"])
+        self.assertIn("\n```\n== build ==\nFAILED test_x\n\n```\n", text)                      # in a fence of its own
+        self.assertLess(text.index("FAILED test_x"), text.index("Reproduce it locally"))
+        for word in ("never weaken, skip or delete a test", "never edit `.github/workflows/` to get green", "print SDLC_FIXED",
+                     "SDLC_FIX_BLOCKED <why>", "the CI environment, a missing secret, a flaky external service"):
+            self.assertIn(word, text)
+
+    def test_no_log_no_fence(self):
+        text = self.brief([{"name": "build", "bucket": "fail", "link": "", "workflow": ""}], "")
+        self.assertNotIn("```", text)
+        self.assertIn("Reproduce it locally", text)
+
+    def test_a_log_with_a_fence_in_it_gets_a_longer_one(self):
+        text = self.brief([{"name": "build", "bucket": "fail", "link": "", "workflow": ""}], "output\n```\nmore\n```\n")
+        self.assertIn("\n````\noutput\n```\nmore\n```\n\n````\n", text)
+
+    def test_the_whole_brief_stays_within_the_cap_and_each_log_keeps_its_end(self):
+        failed = [{"name": "n" * 150 + str(i), "bucket": "fail", "link": "https://ci.example.test/" + "x" * 300, "workflow": "w" * 120}
+                  for i in range(20)]
+        logs = "\n".join("line %04d of a long log" % i for i in range(600))                       # about 14 000 characters
+        text = self.brief(failed, logs)
+        self.assertLessEqual(len(text), CI_BRIEF_CAP)
+        self.assertEqual(text.count("\n- `"), 12)                                                # at most twelve are listed
+        self.assertIn("- … and 8 more", text)
+        self.assertIn("line 0599 of a long log", text)                                           # the end of the log is kept
+        self.assertNotIn("line 0000 of a long log", text)
+        kept = [l for l in text.splitlines() if l.startswith("line ")]
+        self.assertTrue(kept[0].startswith("line "))                                             # the cut is at a line boundary
+        self.assertEqual(kept, ["line %04d of a long log" % i for i in range(600 - len(kept), 600)])
+
+    def test_a_log_that_fits_is_kept_whole(self):
+        logs = "\n".join("line %d" % i for i in range(50))
+        self.assertIn(logs, self.brief([{"name": "build", "bucket": "fail", "link": "", "workflow": ""}], logs))
+
+    def test_names_are_listed_the_way_the_log_says_them(self):
+        entries = [{"name": "a", "bucket": "pass"}, {"name": "b", "bucket": "fail"}, {"bucket": "fail"}] + \
+            [{"name": "c%d" % i, "bucket": "pending"} for i in range(7)]
+        self.assertEqual(check_names(entries, "fail"), "b, check")
+        self.assertEqual(check_names(entries, "pending"), "c0, c1, c2, c3, c4, c5, …")
+        self.assertEqual(check_names(entries[:3]), "a, b, check")
+        self.assertEqual(check_names([]), "")
+        self.assertEqual(check_names(entries, "pending", cap=7), "c0, c1, c2, c3, c4, c5, c6")
 
 
 if __name__ == "__main__":

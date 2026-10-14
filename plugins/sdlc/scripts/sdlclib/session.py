@@ -19,7 +19,7 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
-from .util import epoch, read_json, run, write_json
+from .util import epoch, plugin_root, read_json, run, write_json
 
 LIMIT_RE = re.compile(r"(?:You've |you have )?hit your ([A-Za-z' ]+?) limit[^\n]*", re.I)
 RESET_EPOCH_KEYS = ("resetsAt", "resets_at")
@@ -121,7 +121,7 @@ def classify_limit(text: str, rate: Optional[dict]) -> tuple:
 
 class Runner:
     def __init__(self, root: str, claude_bin: str = "", plugin_dir: str = "", costs_path: str = "",
-                 max_turns: int = 500, allowed_tools: str = "", budget_usd: float = 0.0):
+                 max_turns: int = 500, allowed_tools: str = "", budget_usd: float = 0.0, isolate: bool = False):
         self.root = root
         # --claude-bin, then SDLC_CLAUDE_BIN, then the CLAUDE_BIN other tools read, then claude on PATH
         self.claude = claude_bin or os.environ.get("SDLC_CLAUDE_BIN") or os.environ.get("CLAUDE_BIN") or \
@@ -131,6 +131,7 @@ class Runner:
         self.max_turns = max_turns
         self.allowed_tools = allowed_tools
         self.budget = budget_usd
+        self.isolate = isolate      # loop.isolate_sessions: a session reads this project's settings and the sdlc plugin only
         self._flags: Optional[str] = None
         self.current: Optional[subprocess.Popen] = None
         self.interrupt = False      # set from a signal handler: stop the running session gracefully
@@ -142,6 +143,17 @@ class Runner:
         if self._flags is None:
             self._flags = run([self.claude, "--help"], timeout=30).out
         return flag in self._flags
+
+    def project_enables_sdlc(self) -> bool:
+        """The project's own settings switch the sdlc plugin on (a key `sdlc@<marketplace>` in `enabledPlugins`): loading it
+        again with --plugin-dir would run its hooks twice."""
+        enabled: Dict[str, object] = {}
+        for name in ("settings.json", "settings.local.json"):          # the local file wins, as it does for claude
+            data = read_json(os.path.join(self.root, ".claude", name), {})
+            plugins = data.get("enabledPlugins") if isinstance(data, dict) else None
+            if isinstance(plugins, dict):
+                enabled.update(plugins)
+        return any(str(k).startswith("sdlc@") and bool(v) for k, v in enabled.items())
 
     def command(self, prompt: str, sid: str, resume: bool, model: str, effort: str) -> List[str]:
         cmd = [self.claude, "-p", prompt, "--output-format", "stream-json", "--verbose",
@@ -159,6 +171,15 @@ class Runner:
             cmd += ["--max-budget-usd", str(self.budget)]
         if self.plugin_dir:
             cmd += ["--plugin-dir", self.plugin_dir]
+        if self.isolate and self._supports("--setting-sources"):
+            # user settings, user plugins and MCP servers stay out of the session (about 4.8k of the ~25k tokens it starts
+            # with); the sdlc plugin that lived among them is loaded from here instead. A claude without the flag keeps
+            # loading everything, which still gives the session its plugin.
+            cmd += ["--setting-sources", "project,local"]
+            if self._supports("--strict-mcp-config"):
+                cmd += ["--strict-mcp-config"]
+            if not self.plugin_dir and not self.project_enables_sdlc():
+                cmd += ["--plugin-dir", plugin_root()]
         return cmd
 
     def run(self, prompt: str, log: str, minutes: float, model: str = "", effort: str = "",

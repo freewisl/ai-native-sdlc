@@ -511,6 +511,103 @@ class RunnerCase(RepoCase):
         self.assertLess(time.time() - t, 15)
 
 
+class IsolatedSessions(RepoCase):
+    """loop.isolate_sessions: a session reads only this project's settings, and gets the sdlc plugin from here — when this claude
+    knows --setting-sources. The stub's --help lists the flags unless $STUB_CLAUDE_HIDE_FLAGS names them."""
+    ISOLATION = ["--setting-sources", "project,local", "--strict-mcp-config", "--plugin-dir", U.plugin_root()]
+
+    def command(self, **kw):
+        return S.Runner(self.repo.root, claude_bin=os.path.join(STUBS, "claude"), **kw).command("p", "sid", False, "opus", "high")
+
+    def hiding(self, flags):
+        return mock.patch.dict(os.environ, {"STUB_CLAUDE_HIDE_FLAGS": flags})
+
+    def settings(self, name, data):
+        self.repo.write(".claude/" + name, data if isinstance(data, str) else json.dumps(data))
+
+    def test_off_by_default_the_command_has_none_of_it(self):
+        cmd = self.command()
+        for flag in ("--setting-sources", "--strict-mcp-config", "--plugin-dir"):
+            self.assertNotIn(flag, cmd)
+        self.assertEqual(self.command(isolate=False), cmd)
+        self.assertFalse(S.Runner(self.repo.root).isolate)
+
+    def test_on_it_loads_project_and_local_settings_no_other_mcp_servers_and_the_plugin_from_here(self):
+        plain = self.command()
+        cmd = self.command(isolate=True)
+        self.assertEqual(cmd[:len(plain)], plain)                         # the rest of the command is as it was
+        self.assertEqual(cmd[len(plain):], self.ISOLATION)
+        self.assertTrue(os.path.isfile(os.path.join(U.plugin_root(), ".claude-plugin", "plugin.json")))
+
+    def test_a_claude_without_setting_sources_gets_nothing_added_and_keeps_loading_the_plugin_from_user_settings(self):
+        plain = self.command()
+        with self.hiding("--setting-sources,--strict-mcp-config"):
+            self.assertEqual(self.command(isolate=True), plain)
+        with self.hiding("--setting-sources"):                            # a strict flag alone is not worth passing
+            self.assertEqual(self.command(isolate=True), plain)
+
+    def test_a_claude_without_strict_mcp_config_gets_the_rest(self):
+        plain = self.command()
+        with self.hiding("--strict-mcp-config"):
+            self.assertEqual(self.command(isolate=True)[len(plain):], ["--setting-sources", "project,local", "--plugin-dir", U.plugin_root()])
+
+    def test_a_plugin_dir_that_is_given_is_the_one_that_loads(self):
+        plain = self.command(plugin_dir="/given/dir")
+        cmd = self.command(isolate=True, plugin_dir="/given/dir")
+        self.assertEqual(cmd[len(plain):], ["--setting-sources", "project,local", "--strict-mcp-config"])
+        self.assertEqual((cmd.count("--plugin-dir"), cmd[cmd.index("--plugin-dir") + 1]), (1, "/given/dir"))
+        with mock.patch.dict(os.environ, {"SDLC_PLUGIN_DIR": "/env/dir"}):                    # SDLC_PLUGIN_DIR counts as given
+            cmd = self.command(isolate=True)
+        self.assertEqual((cmd.count("--plugin-dir"), cmd[cmd.index("--plugin-dir") + 1]), (1, "/env/dir"))
+
+    def test_a_project_that_enables_sdlc_in_its_own_settings_does_not_get_it_loaded_twice(self):
+        for name in ("settings.json", "settings.local.json"):
+            self.settings(name, {"enabledPlugins": {"other@market": True, "sdlc@ai-native-sdlc": True}})
+            cmd = self.command(isolate=True)
+            self.assertNotIn("--plugin-dir", cmd, name)
+            self.assertEqual(cmd[cmd.index("--setting-sources"):], ["--setting-sources", "project,local", "--strict-mcp-config"], name)
+            os.remove(self.repo.path(".claude/" + name))
+
+    def test_what_does_not_enable_sdlc_gets_it_from_here(self):
+        for what, data in (("disabled", {"enabledPlugins": {"sdlc@ai-native-sdlc": False}}),
+                           ("other plugins", {"enabledPlugins": {"other@market": True, "docs@sdlc": True}}),
+                           ("a look-alike", {"enabledPlugins": {"sdlcx@market": True, "my-sdlc@market": True}}),
+                           ("no plugins", {"permissions": {}}),
+                           ("plugins as a list", {"enabledPlugins": ["sdlc@ai-native-sdlc"]}),
+                           ("not an object", ["sdlc@ai-native-sdlc"]),
+                           ("not json", "enabledPlugins: sdlc@ai-native-sdlc")):
+            self.settings("settings.json", data)
+            self.assertEqual(self.command(isolate=True)[-2:], ["--plugin-dir", U.plugin_root()], what)
+
+    def test_the_local_settings_win_over_the_projects(self):
+        self.settings("settings.json", {"enabledPlugins": {"sdlc@ai-native-sdlc": True}})
+        self.settings("settings.local.json", {"enabledPlugins": {"sdlc@ai-native-sdlc": False}})
+        self.assertEqual(self.command(isolate=True)[-2:], ["--plugin-dir", U.plugin_root()])      # switched off here: load it ourselves
+        self.settings("settings.json", {"enabledPlugins": {"sdlc@ai-native-sdlc": False}})
+        self.settings("settings.local.json", {"enabledPlugins": {"sdlc@ai-native-sdlc": True}})
+        self.assertNotIn("--plugin-dir", self.command(isolate=True))
+
+    def test_the_engine_passes_the_config_value_to_the_runner_and_the_session_gets_the_flags(self):
+        self.repo.add_items("a-first")
+        self.assertFalse(self.repo.engine().runner.isolate)
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.assertTrue(self.repo.calls())
+        for c in self.repo.calls():
+            self.assertNotIn("--setting-sources", c["args"])
+        cfg = json.loads(self.repo.read(".sdlc/config.json"))
+        cfg["loop"]["isolate_sessions"] = True
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.git("commit", "-qam", "isolate sessions")
+        self.repo.add_items("b-second")
+        e = self.repo.engine()
+        self.assertTrue(e.runner.isolate)
+        self.assertEqual(e.run(), 0)
+        later = [c for c in self.repo.calls() if c["key"].startswith("b-second")]
+        self.assertEqual(len(later), 2)
+        for c in later:
+            self.assertEqual(c["args"][c["args"].index("--setting-sources"):][:5], self.ISOLATION)
+
+
 class ResultStatus(RepoCase):
     """How a finished claude process becomes a status: what its result event says, and whether the engine asked it to stop
     (rc 130) or the time cap did (rc 124)."""
@@ -762,6 +859,55 @@ class StatusAndCli(RepoCase):
         self.assertIn("status: ready", text)
         self.assertIn("the total is off by one", text)
         self.assertIn("source: review:a-first", text)
+
+
+class StatusOfARunningSession(RepoCase):
+    """`status` names the model and effort of the session the loop is running now — and of no other phase."""
+
+    def running(self, minutes=3, **rec):
+        began = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - minutes * 60))
+        self.repo.write(".sdlc/state/loop.pid", "%d\n" % os.getpid())                  # a live process: this one
+        self.repo.write(".sdlc/state/loop-status.json", json.dumps(dict({"state": "running", "phase_started": began, "cost_usd": 1.2}, **rec)))
+        from sdlclib.status import collect, render
+        s = collect(self.repo.root)
+        return s["loop"], render(s).splitlines()[0]
+
+    def test_a_session_shows_its_model_and_effort_after_what_it_is_doing(self):
+        loop, line = self.running(item="a-first", phase="build", model="sonnet", effort="medium")
+        self.assertEqual(line, "loop: running (pid %d) — build a-first for 3m (sonnet · medium) · this run $1.20" % os.getpid())
+        self.assertEqual((loop["model"], loop["effort"]), ("sonnet", "medium"))
+        for phase in ("design", "fix"):
+            self.assertIn("%s a-first for 3m (opus · xhigh)" % phase, self.running(item="a-first", phase=phase, model="opus", effort="xhigh")[1])
+
+    def test_the_self_check_is_a_session_too(self):
+        loop, line = self.running(item="", phase="self-check", model="opus", effort="low")
+        self.assertEqual(line, "loop: running (pid %d) — self-check for 3m (opus · low) · this run $1.20" % os.getpid())
+
+    def test_an_effort_without_a_model_and_a_model_without_an_effort(self):
+        self.assertIn("build a-first for 3m (default · high) ·", self.running(item="a-first", phase="build", model="", effort="high")[1])
+        self.assertIn("build a-first for 3m (sonnet) ·", self.running(item="a-first", phase="build", model="sonnet", effort="")[1])
+        self.assertIn("build a-first for 3m ·", self.running(item="a-first", phase="build", model="", effort="")[1])
+
+    def test_the_gate_and_the_waits_show_none_even_when_the_file_still_holds_the_last_sessions(self):
+        for phase in ("gate", "merge", "checks", ""):
+            loop, line = self.running(item="a-first", phase=phase, model="sonnet", effort="medium")
+            self.assertEqual((loop["model"], loop["effort"]), ("", ""), phase)
+            self.assertNotIn("sonnet", line)
+        loop, line = self.running(state="waiting", item="", phase="", model="sonnet", effort="medium")
+        self.assertEqual((loop["model"], line.split(" — ")[1].split(" · ")[0]), ("", "waiting"))
+
+    def test_a_usage_limit_wait_keeps_the_session_it_waits_for(self):
+        _, line = self.running(state="waiting-limit", item="a-first", phase="build", model="sonnet", effort="medium",
+                               wake_at="2026-10-14T15:00:00")
+        self.assertIn("build a-first for 3m (sonnet · medium) (usage limit — wakes 2026-10-14T15:00:00) · this run $1.20", line)
+
+    def test_a_loop_that_is_not_running_shows_no_session(self):
+        self.repo.write(".sdlc/state/loop-status.json", json.dumps({"state": "stopped", "stop": "queue empty", "phase": "build",
+                                                                    "model": "sonnet", "effort": "medium"}))
+        from sdlclib.status import collect, render
+        s = collect(self.repo.root)
+        self.assertEqual((s["loop"]["running"], s["loop"]["model"], s["loop"]["effort"]), (False, "", ""))
+        self.assertNotIn("sonnet", render(s))
 
 
 if __name__ == "__main__":

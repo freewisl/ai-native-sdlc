@@ -62,6 +62,7 @@ DEFAULTS: Dict[str, Any] = {
         # no --model / --effort). The 0.x keys loop.model, loop.fix_model and loop.effort still count — see Config.
         "models": {"design": "opus", "build": "sonnet", "fix": "sonnet", "self_check": "opus"},
         "efforts": {"design": "high", "build": "high", "fix": "medium", "self_check": "high"},
+        "auto_effort": True,                     # shift each session's effort from loop.efforts by the item's size, earlier failures and fix rounds
         "escalate_model": "opus",                # a build for an item that has failed before runs on this one ("" = never)
         "session_max_minutes": 120,
         "max_turns": 500,
@@ -70,8 +71,10 @@ DEFAULTS: Dict[str, Any] = {
         "max_failures_per_slug": 3,
         "max_consecutive_failures": 3,
         "fix_rounds": 2,
+        "checks_wait_minutes": 30,               # GitHub: wait this long for the PR's checks before merging (0 = do not wait)
         "self_check": True,
         "self_check_max_items": 3,
+        "self_check_min_items": 2,               # merged items needed since the last self-check (one item's own review already covered its diff)
         "limit_wait_hours": 6,                   # wait out a usage limit that resets within this many hours
         "poll_minutes": 10,                      # only waiting items left (team approvals, another loop): look again this often
         "idle_hours": 12,                        # …and give up after this long without anything to do
@@ -79,6 +82,7 @@ DEFAULTS: Dict[str, Any] = {
         "max_minutes": 0,
         "budget_usd_per_session": 0,             # 0 = no --max-budget-usd
         "allowed_tools": "Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash",
+        "isolate_sessions": False,               # loop sessions load only this project's settings and the sdlc plugin (see README)
         "item_note": "",
         "pause_file": ".sdlc/state/pause",
         "forge": "auto",                         # auto | github | local (local: squash-merge on this machine, no PR)

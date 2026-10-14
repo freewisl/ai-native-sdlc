@@ -3,8 +3,15 @@
 
 The prompt says what to do (`/sdlc:go --item <slug> --design|--build|--fix`, `--self-check`, or a resume prompt that names
 the same). What actually happens is scripted per `<slug>:<phase>` in $STUB_CLAUDE_SCENARIO (a list of actions consumed in
-order; `ok` once it runs out). Every call is appended to $STUB_CLAUDE_CALLS; the cost of a session id accumulates across
-resumes in $STUB_CLAUDE_STATE, like the real total_cost_usd does.
+order; `ok` once it runs out). Every call is appended to $STUB_CLAUDE_CALLS (the command line too, as `args`); the cost of a
+session id accumulates across resumes in $STUB_CLAUDE_STATE, like the real total_cost_usd does.
+
+`--help` lists --setting-sources and --strict-mcp-config like a current claude; $STUB_CLAUDE_HIDE_FLAGS (comma-separated, say
+"--setting-sources,--strict-mcp-config") drops those lines, as an older claude would not have them.
+
+Actions beyond the obvious ones (`<name>[:<text after the colon>]`): `fix_blocked:<why>` is a fix session that cannot fix it — it
+writes <why> under Departures, commits that, and prints `SDLC_FIX_BLOCKED <why>` instead of SDLC_FIXED (no text: the bare marker);
+`fix_blocked_dirty:<why>` the same with the note left uncommitted in the tree.
 """
 import json
 import os
@@ -16,7 +23,10 @@ import time
 
 args = sys.argv[1:]
 if args[:1] == ["--help"]:
-    print("Usage: claude [options] [command] [prompt]\n  --permission-prompts <mode>\n  --max-budget-usd <amount>\n  --plugin-dir <path>")
+    hide = [f for f in os.environ.get("STUB_CLAUDE_HIDE_FLAGS", "").split(",") if f]
+    lines = ["Usage: claude [options] [command] [prompt]", "  --permission-prompts <mode>", "  --max-budget-usd <amount>",
+             "  --plugin-dir <path>", "  --setting-sources <sources>", "  --strict-mcp-config"]
+    print("\n".join(l for l in lines if not any(f in l for f in hide)))
     sys.exit(0)
 if args[:1] == ["--version"]:
     print("9.9.9 (Claude Code stub)")
@@ -81,7 +91,7 @@ calls = os.environ.get("STUB_CLAUDE_CALLS")
 if calls:
     with open(calls, "a") as fh:
         fh.write(json.dumps({"key": key, "action": action, "sid": sid, "resumed": resumed, "model": model,
-                             "effort": opt("--effort") or "", "budget": opt("--max-budget-usd"), "prompt": prompt,
+                             "effort": opt("--effort") or "", "budget": opt("--max-budget-usd"), "prompt": prompt, "args": args,
                              "claudecode": os.environ.get("CLAUDECODE"), "cwd": os.getcwd(),
                              "branch": git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip()}) + "\n")
 
@@ -376,6 +386,13 @@ elif name == "config_fail":
             fh.write("the test command fails while this file exists\n")
     build(extra=patch_and_fail)
     result("SDLC_BUILT %s" % slug)
+elif name in ("fix_blocked", "fix_blocked_dirty"):
+    # a fix session that cannot fix it (references/fix.md): what blocks it goes under Departures — committed, or left in the
+    # tree — and the marker that ends the session says so, with the same text
+    write_doc(add_section(read_doc(), "Departures", param or "the stub cannot fix this"))
+    if name == "fix_blocked":
+        commit("fix blocked %s" % slug)
+    result("SDLC_FIX_BLOCKED %s" % param if param else "SDLC_FIX_BLOCKED")
 elif name == "fix_config":
     # a fix session that corrects what the branch recorded in .sdlc/config.json
     patch_config(json.loads(param))

@@ -3,7 +3,12 @@
 Per item (state read from its work doc on `sdlc/<slug>`):
   ready   → design session  (/sdlc:go --item <slug> --design)  → planned  (team: draft PR, a person approves)
   planned → build session   (/sdlc:go --item <slug> --build)   → built    (review tally recorded in the doc)
-  built   → gate (shell)    → pass: done + merge (team: a person merges) · fixable: fix session · human: wait with reasons
+  built   → gate (shell)    → pass: done · fixable: fix session · human: wait with reasons
+  done    → ship            → push, open the PR; on GitHub wait for its checks (`loop.checks_wait_minutes`): all pass → merge ·
+                              one fails → back to `built`, a fix session gets its log, the gate runs again · still running at
+                              the limit → a person. No remote: merge here. Team: a person merges, nothing is waited for.
+Each session's effort is `loop.efforts` moved by the item's size, an earlier failure and a second fix round (a self-check: by
+the size of its range) — effort.py, `loop.auto_effort`.
 A session stopped by a cap continues at once (warm cache, `--resume`); a stop older than `cold_resume_minutes` continues
 in a fresh session; a stop without progress since the last one is a failure. Usage limits: a model-family limit switches
 model, a session/weekly limit is slept out when it resets within `limit_wait_hours`, else the run stops (resumable).
@@ -18,15 +23,17 @@ from typing import Dict, List, Optional, Tuple
 
 from . import state as st
 from .config import PHASES, Config, NotInitialized
+from .effort import LEVELS, doc_size, shift
 from .enqueue import EnqueueError, departure_reason, drain_inbox, enqueue, prepare, record_drop
 from .events import log_event
 from .gate import GateResult, run_gate
-from .gitops import NOISE_EXCLUDES, Forge, Git, dirty_summary, make_forge, remote_host
+from .gitops import NOISE_EXCLUDES, Forge, Git, dirty_summary, end_of, make_forge, remote_host
 from .queue import Item, TEAM_WAITS, runnable, scan, waiting
 from .session import Runner, SessionResult
 from .util import epoch, now, now_iso, plugin_version, read_text, run, say, stamp, tail
 from .workdoc import WorkDoc, list_docs, problems
 
+CI_BRIEF_CAP = 8000     # characters of what a fix session is told about failed PR checks
 FAMILIES = ("opus", "sonnet", "haiku", "fable")
 INFRA_HINTS = ("overloaded", "api error: 5", "internal server error", "service unavailable", "bad gateway",
                "gateway timeout", "econnreset", "etimedout", "socket hang up", "network error", "fetch failed")
@@ -43,9 +50,21 @@ class StopRun(Exception):
         self.reason, self.code = reason, code
 
 
+class AlreadyRunning(StopRun):
+    """Another loop owns this checkout: its status file is the record that matters, so this refusal leaves it alone."""
+
+
 class Outcome:
-    MERGED, AWAITING, PARKED, FAILED, INFRA, HUMAN, ADVANCED, SKIPPED = (
-        "merged", "awaiting", "parked", "failed", "infra", "needs-human", "advanced", "skipped")
+    MERGED, AWAITING, PARKED, FAILED, INFRA, HUMAN, ADVANCED, SKIPPED, FIX = (
+        "merged", "awaiting", "parked", "failed", "infra", "needs-human", "advanced", "skipped", "fix")   # FIX: `ship_now` only
+
+
+def session_note(model: str, effort: str, why: str = "") -> str:
+    """What the run log says about a session: `model sonnet, effort medium — size s` (the effort, and what moved it)."""
+    note = "model %s" % (model or "default")
+    if effort:
+        note += ", effort %s" % effort + (" — " + why if why else "")
+    return note
 
 
 def family(model: str) -> str:
@@ -82,7 +101,8 @@ class Engine:
         self.dry = dry_run
         self.pause_file = os.path.join(root, str(L("pause_file", ".sdlc/state/pause")))
         self.runner = Runner(root, claude_bin=claude_bin, plugin_dir=plugin_dir, max_turns=int(L("max_turns", 500) or 500),
-                             allowed_tools=str(L("allowed_tools", "") or ""), budget_usd=float(L("budget_usd_per_session", 0) or 0))
+                             allowed_tools=str(L("allowed_tools", "") or ""), budget_usd=float(L("budget_usd_per_session", 0) or 0),
+                             isolate=bool(L("isolate_sessions", False)))
         self.claims = st.Claims(self.git.common_dir(), root)
         self.log_path = os.path.join(root, ".sdlc", "logs", "run-%s.log" % stamp())
         self.stopping = ""            # set by a signal: finish nothing more, stop the session gracefully
@@ -95,9 +115,14 @@ class Engine:
         self.blocked_family: Dict[str, float] = {}   # family → epoch until which it is limited
         self.from_sha = ""
         self.self_checks = 0
+        self.merged_since_check: List[str] = []   # slugs this loop merged since the run began or the last self-check
+        self.skip_noted = False                   # the "self-check skipped" line is said once per run
         self.status: Dict[str, object] = {}
         self.retry_delay = 60.0       # after a service error
         self.limit_margin = 60.0      # past a usage-limit reset before trying again
+        self.checks_poll: Optional[float] = None    # seconds between looks at a PR's checks; None: a tenth of the wait, 1-30 s
+        self.checks_grace: Optional[float] = None   # how long "no checks yet" is waited out; None: 120 s with workflow files, else 0
+        self.last_brief = ""          # what the last interactive ship wants fixed (the PR's failed checks), for `ship_now`
 
     # ------------------------------------------------------------------ small helpers
     def say(self, line: str) -> None:
@@ -149,6 +174,46 @@ class Engine:
                     return alt
         return m
 
+    def effort_for(self, phase: str, slug: str = "", fix_round: int = 0, diff_lines: Optional[int] = None) -> Tuple[str, str]:
+        """(effort, why) of the next session of this phase: `loop.efforts` moved by what the loop knows. A small item
+        (`size: s`, or counted so) needs less in design and build, a large one more in all three; an item that has failed
+        before, and every fix round after the first, one more; a self-check reads a small range with less and a large one
+        with more. `why` names what moved it — "" when nothing did. An effort a person set to "" or "max" is left alone,
+        and so is every effort when `loop.auto_effort` is off."""
+        base = self.cfg.effort(phase)
+        if not bool(self.cfg.get("loop.auto_effort", True)) or base not in LEVELS or base == "max":
+            return base, ""
+        steps, why = 0, []
+        if phase in ("design", "build", "fix"):
+            size, how = doc_size(self.doc(slug) if slug else None, estimate=(phase != "design"))   # a design runs at its base until the doc says
+            if size == "s" and phase != "fix":      # a fix works on a failure: small items fail like large ones
+                steps -= 1
+                why.append(how)
+            elif size == "l":
+                steps += 1
+                why.append(how)
+            if slug and int(st.item(self.root, slug).get("failures", 0) or 0) > 0:
+                steps += 1
+                why.append("failed before")
+            if fix_round >= 2:
+                steps += 1
+                why.append("fix round %d" % fix_round)
+        elif phase == "self_check" and diff_lines is not None:
+            if diff_lines < 300:
+                steps -= 1
+                why.append("small range (%d line%s)" % (diff_lines, "" if diff_lines == 1 else "s"))
+            elif diff_lines >= 2000:
+                steps += 1
+                why.append("large range (%d lines)" % diff_lines)
+        return shift(base, steps), ", ".join(why)
+
+    def range_lines(self, first: str, last: str) -> Optional[int]:
+        """Lines added plus removed between two commits (`git diff --shortstat`); None when git cannot say."""
+        r = self.git("diff", "--shortstat", "%s..%s" % (first, last))
+        if not r.ok:
+            return None
+        return sum(int(n) for n in re.findall(r"(\d+) (?:insertion|deletion)", r.out))
+
     # ------------------------------------------------------------------ preflight
     def preflight(self) -> None:
         if not self.git.is_repo():
@@ -163,7 +228,7 @@ class Engine:
             raise StopRun("paused (%s exists) — `sdlc.py resume` removes it" % os.path.relpath(self.pause_file, self.root), 0)
         other = st.loop_pid(self.root)
         if other and other != os.getpid():
-            raise StopRun("a loop is already running in this checkout (pid %d)" % other, 2)
+            raise AlreadyRunning("a loop is already running in this checkout (pid %d)" % other, 2)
         if self.dry:
             return
         if self.forge.kind == "github":
@@ -192,23 +257,40 @@ class Engine:
             except (ValueError, OSError, TypeError):
                 pass
 
+    def refuse(self, last: Dict[str, object], reason: str) -> None:
+        """A start that is refused (a dirty tree, no claude, no gh login) is not a run: the record the last run left — why it
+        stopped, when — stays as it was, and why this start did not happen is put beside it for `status`."""
+        try:
+            st.write_status(self.root, dict(last, state="stopped", refused=reason, refused_at=now_iso()))
+        except OSError:
+            pass                                    # nowhere to write it: the refusal is still said, and returned
+
     def run(self) -> int:
+        last = st.read_status(self.root)
+        resume_here = ""
         try:
             self.preflight()
+            if not self.dry:
+                resume_here = self.start_tree()     # before the loop leaves any trace: a refusal keeps the last run's record
         except StopRun as e:
             self.say(("ERROR   " if e.code else "STOP    ") + e.reason)
+            if e.code == 2 and not self.dry and not isinstance(e, AlreadyRunning):
+                self.refuse(last, e.reason)
             return e.code
         if self.dry:
             return self.dry_run()
         st.write_pid(self.root)
         self.install_signals()
         self.set_status(state="starting", started=now_iso(), version=plugin_version())
-        self.say("== sdlc run  %s  default=%s  forge=%s  mode=%s  models=%s" % (
+        self.say("== sdlc run  %s  default=%s  forge=%s  mode=%s  models=%s  efforts=%s%s" % (
             self.root, self.default, self.forge.kind, "team" if self.team else "solo",
-            "/".join("%s:%s" % (p, self.cfg.model(p) or "default") for p in ("design", "build", "fix"))))
+            "/".join("%s:%s" % (p, self.cfg.model(p) or "default") for p in ("design", "build", "fix")),
+            "/".join("%s:%s" % (p, self.cfg.effort(p) or "default") for p in ("design", "build", "fix")),
+            " (auto)" if self.cfg.get("loop.auto_effort", True) else ""))
+        if resume_here:
+            self.say("RESUME  %s — the session stopped last time left uncommitted changes here; continuing it first" % resume_here)
         stop, code = "", 0
         try:
-            resume_here = self.start_tree()
             self.from_sha = self.git.head(self.base()) or self.git.head()
             idle_since = 0.0
             while True:
@@ -307,6 +389,8 @@ class Engine:
                 self.failed_now.append(slug)
             if key:
                 self.done[key].append(slug)
+            if out == Outcome.MERGED:
+                self.merged_since_check.append(slug)
 
     def finish_run(self, stop: str) -> None:
         mins = int((epoch() - self.started) // 60)
@@ -353,8 +437,7 @@ class Engine:
         if not dirty:
             return ""
         if b.startswith("sdlc/") and st.item(self.root, b[5:]).get("stop"):
-            self.say("RESUME  %s — the session stopped last time left uncommitted changes here; continuing it first" % b[5:])
-            return b[5:]
+            return b[5:]                    # `run` says so, after its header line
         raise StopRun("the working tree has uncommitted changes (%s) — commit or stash them first" % dirty_summary(dirty), 2)
 
     def to_default(self) -> None:
@@ -455,7 +538,8 @@ class Engine:
         if not self.claims.take(slug):
             return Outcome.SKIPPED
         self.say("ITEM    %s — %s  [%s]" % (slug, it.title, it.phase))
-        self.set_status(state="running", item=slug, title=it.title, phase=it.phase, phase_started=now_iso(), waiting=[])
+        self.set_status(state="running", item=slug, title=it.title, phase=it.phase, phase_started=now_iso(), waiting=[],
+                        model="", effort="")
         try:
             if it.phase == "merge" and not it.branch:
                 return self.fail(slug, "status done on no branch — nothing to merge", count=False)
@@ -489,7 +573,10 @@ class Engine:
                         return out
                     continue
                 elif s == "done":
-                    return self.ship(slug)
+                    out = self.ship(slug)
+                    if out != Outcome.ADVANCED:           # a failed check sends the item back to `built`: the gate runs again
+                        return out
+                    continue
                 else:
                     return self.fail(slug, "unexpected status '%s' on sdlc/%s" % (s, slug))
                 if out != Outcome.ADVANCED:
@@ -510,9 +597,10 @@ class Engine:
             p += "\n\n" + extra
         return p
 
-    def session(self, slug: str, phase: str, extra: str = "") -> str:
+    def session(self, slug: str, phase: str, extra: str = "", fix_round: int = 0) -> str:
         """Run one phase to completion: the first session plus continuations. Returns ADVANCED when the doc moved on (or,
-        for fix, when the branch changed), else FAILED/INFRA; raises StopRun for limits it cannot wait out."""
+        for fix, when the branch changed), else FAILED/INFRA; raises StopRun for limits it cannot wait out. `fix_round` is 1
+        for the first fix session after a gate failure, 2 for the next — a later round gets more effort."""
         before_status = self.doc_status(slug)
         before_head = self.git.head()
         rec = st.item(self.root, slug)
@@ -528,22 +616,30 @@ class Engine:
         limit_hits = 0
         while True:
             model = self.model_for(phase, slug)
+            effort, effort_why = self.effort_for(phase, slug, fix_round)       # per window: the doc, the failures may have changed
             if resume_sid:
                 prompt = ("Continue where you stopped (%s): finish the %s phase as /sdlc:go --item %s --%s describes, "
                           "then print the marker." % (cont_reason, phase, slug, phase))
             else:
                 prompt = self.prompt(slug, phase, extra, cont_reason)
             log = os.path.join(self.root, ".sdlc", "logs", "sessions", "%s-%s-%s.jsonl" % (stamp(), slug, phase))
-            self.set_status(phase=phase, phase_started=now_iso(), session_log=os.path.relpath(log, self.root), model=model)
-            self.say("%-7s %s — %s%s (model %s)" % (phase.upper()[:7], slug, "resuming " if resume_sid else "",
-                                                     "session" if not cont_reason or resume_sid else "fresh session after a stop", model))
+            self.set_status(phase=phase, phase_started=now_iso(), session_log=os.path.relpath(log, self.root), model=model,
+                            effort=effort)
+            self.say("%-7s %s — %s%s (%s)" % (phase.upper()[:7], slug, "resuming " if resume_sid else "",
+                                              "session" if not cont_reason or resume_sid else "fresh session after a stop",
+                                              session_note(model, effort, effort_why)))
             st.set_active(self.root, slug)
-            res = self.runner.run(prompt, log, self.session_minutes, model, self.cfg.effort(phase), resume_sid)
+            res = self.runner.run(prompt, log, self.session_minutes, model, effort, resume_sid)
             st.set_active(self.root, None)
             self.ensure_branch(slug)
-            self.account(slug, phase, res, bool(resume_sid))
+            self.account(slug, phase, res, bool(resume_sid), effort, effort_why, bool(resume_sid or cont_reason))
             if res.status == "no_plugin":       # whatever it did ran without the guard hooks: stop before trusting it
                 raise StopRun("the sdlc plugin was not loaded in the session — its hooks did not run (check `claude plugin list`)", 2)
+            blocked = res.token("SDLC_FIX_BLOCKED") if phase == "fix" and res.status == "ok" else None
+            if blocked is not None:             # it says it cannot: what it left in Departures goes to a person with the branch
+                st.update(self.root, slug, stop=None)
+                self.commit_all(slug, "sdlc(%s): %s session changes" % (slug, phase))
+                return self.needs_human(slug, ["the fix session could not fix it: %s" % (blocked[:300] or "see Departures")])
             if self.advanced(slug, phase, before_status, before_head) or (phase == "fix" and res.status == "ok"):
                 st.update(self.root, slug, stop=None)
                 self.commit_all(slug, "sdlc(%s): %s session changes" % (slug, phase))
@@ -594,6 +690,8 @@ class Engine:
             fresh = (epoch() - res.ended) >= self.cold_seconds or self.model_for(phase, slug) != model
             resume_sid = "" if fresh else res.sid
             self.say("STOPPED %s — %s; continuing (%s)" % (slug, why, "fresh session" if fresh else "warm resume"))
+            self.event("loop.continue", "allow", why, {"slug": slug, "phase": phase, "sid": res.sid, "fresh": fresh,
+                                                       "continuations": continuations})
 
     def is_infra(self, res: SessionResult) -> bool:
         txt = (res.api_error + " " + (res.text or "")[-300:]).lower()
@@ -628,7 +726,8 @@ class Engine:
             return self.git.head() != before_head or bool(self.git.dirty())
         return s != before_status
 
-    def account(self, slug: str, phase: str, res: SessionResult, resumed: bool) -> None:
+    def account(self, slug: str, phase: str, res: SessionResult, resumed: bool, effort: str = "", effort_why: str = "",
+                continued: bool = False) -> None:
         self.cost += res.cost_delta
 
         def fn(rec: dict) -> None:
@@ -638,7 +737,8 @@ class Engine:
         self.event("loop.session", res.status, phase, {
             "slug": slug, "phase": phase, "sid": res.sid, "status": res.status, "resumed": resumed, "cost_usd": res.cost_delta,
             "turns": res.turns, "models": res.models, "minutes": round((res.ended - res.started) / 60, 1),
-            "log": os.path.relpath(res.log, self.root), "limit": res.limit_kind, "api_error": res.api_error})
+            "log": os.path.relpath(res.log, self.root), "limit": res.limit_kind, "api_error": res.api_error,
+            "effort": effort, "effort_reason": effort_why, "continued": continued})
         self.set_status()
 
     def remember_stop(self, slug: str, phase: str, res: SessionResult, why: str, fp: str = "", model: str = "") -> None:
@@ -821,7 +921,7 @@ class Engine:
                     return self.needs_human(slug, reasons)
                 return self.fail(slug, "gate still failing after %d fix round(s): %s" % (rounds, "; ".join(reasons)[:300]))
             rounds += 1
-            out = self.session(slug, "fix", extra=self.fix_brief(res))
+            out = self.session(slug, "fix", extra=self.fix_brief(res), fix_round=rounds)
             if out != Outcome.ADVANCED:
                 return out
 
@@ -861,7 +961,116 @@ class Engine:
             st.update(self.root, slug, pr=url)
         return ok, url
 
-    def ship(self, slug: str) -> str:
+    def checks_limit(self) -> float:
+        """Seconds to wait for a PR's checks: `loop.checks_wait_minutes`, 0 for none. Read when needed — the config can change
+        under a running loop."""
+        try:
+            return max(0.0, float(self.cfg.get("loop.checks_wait_minutes", 30) or 0)) * 60
+        except (TypeError, ValueError):
+            return 30 * 60.0
+
+    def checks_timing(self, limit: float) -> Tuple[float, float]:
+        """(seconds between looks, grace) for a wait of `limit` seconds. A PR that shows no check yet is waited on for the
+        grace before it counts as having none: 2 minutes when the checkout has workflows (they are about to start), none
+        when it has no CI — and never longer than the wait itself."""
+        interval = self.checks_poll if self.checks_poll is not None else max(1.0, min(30.0, limit / 10))
+        grace = self.checks_grace if self.checks_grace is not None else (120.0 if self.has_workflows() else 0.0)
+        return interval, min(grace, limit)
+
+    def has_workflows(self) -> bool:
+        d = os.path.join(self.root, ".github", "workflows")
+        try:
+            return any(n.endswith((".yml", ".yaml")) and os.path.isfile(os.path.join(d, n)) for n in os.listdir(d))
+        except OSError:
+            return False
+
+    def wait_checks(self, slug: str, interactive: bool = False) -> Tuple[str, List[Dict[str, str]]]:
+        """GitHub, between the shell gate and the merge: wait for the PR's checks — CI runs there, not in this shell. Returns
+        (state, checks): `pass` (also when no check shows up once the grace is over, and when there is nothing to wait for),
+        `fail` (nothing pending any more — `gh run view --log-failed` refuses a run in progress, and a fix session should see
+        every failure at once — or the limit came), `pending` (the limit came; the checks of the last look that could be
+        read), `unknown` (the limit came and no look could be read: gh failing, or a PR that never showed this push),
+        `merged` / `closed` (a person did it while waiting). A stop request raises StopRun: the doc stays `done`, the next
+        run ships again."""
+        limit = self.checks_limit()
+        if self.forge.kind != "github" or limit <= 0:
+            return "pass", []
+        interval, grace = self.checks_timing(limit)
+        if not interactive:                  # `sdlc.py ship` is no loop: the status file is a running loop's
+            self.set_status(phase="checks", phase_started=now_iso())
+        head = self.git.head()               # a PR that still shows another commit has not seen this push yet
+        started, announced = time.time(), False
+        seen: Optional[List[Dict[str, str]]] = None     # the checks of the last look that could be read
+
+        def over(result: str, entries: List[Dict[str, str]], line: str = "", names: str = "", decision: str = ""
+                 ) -> Tuple[str, List[Dict[str, str]]]:
+            if line:
+                self.say("CHECKS  %s — %s" % (slug, line))
+            self.event("loop.checks", decision or result, names, {"slug": slug, "checks": entries,
+                                                                  "waited_s": round(time.time() - started)})
+            return result, entries
+
+        while True:
+            state, found = self.forge.checks(slug, head)
+            waited = time.time() - started
+            if state != "unknown":
+                seen = found
+            pending = check_names(found, "pending")
+            if state == "unknown":           # no open PR to read is a PR somebody merged or closed
+                gone = self.forge.state(slug)
+                if gone in ("merged", "closed"):
+                    return over(gone, [])
+            if state == "pass":
+                names = check_names(found)
+                return over("pass", found, "passed: " + names, names)
+            if state == "none" and waited >= grace:
+                return over("pass", [], "no checks", decision="none")
+            if state == "fail" and (not pending or waited >= limit):
+                names = check_names(found, "fail")
+                return over("fail", found, "failed: " + names, names)
+            if waited >= limit:
+                if seen is None:
+                    return over("unknown", [])
+                return over("pending", seen, names=check_names(seen, "pending"))
+            if not announced:
+                announced = True
+                self.say("CHECKS  %s — waiting for %s" % (slug, pending or "checks to start"))
+            wake = min(interval, limit - waited)
+            if state == "none":
+                wake = min(wake, grace - waited)
+            if interactive:
+                time.sleep(wake)
+            elif not self.sleep(wake):
+                raise StopRun(self.stopping or "paused")
+
+    def update_branch(self, slug: str) -> bool:
+        """GitHub will not merge a PR that is behind the default branch: merge the default branch into it here, hooks off like
+        `adopt_doc`. False — and the merge undone — when it conflicts, which is for a person."""
+        self.git("fetch", "-q", "origin", self.default, timeout=120)
+        msg = "sdlc(%s): merge %s" % (slug, self.default)
+        r = self.git("-c", "core.hooksPath=" + os.devnull, "merge", "--no-edit", "-m", msg, self.base())
+        if not r.ok:
+            self.git("merge", "--abort")
+        return r.ok
+
+    def settled_by_person(self, slug: str, state: str) -> str:
+        """A person merged or closed the PR while the loop waited for its checks. Nothing is left to do for the loop — and it
+        was not the loop's merge, so it counts toward no self-check."""
+        if state == "merged":
+            st.update(self.root, slug, state="merged", reasons=None, merged=now_iso(), ci_rounds=None)
+            self.say("MERGED  %s — merged by a person" % slug)
+            self.event("loop.item", "merged-by-person", "", {"slug": slug})
+        else:
+            st.update(self.root, slug, state="closed")
+            self.say("CLOSED  %s — PR closed by a person" % slug)
+            self.event("loop.item", "closed-by-person", "", {"slug": slug})
+        return Outcome.SKIPPED
+
+    def ship(self, slug: str, fix: bool = True) -> str:
+        """The doc is `done`: push, open the PR, land it. Team: a person merges. Solo on GitHub the PR's checks come first —
+        all pass: merge · one fails: `ci_failed` · still running at the limit: a person. A branch GitHub calls behind gets the
+        default branch merged in, once. `fix` is False for an interactive ship, which hands a failure back to the session that
+        called (Outcome.FIX) instead of running a fix session of its own."""
         d = self.doc(slug)
         title = d.title if d else slug
         ok, url = self.publish(slug, draft=False)
@@ -872,19 +1081,92 @@ class Engine:
             self.say("READY   %s — gate passed; %s waits for a person to merge" % (slug, url))
             self.event("loop.item", "awaiting-merge", url, {"slug": slug, "pr": url})
             return Outcome.AWAITING
-        ok, info = self.forge.merge(slug, title, tests_allowed_note(d))
+        updated = False
+        while True:
+            state, checks = self.wait_checks(slug, interactive=not fix)
+            if state in ("merged", "closed"):
+                return self.settled_by_person(slug, state)
+            if state == "fail":
+                return self.ci_failed(slug, checks, fix)
+            if state == "unknown":
+                return self.needs_human(slug, ["the PR's checks could not be read for %g min (`gh pr view` failed, or the PR "
+                                               "never showed the pushed commit) — look at the PR, and merge it when its checks "
+                                               "pass (the loop notices)" % (self.checks_limit() / 60)])
+            if state == "pending":
+                names = check_names(checks, "pending")
+                return self.needs_human(slug, ["the PR's checks were still running after %g min%s — merge the PR when they pass "
+                                               "(the loop notices), or raise loop.checks_wait_minutes" % (
+                                                   self.checks_limit() / 60, " (%s)" % names if names else "")])
+            ok, info = self.forge.merge(slug, title, tests_allowed_note(d))
+            if ok or updated or self.forge.kind != "github" or self.forge.merge_state(slug) != "BEHIND":
+                break
+            updated = True
+            if not self.update_branch(slug):
+                return self.needs_human(slug, ["the branch is behind %s and merging it conflicts" % self.default])
+            self.say("UPDATE  %s — behind %s; merged it in, waiting for the checks again" % (slug, self.default))
+            ok, url = self.publish(slug, draft=False)
+            if not ok:
+                return self.fail(slug, "could not publish: %s" % url, count=False)
         if not ok:
             return self.needs_human(slug, ["merge did not happen: %s" % info])
-        rec = st.update(self.root, slug, state=None, reasons=None, stop=None, merged=now_iso())
+        rec = st.update(self.root, slug, state=None, reasons=None, stop=None, merged=now_iso(), ci_rounds=None)
         self.say("MERGED  %s — %s ($%.2f)" % (slug, url if self.forge.kind == "github" else info[:12], float(rec.get("cost", 0) or 0)))
         self.event("loop.merge", "allow", title, {"slug": slug, "pr": url if self.forge.kind == "github" else "",
                                                    "sha": info if self.forge.kind == "local" else "", "cost_usd": rec.get("cost", 0),
                                                    "sessions": rec.get("sessions", 0), "mode": "auto"})
         return Outcome.MERGED
 
+    def ci_failed(self, slug: str, checks: List[Dict[str, str]], fix: bool) -> str:
+        """The PR's checks failed after the shell gate had passed: the change is not done. The doc goes back to `built`, so
+        whatever fixes it ships through the gate again. An interactive ship hands the brief to the session that called
+        (Outcome.FIX, the caller's own round limit applies); the loop runs a fix session with it — up to `loop.fix_rounds`
+        of them, counted across gates in the item's `ci_rounds` — and a person gets the item after that."""
+        failed = [c for c in checks if c.get("bucket") == "fail"]
+        d = self.doc(slug)
+        if d is not None and d.status != "built":
+            d.status = "built"
+            d.save()
+            self.git("add", "--", os.path.relpath(self.doc_path(slug), self.root))
+            self.git("commit", "-q", "--no-verify", "-m", "sdlc(%s): PR checks failed — back to built" % slug)
+        if not fix:
+            self.last_brief = self.ci_brief(failed)
+            return Outcome.FIX
+        rounds = int(st.item(self.root, slug).get("ci_rounds", 0) or 0)
+        if rounds >= self.fix_rounds:
+            names = check_names(failed)
+            return self.needs_human(slug, ["the PR's checks still fail after %d fix round(s): %s" % (rounds, names) if self.fix_rounds
+                                           else "the PR's checks failed: %s" % names])
+        st.update(self.root, slug, ci_rounds=rounds + 1)
+        return self.session(slug, "fix", extra=self.ci_brief(failed), fix_round=rounds + 1)
+
+    def ci_brief(self, failed: List[Dict[str, str]]) -> str:
+        """What a fix session is told when the PR's checks failed: which, where to read them, the end of their logs — within
+        CI_BRIEF_CAP characters, the logs giving way first."""
+        lines = ["The PR's checks failed on GitHub after the shell gate had passed (they run on GitHub, not here):"]
+        for c in failed[:12]:
+            wf = " (workflow %s)" % c["workflow"][:80] if c.get("workflow") else ""
+            lines.append("- `%s`%s%s" % ((c.get("name") or "check")[:120], wf, " — " + c["link"][:240] if c.get("link") else ""))
+        if len(failed) > 12:
+            lines.append("- … and %d more" % (len(failed) - 12))
+        foot = ("\nReproduce it locally with the command the workflow runs, then fix the cause — never weaken, skip or delete a "
+                "test, and never edit `.github/workflows/` to get green. Commit, then print SDLC_FIXED. A failure that is not "
+                "this change's (the CI environment, a missing secret, a flaky external service) cannot be fixed from here: print "
+                "SDLC_FIX_BLOCKED <why> instead.")
+        logs = self.forge.check_logs(failed)
+        head = "\n".join(lines)
+        if logs:
+            fence = "```"
+            while fence in logs:
+                fence += "`"
+            room = CI_BRIEF_CAP - len(head) - len(foot) - 2 * len(fence) - 60        # 60: the lead-in and the line breaks
+            if room > 200:
+                head += "\n\nThe end of what they printed:\n%s\n%s\n%s" % (fence, end_of(logs, room), fence)
+        return head + "\n" + foot
+
     def ship_now(self, slug: str) -> Tuple[int, str]:
-        """`sdlc.py ship <slug>` — the end of an interactive /sdlc:go: the same gate and merge the loop uses, without fix
-        sessions (the session that called it fixes and calls again). 0 shipped/handed over · 1 fix needed · 2 a person."""
+        """`sdlc.py ship <slug>` — the end of an interactive /sdlc:go: the same gate, PR-checks wait and merge the loop uses,
+        without fix sessions (the session that called it fixes and calls again). 0 shipped/handed over · 1 fix needed — the
+        gate's, or the PR's failed checks (the doc is back to `built`) · 2 a person."""
         b = "sdlc/" + slug
         if self.git.branch() != b:
             return 1, "check out %s first (now on %s)" % (b, self.git.branch() or "a detached HEAD")
@@ -906,38 +1188,63 @@ class Engine:
                     self.needs_human(slug, res.human)
                     return 2, "a person has to look at this: " + "; ".join(res.human)
                 self.mark_done(slug)
-            out = self.ship(slug)
+            out = self.ship(slug, fix=False)
             rec = st.item(self.root, slug)
+            if out == Outcome.FIX:
+                return 1, self.last_brief
             if out == Outcome.MERGED:
                 return 0, "merged" + (" — " + str(rec.get("pr")) if rec.get("pr") else "")
             if out == Outcome.AWAITING:
                 return 0, "gate passed — %s waits for a person to merge" % (rec.get("pr") or b)
+            if out == Outcome.SKIPPED and rec.get("state") == "merged":
+                return 0, "merged by a person — %s" % (rec.get("pr") or b)
+            if out == Outcome.SKIPPED and rec.get("state") == "closed":
+                return 2, "the PR was closed by a person"
             return 2, "; ".join(rec.get("reasons") or ["not merged"])
         finally:
             self.claims.release()
 
     # ------------------------------------------------------------------ self-check
     def self_check_due(self) -> bool:
-        """Solo only: it reviews what this loop merged itself, and in team mode a person merges."""
-        return not self.team and bool(self.cfg.get("loop.self_check", True)) and bool(self.done["merged"]) \
-            and self.self_checks < 2 and not self.only and self.git.head() != self.from_sha
+        """Solo only: it reviews what this loop merged itself, and in team mode a person merges. One merged item is not
+        reviewed again here — its own review covered the whole diff — so it takes `loop.self_check_min_items` of them (the
+        run says so once when it skips for that)."""
+        if self.team or not bool(self.cfg.get("loop.self_check", True)) or self.self_checks >= 2 or self.only \
+                or not self.merged_since_check or self.git.head() == self.from_sha:
+            return False
+        try:
+            need = max(1, int(self.cfg.get("loop.self_check_min_items", 2)))
+        except (TypeError, ValueError):
+            need = 2
+        n = len(self.merged_since_check)
+        if n < need:
+            if not self.skip_noted:
+                self.skip_noted = True
+                self.say("CHECK   skipped — %s (loop.self_check_min_items %d)" % (
+                    "1 item merged since the last check; its own review covered it" if n == 1 else
+                    "%d items merged since the last check; their own reviews covered them" % n, need))
+            return False
+        return True
 
     def self_check(self) -> int:
         """Review what merged in this run; validated Important findings on changed lines become new items."""
         self.self_checks += 1
+        self.merged_since_check = []
         self.to_default()
         head = self.git.head()
         rng = "%s..%s" % (self.from_sha[:12], head[:12])
-        self.say("CHECK   reviewing what merged (%s)" % rng)
-        self.set_status(state="running", item="", phase="self-check", phase_started=now_iso())
+        model = self.model_for("self_check")
+        effort, effort_why = self.effort_for("self_check", diff_lines=self.range_lines(self.from_sha, head))
+        self.say("CHECK   reviewing what merged (%s) (%s)" % (rng, session_note(model, effort, effort_why)))
+        self.set_status(state="running", item="", phase="self-check", phase_started=now_iso(), model=model, effort=effort)
         before = set(self.git.out("ls-files", "--others", "--exclude-standard").splitlines())
         log = os.path.join(self.root, ".sdlc", "logs", "sessions", "%s-self-check.jsonl" % stamp())
-        res = self.runner.run("/sdlc:go --self-check %s" % rng, log, min(self.session_minutes, 60),
-                              self.model_for("self_check"), self.cfg.effort("self_check"))
+        res = self.runner.run("/sdlc:go --self-check %s" % rng, log, min(self.session_minutes, 60), model, effort)
         self.cost += res.cost_delta
         self.event("loop.session", res.status, "self-check", {"slug": "", "phase": "self-check", "sid": res.sid,
                                                               "cost_usd": res.cost_delta, "turns": res.turns,
-                                                              "log": os.path.relpath(log, self.root)})
+                                                              "log": os.path.relpath(log, self.root), "effort": effort,
+                                                              "effort_reason": effort_why, "continued": False})
         self.from_sha = head
         work = self.cfg.rel("work")
         # the self-check writes work docs only: anything else it touched is put back
@@ -1014,6 +1321,12 @@ def _after_setting(line: str) -> str:
     if sep:
         rest = close(rest[sep.end():].lstrip())
     return re.sub(r"^\s*(?:[*_`]*allowed[*_`]*)?[\s,;:—–-]*", "", rest, flags=re.I)
+
+
+def check_names(entries: List[Dict[str, str]], bucket: str = "", cap: int = 6) -> str:
+    """The names of the PR's checks (of one bucket), comma-separated, at most `cap` of them: `build, test, lint, …`."""
+    names = [str(c.get("name") or "check") for c in entries if not bucket or c.get("bucket") == bucket]
+    return ", ".join(names[:cap]) + (", …" if len(names) > cap else "")
 
 
 def tests_allowed_note(d: Optional[WorkDoc]) -> str:

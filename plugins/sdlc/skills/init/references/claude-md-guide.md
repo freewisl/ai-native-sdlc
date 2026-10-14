@@ -41,7 +41,18 @@ Do not run commands that need credentials, a database or docker unless the user 
 
 ## A CLAUDE.md that already existed
 
-Sections the user already had are left alone; init appends only the missing ones (matched by heading) and adds `@AGENTS.md` when an AGENTS.md exists — do not repeat its content. If the file is already over a page, suggest trimming it to what a new joiner needs on day one; do not do it unasked.
+Sections the user already had are left alone; init appends only the missing ones (matched by heading) and adds `@AGENTS.md` when an AGENTS.md exists — do not repeat its content. If the file is already over a page, init offers the trim below and does it only on the user's yes.
+
+## Trimming a long CLAUDE.md
+
+Every session reads the whole file — each loop session too — so a line that only some changes need is paid for by all of them. Offer the trim when `--check` says the file is over `claude_md.max_lines`, and when the adoption's step 3 leaves it over; change nothing without the user's yes. Show the plan first: what stays, what moves where, what goes.
+
+- **Keep** the sdlc sections between the markers and what every change needs: Commands, the conventions every change follows, the architecture map, Things Claude gets wrong.
+- **Move** what only some changes need — a module's internals, runbooks, long examples, API references, history — to `docs/claude/<topic>.md`, one file per topic, and leave one pointer line in its place: `- <Topic>: read docs/claude/<topic>.md before changing <paths>.` (for example `- Billing: read docs/claude/billing.md before changing src/billing/.`). Never `@docs/claude/<topic>.md`: an import loads the file into every session again, which undoes the move.
+- **Delete** what is stale (check it against the code), what README.md or AGENTS.md already say (CLAUDE.md imports AGENTS.md), and what a linter enforces.
+- Never drop a rule the user wrote without listing it in the plan.
+- Afterwards the file is under the cap, every pointer names a file that exists and the markers are intact.
+- Commit it like the adoption: `docs: trim CLAUDE.md`, staging CLAUDE.md and the new files per path. No remote: on the current branch. GitHub remote: branch `sdlc/trim-claude-md`, push, `gh pr create`; solo merges it at once, team leaves it to a person. Inside an adoption the trim goes into the adoption commit instead (stage its new files there too).
 
 ## An empty repository
 

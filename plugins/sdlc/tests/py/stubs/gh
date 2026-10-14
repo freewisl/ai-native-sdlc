@@ -8,7 +8,25 @@ and `api repos/…` answer from the environment — $STUB_GH_COLLAB (a count, or
 $STUB_GH_RULESET_ID (an existing ruleset), $STUB_GH_RULESET_FAIL (the ruleset call is refused; `codeowner`: only a body that
 asks for code-owner review), $STUB_GH_PATCH_FAIL (the repository settings call is refused), $STUB_GH_NO_REPO (`repo view`
 finds no repository). Every call is kept in the db under "calls" (and the GH_HOST it ran with under "hosts"); the bodies sent
-with `--input -` are kept under "inputs" as {"args": […], "stdin": "…"}."""
+with `--input -` are kept under "inputs" as {"args": […], "stdin": "…"}.
+
+For the PR checks (the forge's `checks`, `check_logs` and `merge_state`) everything is set in the db before the run, and a db
+that holds only these keys is enough. `pr view <n> --json a,b` prints an object with the stored fields asked for and the
+computed ones below. "statusCheckRollup" is played from the db key "checks", {head branch: [snapshot, …]}: a snapshot is what
+gh prints for the field — a list of CheckRun {"__typename": "CheckRun", "name", "status", "conclusion", "detailsUrl",
+"workflowName"} and StatusContext {"__typename": "StatusContext", "context", "state", "targetUrl"} entries, or null (a PR
+without any checks). Each call that asks for the field returns the first snapshot and drops it while more than one remains,
+so [pending, pending, pass] plays out over three calls and then stays pass; a head without an entry (or with []) has no CI:
+[]. A snapshot may also be {"error": "text"} (that call fails with the text) or {"raw": "text"} (that call prints the text
+instead of JSON). $STUB_GH_VIEW_FAIL=1 makes every `pr view` fail. "headRefOid" is the head branch's tip on origin;
+db["head_lag"] = {head: N} makes a push show up late: after the tip moved, the next N views that ask for "headRefOid" still
+answer the previous tip, and a "statusCheckRollup" asked in such a view answers the snapshot last served (the old commit's
+checks) without playing the script on ("head_tips", "head_held" and "checks_last" are that bookkeeping). "mergeStateStatus"
+is CLEAN unless the head branch is in the db list "behind": then it is BEHIND, and `pr merge` fails with GitHub's "Head
+branch is out of date" — until the head's tip on origin has changed since the first refused merge (the tip seen then is kept
+in "behind_seen"); the head then leaves the list and the merge goes through. `run view <id> --log-failed` prints
+db["run_logs"][id] when it has one, else a few lines that name the run and end with an error line; an id in the db list
+"run_view_fail" makes it fail instead."""
 import json
 import os
 import subprocess
@@ -22,9 +40,13 @@ DB = os.environ.get("STUB_GH_DB", "gh-db.json")
 def load():
     try:
         with open(DB) as fh:
-            return json.load(fh)
+            db = json.load(fh)
     except (OSError, ValueError):
-        return {"next": 1, "prs": [], "calls": []}
+        db = {}
+    db.setdefault("next", 1)
+    db.setdefault("prs", [])
+    db.setdefault("calls", [])
+    return db
 
 
 def save(db):
@@ -49,6 +71,59 @@ def find(db, n):
             return pr
     sys.stderr.write("no pull request %s\n" % n)
     sys.exit(1)
+
+
+def origin_tip(head):
+    r = git("ls-remote", "origin", "refs/heads/" + head)
+    return r.stdout.split()[0] if r.returncode == 0 and r.stdout.strip() else ""
+
+
+def behind(db, head, merging=False):
+    """True while `head` is in db["behind"]. The listing lapses once the head's tip on origin differs from the tip the first
+    refused merge saw — the branch was brought up to date and pushed. Only a merge (`merging`) notes that first tip, so a push
+    before the first refusal (the PR being published again) does not lift it. The caller saves the db."""
+    if head not in db.get("behind", []):
+        return False
+    seen = db.setdefault("behind_seen", {})
+    tip = origin_tip(head)
+    if head not in seen:
+        if merging:
+            seen[head] = tip
+        return True
+    if seen[head] == tip:
+        return True
+    db["behind"].remove(head)
+    del seen[head]
+    return False
+
+
+def next_snapshot(db, head):
+    """The next scripted snapshot of the head's checks: the first, dropped while more than one remains; [] with none."""
+    snaps = db.get("checks", {}).get(head) or []
+    if len(snaps) > 1:
+        db["checks"][head] = snaps[1:]
+    snap = snaps[0] if snaps else []
+    db.setdefault("checks_last", {})[head] = snap
+    return snap
+
+
+def head_oid(db, head):
+    """(the head GitHub reports for the PR, whether it is a stale one). A push shows up late: with db["head_lag"][head] = N, the
+    N views after the head's tip on origin moved still report the previous tip. The caller saves the db."""
+    tip = origin_tip(head)
+    tips, held = db.setdefault("head_tips", {}), db.setdefault("head_held", {})
+    prev = tips.get(head)
+    tips[head] = tip
+    n = db.get("head_lag", {}).get(head, 0)
+    if head not in held and prev is not None and prev != tip and n > 0:
+        held[head] = {"oid": prev, "left": n}
+    if head not in held:
+        return tip, False
+    held[head]["left"] -= 1
+    oid = held[head]["oid"]
+    if held[head]["left"] <= 0:
+        del held[head]
+    return oid, True
 
 
 db = load()
@@ -112,6 +187,19 @@ if args[:1] == ["api"]:
         sys.exit(1 if os.environ.get("STUB_GH_PATCH_FAIL") else 0)
     sys.stderr.write("stub gh: unsupported api %s\n" % args)
     sys.exit(1)
+if args[:2] == ["run", "view"] and len(args) > 2 and "--log-failed" in args:
+    rid = args[2]
+    if rid in [str(i) for i in db.get("run_view_fail", [])]:
+        sys.stderr.write("failed to get run log: HTTP 404: Not Found (run %s)\n" % rid)
+        sys.exit(1)
+    text = db.get("run_logs", {}).get(rid)
+    if text is None:
+        text = ("build\tRun tests\t2026-10-14T10:00:00.0000000Z ##[group]Run make test\n"
+                "build\tRun tests\t2026-10-14T10:00:01.0000000Z running the tests of run %s\n"
+                "build\tRun tests\t2026-10-14T10:00:02.0000000Z FAILED tests/test_feature.py::test_feature - AssertionError\n"
+                "build\tRun tests\t2026-10-14T10:00:03.0000000Z ##[error]Process completed with exit code 1.\n" % rid)
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+    sys.exit(0)
 if args[:1] != ["pr"]:
     sys.stderr.write("stub gh: unsupported %s\n" % args)
     sys.exit(1)
@@ -130,6 +218,31 @@ if sub == "list":
     out.sort(key=lambda p: -int(p.get("number") or 0))
     lim = int(opt("--limit") or 30)
     print(json.dumps(out[:lim]))
+elif sub == "view" and "--json" in args:
+    if os.environ.get("STUB_GH_VIEW_FAIL") == "1":
+        sys.stderr.write("HTTP 502: Bad Gateway (https://api.github.com/graphql)\n")
+        sys.exit(1)
+    pr = find(db, args[2])
+    fields = opt("--json").split(",")
+    out, stale = {}, False
+    if "headRefOid" in fields:
+        out["headRefOid"], stale = head_oid(db, pr["head"])
+    for f in fields:
+        if f == "statusCheckRollup":
+            out[f] = db.get("checks_last", {}).get(pr["head"], []) if stale else next_snapshot(db, pr["head"])
+        elif f == "mergeStateStatus":
+            out[f] = "BEHIND" if behind(db, pr["head"]) else "CLEAN"
+        elif f != "headRefOid":
+            out[f] = pr.get(f)
+    save(db)
+    snap = out.get("statusCheckRollup")
+    if isinstance(snap, dict) and "error" in snap:
+        sys.stderr.write(str(snap["error"]) + "\n")
+        sys.exit(1)
+    if isinstance(snap, dict) and "raw" in snap:
+        print(snap["raw"])
+        sys.exit(0)
+    print(json.dumps(out))
 elif sub == "create":
     n = db["next"]
     db["next"] = n + 1
@@ -163,6 +276,10 @@ elif sub == "merge":
     pr = find(db, args[2])
     if os.environ.get("STUB_GH_MERGE_FAIL") == "1" or pr["state"] != "OPEN" or pr.get("isDraft"):
         sys.stderr.write("GraphQL: Pull request is not mergeable\n")
+        sys.exit(1)
+    if behind(db, pr["head"], merging=True):            # the branch has to be brought up to date first
+        save(db)
+        sys.stderr.write("GraphQL: Head branch is out of date. Review and try the merge again. (mergePullRequest)\n")
         sys.exit(1)
     origin = git("remote", "get-url", "origin").stdout.strip()
     tmp = tempfile.mkdtemp(prefix="stub-gh-")
