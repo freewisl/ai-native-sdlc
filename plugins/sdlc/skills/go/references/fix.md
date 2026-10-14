@@ -1,6 +1,6 @@
 # Fix
 
-The merge gate — run by the shell, not by a session's own report — failed on this branch. Interactive: `sdlc.py ship` exited 1 and printed the brief. Loop (`--item <slug> --fix`): the prompt after the flags is the brief. Either way it lists what failed, with the last lines of each command's output. On GitHub the brief can also come from the PR's checks, after the gate passed: it names each failed check with its workflow, its link and the tail of its log (step 4).
+The merge gate — run by the shell, not by a session's own report — failed on this branch. Interactive: `sdlc.py ship` exited 1 and printed the brief. Loop (`--item <slug> --fix`): the prompt after the flags is the brief. Either way it lists what failed, with the last lines of each command's output. On GitHub the brief can also come from the PR's checks, after the gate passed: it names each failed check with its workflow, its link and the end of its job's log, cut before the job's cleanup (step 4).
 
 Work through it in this order:
 

@@ -5,10 +5,12 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import RepoCase, STUBS
 
-from sdlclib.gitops import CHECK_LOGS_CAP, Forge, Git, GitHubForge, LocalForge, end_of
+from sdlclib.gitops import CHECK_LOGS_CAP, Forge, Git, GitHubForge, LocalForge, end_of, trim_run_log
+from sdlclib.util import CmdResult
 
 
 def run_link(run_id, job=1):
@@ -29,6 +31,76 @@ def status_context(context, state="SUCCESS", url="https://ci.example.test/build/
 def failed(name, link="", workflow="CI"):
     """A failed entry as `checks` returns it."""
     return {"name": name, "bucket": "fail", "link": link, "workflow": workflow}
+
+
+IN_PROGRESS = "run %s is still in progress; logs will be available when it is complete"      # what gh says of a run that is not over
+
+
+class Waits:
+    """A `wait` for check_logs that does not sleep: it keeps the seconds it was asked for and answers `go` (False: stop)."""
+
+    def __init__(self, go=True):
+        self.asked, self.go = [], go
+
+    def __call__(self, seconds):
+        self.asked.append(seconds)
+        return self.go
+
+
+def log_rows(job, texts, bom=True):
+    """`texts` as `gh run view --log-failed` prints a job's log: every line behind its job, its step (gh cannot tell which,
+    so UNKNOWN STEP) and its timestamp, the first line of a log with a byte-order mark in front of the timestamp."""
+    return "".join("%s\tUNKNOWN STEP\t%s2026-10-14T04:39:%02d.%07dZ %s\n" % (job, "\ufeff" if bom and i == 0 else "", 33 + i // 10,
+                                                                              i % 10 * 900000 + 1454650, t)
+                   for i, t in enumerate(texts))
+
+
+def _group(title, body):
+    return ["##[group]" + title] + body + ["##[endgroup]"]
+
+
+# A made-up failed job in the shape of a real one: the setup (three groups of a dozen lines), the failing step with its error
+# lines and `##[error]Process completed with exit code 1.`, then `Post job cleanup.`, thirty or so lines of cleanup and
+# `Cleaning up orphan processes`.
+LOG_SETUP = (["Current runner version: '2.337.0'"]
+             + _group("Run actions/checkout@v4", ["with:", "  repository: acme/widgets", "  token: ***", "  ssh-strict: true",
+                                                  "  persist-credentials: true", "  clean: true", "  fetch-depth: 1", "  lfs: false",
+                                                  "  submodules: false", "  set-safe-directory: true"])
+             + _group("Run actions/setup-python@v5", ["with:", "  python-version: 3.12", "  check-latest: false", "  token: ***",
+                                                      "  update-environment: true", "  allow-prereleases: false",
+                                                      "Installed versions", "  Successfully set up CPython (3.12.7)",
+                                                      "  Python 3.12.7 is the default", "  pip 24.2 is the default pip"])
+             + _group("Run pip install -r requirements.txt", ["pip install -r requirements.txt", "shell: /usr/bin/bash -e {0}", "env:",
+                                                              "  pythonLocation: /opt/hostedtoolcache/Python/3.12.7/x64",
+                                                              "Collecting pytest==8.3.3 (from -r requirements.txt (line 1))",
+                                                              "  Downloading pytest-8.3.3-py3-none-any.whl (342 kB)",
+                                                              "  Using cached pluggy-1.5.0-py3-none-any.whl (20 kB)",
+                                                              "Installing collected packages: pluggy, iniconfig, pytest",
+                                                              "Successfully installed iniconfig-2.0.0 pluggy-1.5.0 pytest-8.3.3",
+                                                              "WARNING: Running pip as the 'root' user can result in broken permissions"]))
+LOG_FAILURE = (_group("Run make test", ["make test", "shell: /usr/bin/bash -e {0}"])
+               + ["python -m pytest -q", "..F" + " " * 71 + "[100%]", "=" * 35 + " FAILURES " + "=" * 34,
+                  "_" * 34 + " test_total " + "_" * 34, "    def test_total():", ">       assert total([1, 2]) == 4",
+                  "E       assert 3 == 4", "tests/test_pay.py:9: AssertionError", "FAILED tests/test_pay.py::test_total - assert 3 == 4",
+                  "1 failed, 2 passed in 0.31s", "make: *** [Makefile:4: test] Error 1",
+                  "##[error]tests/test_pay.py:9: AssertionError: assert 3 == 4", "##[error]Process completed with exit code 1."])
+LOG_CLEANUP = (["Post job cleanup.", "[command]/usr/bin/git version", "git version 2.47.1",
+                "Temporarily overriding HOME='/home/runner/work/_temp/5c1b6a7e' before making global git config changes",
+                "Adding repository directory to the temporary git global config as a safe directory",
+                "[command]/usr/bin/git config --global --add safe.directory /home/runner/work/widgets/widgets"]
+               + [line for key in ("core.sshCommand", "http.https://github.com/.extraheader", "http.proxy", "credential.helper",
+                                   "core.hooksPath", "url.insteadOf", "include.path")
+                  for line in ("[command]/usr/bin/git config --local --name-only --get-regexp %s" % key, key,
+                               "[command]/usr/bin/git config --local --unset-all %s" % key)]
+               + ["Removing credentials config '/home/runner/work/_temp/git-credentials-1f0d.config'",
+                  "Terminate orphan process: pid (2150) (python)", "Terminate orphan process: pid (2161) (pytest)",
+                  "Cleaning up orphan processes"])
+
+
+def failed_job_log(job="build"):
+    """(what gh prints for one failed job — the made-up log above, every line prefixed — the lines of it that say why it
+    failed, the lines of its cleanup)."""
+    return log_rows(job, LOG_SETUP + LOG_FAILURE + LOG_CLEANUP), LOG_SETUP + LOG_FAILURE, LOG_CLEANUP
 
 
 # (status, conclusion, bucket) of a CheckRun; a StatusContext is (state, bucket)
@@ -345,6 +417,27 @@ class StubRunView(GitHub):
             self.assertTrue(r.stderr.strip())
         self.assertEqual(self.gh("run", "view", "779", "--log-failed").returncode, 0)
 
+    def test_a_run_in_progress_refuses_its_log_as_often_as_it_was_told_to_and_prints_it_from_then_on(self):
+        self.db_set(run_logs={"777": "one\ntwo"}, run_in_progress={"777": 2})
+        for _ in range(2):
+            r = self.gh("run", "view", "777", "--log-failed")
+            self.assertEqual((r.returncode, r.stdout), (1, ""))
+            self.assertEqual(r.stderr.strip(), IN_PROGRESS % "777")
+        for _ in range(2):                                                                 # and it stays readable
+            r = self.gh("run", "view", "777", "--log-failed")
+            self.assertEqual((r.returncode, r.stdout), (0, "one\ntwo\n"))
+        self.assertEqual(self.repo.gh_db()["run_asked"], {"777": 4})                       # the calls so far, kept in the db
+
+    def test_only_the_runs_listed_in_run_in_progress_are_refused_and_a_number_is_an_id_too(self):
+        self.db_set(run_in_progress={"777": 1, "778": 1}, run_view_fail=[778])
+        self.assertEqual(self.gh("run", "view", "779", "--log-failed").returncode, 0)      # not listed: as ever
+        self.assertEqual(self.gh("run", "view", "777", "--log-failed").returncode, 1)
+        self.assertIn("run 777", self.gh("run", "view", "777", "--log-failed").stdout)     # the default log after the one refusal
+        r = self.gh("run", "view", "778", "--log-failed")                                  # run_view_fail comes first, and for good
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("HTTP 404", r.stderr)
+        self.assertNotIn("in progress", r.stderr)
+
     def test_only_the_failed_log_is_supported(self):
         self.assertNotEqual(self.gh("run", "view", "777").returncode, 0)
 
@@ -444,6 +537,114 @@ class Logs(GitHub):
         self.assertEqual(self.forge.check_logs([]), "")
         self.assertEqual(self.run_views(), [])
 
+    # ---------- what gh prints is the whole log of the job: the end of it that says why, without the prefix ----------
+    def test_the_log_of_a_failed_job_comes_without_its_cleanup_and_without_the_prefix_of_each_line(self):
+        raw, kept, cleanup = failed_job_log("build")
+        self.db_set(run_logs={"101": raw})
+        text = self.forge.check_logs([failed("build", run_link(101))])
+        self.assertEqual(text, "== build ==\n" + "\n".join(kept))
+        self.assertTrue(text.endswith("##[error]Process completed with exit code 1."), text[-200:])
+        for line in cleanup:
+            self.assertNotIn(line, text)
+        self.assertNotIn("\t", text)
+        self.assertNotRegex(text, r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d")
+        self.assertNotIn("UNKNOWN STEP", text)
+        self.assertNotIn("\ufeff", text)
+        self.assertEqual(text.splitlines()[1], "Current runner version: '2.337.0'")        # the line that had the byte-order mark
+
+    def test_the_lines_asked_for_are_the_last_of_what_is_left_after_the_cut(self):
+        raw, kept, cleanup = failed_job_log("build")
+        self.db_set(run_logs={"101": raw})
+        text = self.forge.check_logs([failed("build", run_link(101))], lines=10)
+        self.assertEqual(text, "== build ==\n" + "\n".join(kept[-10:]))                   # not the last ten of the cleanup
+
+    def test_a_run_with_two_failed_jobs_says_where_each_one_starts(self):
+        (raw_a, kept_a, _), (raw_b, kept_b, _) = failed_job_log("lint"), failed_job_log("test")
+        self.db_set(run_logs={"101": raw_a + raw_b})
+        text = self.forge.check_logs([failed("lint", run_link(101, 1)), failed("test", run_link(101, 2))], lines=200)
+        self.assertEqual(text, "== lint, test ==\n--- lint ---\n" + "\n".join(kept_a) + "\n--- test ---\n" + "\n".join(kept_b))
+
+    # ---------- a run that is still in progress is asked again ----------
+    def test_a_run_in_progress_is_asked_again_every_ten_seconds_until_its_log_is_there(self):
+        self.db_set(run_in_progress={"101": 2}, run_logs={"101": "boom"})
+        wait = Waits()
+        text = self.forge.check_logs([failed("build", run_link(101))], wait=wait)
+        self.assertEqual(text, "== build ==\nboom")
+        self.assertEqual(wait.asked, [10, 10])
+        self.assertEqual([c[2] for c in self.run_views()], ["101"] * 3)
+
+    def test_a_run_that_is_still_refused_after_thirty_seconds_has_no_log_like_any_other(self):
+        self.db_set(run_in_progress={"101": 5}, run_logs={"101": "boom"})
+        wait = Waits()
+        text = self.forge.check_logs([failed("build", run_link(101))], wait=wait)
+        self.assertEqual(text, "build — %s (no log)" % run_link(101))
+        self.assertEqual(wait.asked, [10, 10, 10])                                         # three pauses, four asks, no fifth
+        self.assertEqual(len(self.run_views()), 4)
+
+    def test_the_last_ask_gets_the_log_when_the_run_is_over_by_then(self):
+        self.db_set(run_in_progress={"101": 3}, run_logs={"101": "boom"})
+        wait = Waits()
+        self.assertEqual(self.forge.check_logs([failed("build", run_link(101))], wait=wait), "== build ==\nboom")
+        self.assertEqual((wait.asked, len(self.run_views())), ([10, 10, 10], 4))
+
+    def test_the_runs_in_progress_are_asked_again_together_with_one_wait_per_round(self):
+        self.db_set(run_in_progress={"101": 1, "102": 2}, run_logs={"101": "log of 101", "102": "log of 102"})
+        wait = Waits()
+        text = self.forge.check_logs([failed("build", run_link(101)), failed("lint", run_link(102))], wait=wait)
+        self.assertEqual(text, "== build ==\nlog of 101\n\n== lint ==\nlog of 102")
+        self.assertEqual(wait.asked, [10, 10])                                             # two rounds, not one pause per run
+        self.assertEqual([c[2] for c in self.run_views()], ["101", "102", "101", "102", "102"])   # 101 was done after the first
+
+    def test_only_the_runs_that_said_in_progress_are_asked_again(self):
+        self.db_set(run_in_progress={"101": 1}, run_view_fail=["103"], run_logs={"101": "log of 101", "102": "log of 102"})
+        wait = Waits()
+        text = self.forge.check_logs([failed("build", run_link(101)), failed("lint", run_link(102)), failed("t3", run_link(103))],
+                                     wait=wait)
+        self.assertEqual(text, "== build ==\nlog of 101\n\n== lint ==\nlog of 102\n\nt3 — %s (no log)" % run_link(103))
+        self.assertEqual(wait.asked, [10])
+        self.assertEqual([c[2] for c in self.run_views()], ["101", "102", "103", "101"])   # 102 read, 103 failed for good
+
+    def test_a_wait_that_says_stop_ends_the_asking_and_the_run_in_progress_has_no_log(self):
+        self.db_set(run_in_progress={"101": 1}, run_logs={"101": "boom", "102": "second log"})
+        wait = Waits(go=False)
+        text = self.forge.check_logs([failed("build", run_link(101)), failed("lint", run_link(102))], wait=wait)
+        self.assertEqual(text, "== lint ==\nsecond log\n\nbuild — %s (no log)" % run_link(101))    # what was read before stays
+        self.assertEqual(wait.asked, [10])
+        self.assertEqual([c[2] for c in self.run_views()], ["101", "102"])                 # and nothing is asked after the stop
+
+    def test_a_run_that_fails_for_another_reason_is_not_asked_again_and_nobody_waits(self):
+        self.db_set(run_view_fail=["101"])
+        wait = Waits()
+        self.assertEqual(self.forge.check_logs([failed("build", run_link(101))], wait=wait), "build — %s (no log)" % run_link(101))
+        self.assertEqual((wait.asked, len(self.run_views())), ([], 1))
+
+    def test_in_progress_is_known_by_what_gh_says_on_either_stream_and_nothing_else_is_asked_again(self):
+        for out, err in ((IN_PROGRESS % "101", ""), ("", IN_PROGRESS % "101"), ("", "gh: " + IN_PROGRESS % "101" + "\n")):
+            answers = [CmdResult(1, out, err), CmdResult(0, "boom\n", "")]
+            with mock.patch.object(self.forge, "_gh", side_effect=answers) as gh:
+                text = self.forge.check_logs([failed("build", run_link(101))], wait=Waits())
+            self.assertEqual((text, gh.call_count), ("== build ==\nboom", 2), (out, err))
+        for rc, out, err in ((1, "", "HTTP 502: Bad Gateway"), (124, "", "timed out after 60s"), (127, "", "gh: not found")):
+            with mock.patch.object(self.forge, "_gh", side_effect=[CmdResult(rc, out, err)]) as gh:      # a second ask would raise
+                text = self.forge.check_logs([failed("build", run_link(101))], wait=Waits())
+            self.assertEqual((text, gh.call_count), ("build — %s (no log)" % run_link(101), 1), (rc, err))
+
+    def test_without_a_wait_the_pause_is_a_plain_sleep(self):
+        self.db_set(run_in_progress={"101": 1}, run_logs={"101": "boom"})
+        with mock.patch("sdlclib.gitops.time") as clock:                                    # gitops' own clock: no real ten seconds
+            text = self.forge.check_logs([failed("build", run_link(101))])
+        self.assertEqual(text, "== build ==\nboom")
+        clock.sleep.assert_called_once_with(10)
+
+    def test_a_log_that_is_there_costs_no_pause(self):
+        self.db_set(run_logs={"101": "boom"})
+        wait = Waits()
+        with mock.patch("sdlclib.gitops.time") as clock:
+            self.assertEqual(self.forge.check_logs([failed("build", run_link(101))], wait=wait), "== build ==\nboom")
+            self.assertEqual(self.forge.check_logs([failed("build", run_link(101))]), "== build ==\nboom")
+        self.assertEqual(wait.asked, [])
+        clock.sleep.assert_not_called()
+
 
 class MergeState(GitHub):
     """merge_state, and the stub's branch that is behind its base: refused until it has been brought up to date."""
@@ -537,12 +738,102 @@ class EndOf(unittest.TestCase):
         self.assertEqual(end_of("one\ntwo", -5), "")
 
 
+def row(job, text, step="UNKNOWN STEP", at="2026-10-14T04:39:33.1454650Z"):
+    """One line of `gh run view --log-failed`: job, step and timestamp, each behind a tab, then the text."""
+    return "%s\t%s\t%s %s" % (job, step, at, text)
+
+
+class TrimRunLog(unittest.TestCase):
+    """trim_run_log: what a fix session reads of a failed job — no prefix on the lines and nothing from its post steps on."""
+    BOOM = "##[error]Process completed with exit code 1."
+
+    def test_the_job_step_and_time_in_front_of_a_line_go_and_the_byte_order_mark_with_them(self):
+        log = "\n".join([row("build", "Current runner version: '2.337.0'", at="\ufeff2026-10-14T04:39:33.1454650Z"),
+                         row("build", "##[group]Run make test", step="Run tests", at="2026-10-14T04:39:34.0000000Z"),
+                         row("build", self.BOOM, at="2026-10-14T04:39:35Z")])                # a step gh could name, a time without fractions
+        self.assertEqual(trim_run_log(log), "Current runner version: '2.337.0'\n##[group]Run make test\n" + self.BOOM)
+
+    def test_nothing_else_of_the_text_is_cleaned(self):
+        log = "\n".join([row("build", "##[group]Run make test"), row("build", "    indented  and  spaced  "), row("build", "a\tb"),
+                         row("build", ""), "build\tUNKNOWN STEP\t2026-10-14T04:39:33Z", row("build", "##[error]boom")])
+        self.assertEqual(trim_run_log(log).split("\n"), ["##[group]Run make test", "    indented  and  spaced  ", "a\tb", "", "",
+                                                         "##[error]boom"])
+
+    def test_a_line_without_the_prefix_is_kept_as_it_is_in_the_job_before_it(self):
+        odd = ["no prefix at all", "build\tonly one tab", "2026-10-14T04:39:33Z no job or step", "lint\tUNKNOWN STEP\tnot-a-time text",
+               "lint\tUNKNOWN STEP\t2026-10-14 04:39:33 not the format", ""]
+        log = "\n".join([row("build", "first")] + odd + [row("build", "last")])
+        self.assertEqual(trim_run_log(log).split("\n"), ["first"] + odd + ["last"])                 # one job: one block, no separator
+
+    def test_a_log_without_any_prefix_is_one_block_and_is_cut_at_its_cleanup_all_the_same(self):
+        self.assertEqual(trim_run_log("one\ntwo\nPost job cleanup.\nthree"), "one\ntwo")
+        self.assertEqual(trim_run_log("one\ntwo"), "one\ntwo")
+
+    def test_lines_before_the_first_prefixed_one_belong_to_a_job_with_no_name(self):
+        self.assertEqual(trim_run_log("\n".join(["a warning", row("build", "first")])), "---  ---\na warning\n--- build ---\nfirst")
+
+    def test_a_jobs_log_ends_where_its_post_steps_begin(self):
+        log = "\n".join(row("build", t) for t in ["setup", "FAILED test_x", self.BOOM, "Post job cleanup.",
+                                                  "[command]/usr/bin/git config --local --unset-all x", "Cleaning up orphan processes"])
+        self.assertEqual(trim_run_log(log), "setup\nFAILED test_x\n" + self.BOOM)
+
+    def test_what_runs_on_failure_comes_before_the_cleanup_and_stays(self):
+        after_error = ["##[group]Run actions/upload-artifact@v4", "With the provided path, there will be 3 files uploaded", "##[endgroup]"]
+        log = "\n".join(row("build", t) for t in ["setup", self.BOOM] + after_error + ["Post job cleanup.", "Cleaning up orphan processes"])
+        self.assertEqual(trim_run_log(log), "\n".join(["setup", self.BOOM] + after_error))
+
+    def test_each_job_is_cut_at_its_own_cleanup_and_a_separator_comes_before_each(self):
+        log = "\n".join([row("lint", "lint output"), row("lint", "##[error]lint failed"), row("lint", "Post job cleanup."),
+                         row("lint", "lint cleanup"), row("test", "test output"), row("test", self.BOOM),
+                         row("test", "Post job cleanup."), row("test", "test cleanup"), row("test", "Cleaning up orphan processes")])
+        self.assertEqual(trim_run_log(log), "--- lint ---\nlint output\n##[error]lint failed\n--- test ---\ntest output\n" + self.BOOM)
+
+    def test_a_log_of_one_job_has_no_separator(self):
+        self.assertEqual(trim_run_log("\n".join([row("build", "a"), row("build", "b")])), "a\nb")
+        self.assertEqual(trim_run_log(row("build", "a") + "\n"), "a")
+
+    def test_the_separator_names_the_job_as_gh_does(self):
+        log = "\n".join([row("build (ubuntu-latest, 3.12)", "a"), row("lint / ruff", "b")])
+        self.assertEqual(trim_run_log(log), "--- build (ubuntu-latest, 3.12) ---\na\n--- lint / ruff ---\nb")
+
+    def test_a_job_that_comes_back_later_is_a_block_of_its_own(self):
+        log = "\n".join([row("a", "a1"), row("b", "b1"), row("a", "a2"), row("a", "Post job cleanup."), row("a", "a cleanup")])
+        self.assertEqual(trim_run_log(log), "--- a ---\na1\n--- b ---\nb1\n--- a ---\na2")      # the first a is whole, the last is cut
+
+    def test_a_block_without_a_cleanup_is_kept_whole(self):
+        stops = [row("build", "setup"), row("build", "##[error]The operation was canceled.")]       # a job that timed out: its log just stops
+        self.assertEqual(trim_run_log("\n".join(stops)), "setup\n##[error]The operation was canceled.")
+        log = "\n".join(stops + [row("test", "test output"), row("test", "Post job cleanup."), row("test", "test cleanup")])
+        self.assertEqual(trim_run_log(log), "--- build ---\nsetup\n##[error]The operation was canceled.\n--- test ---\ntest output")
+
+    def test_the_first_cleanup_marker_cuts_whatever_follows_it(self):
+        log = "\n".join(row("build", t) for t in ["setup", "Post job cleanup.", "between", "Post job cleanup.", "end"])
+        self.assertEqual(trim_run_log(log), "setup")
+
+    def test_only_a_line_that_is_exactly_the_cleanup_marker_cuts(self):
+        near = ["Post job cleanup. (not yet)", " Post job cleanup.", "post job cleanup.", "Post job cleanup", "Post job cleanup.."]
+        log = "\n".join(row("build", t) for t in ["setup"] + near)
+        self.assertEqual(trim_run_log(log), "\n".join(["setup"] + near))                         # none of these is the marker: all kept
+        log = "\n".join(row("build", t) for t in ["setup"] + near + ["Post job cleanup.", "after"])
+        self.assertEqual(trim_run_log(log), "\n".join(["setup"] + near))
+
+    def test_lines_that_end_in_crlf_are_cut_the_same(self):
+        log = "\r\n".join([row("build", "boom"), row("build", "Post job cleanup."), row("build", "cleanup")]) + "\r\n"
+        self.assertEqual(trim_run_log(log), "boom")
+
+    def test_nothing_in_nothing_out(self):
+        self.assertEqual(trim_run_log(""), "")
+        self.assertEqual(trim_run_log("\n"), "")
+        self.assertEqual(trim_run_log(row("build", "Post job cleanup.")), "")
+
+
 class Local(RepoCase):
     def test_a_forge_that_has_no_ci_has_no_checks_and_no_merge_state(self):
         git = Git(self.repo.root)
         for forge in (LocalForge(git, "main"), Forge(git, "main")):
             self.assertEqual(forge.checks("a-first"), ("none", []))
             self.assertEqual(forge.check_logs([failed("build", run_link(1))]), "")
+            self.assertEqual(forge.check_logs([failed("build", run_link(1))], 60, Waits()), "")       # the same arguments as GitHub's
             self.assertEqual(forge.merge_state("a-first"), "")
         self.assertEqual(self.repo.gh_db().get("calls", []), [])                           # and gh was never asked
 

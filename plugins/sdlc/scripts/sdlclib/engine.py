@@ -1106,7 +1106,8 @@ class Engine:
         """The PR's checks failed after the shell gate had passed: the change is not done. The doc goes back to `built`, so
         whatever fixes it ships through the gate again. An interactive ship hands the brief to the session that called
         (Outcome.FIX, the caller's own round limit applies); the loop runs a fix session with it — up to `loop.fix_rounds`
-        of them, counted across gates in the item's `ci_rounds` — and a person gets the item after that."""
+        of them, counted across gates in the item's `ci_rounds` — and a person gets the item after that. A stop or pause
+        while the brief waits for a log raises StopRun before the round is counted."""
         failed = [c for c in checks if c.get("bucket") == "fail"]
         d = self.doc(slug)
         if d is not None and d.status != "built":
@@ -1115,19 +1116,23 @@ class Engine:
             self.git("add", "--", os.path.relpath(self.doc_path(slug), self.root))
             self.git("commit", "-q", "--no-verify", "-m", "sdlc(%s): PR checks failed — back to built" % slug)
         if not fix:
-            self.last_brief = self.ci_brief(failed)
+            self.last_brief = self.ci_brief(failed, interactive=True)
             return Outcome.FIX
         rounds = int(st.item(self.root, slug).get("ci_rounds", 0) or 0)
         if rounds >= self.fix_rounds:
             names = check_names(failed)
             return self.needs_human(slug, ["the PR's checks still fail after %d fix round(s): %s" % (rounds, names) if self.fix_rounds
                                            else "the PR's checks failed: %s" % names])
+        brief = self.ci_brief(failed)        # raises StopRun when a stop or pause came while a log was waited for
         st.update(self.root, slug, ci_rounds=rounds + 1)
-        return self.session(slug, "fix", extra=self.ci_brief(failed), fix_round=rounds + 1)
+        return self.session(slug, "fix", extra=brief, fix_round=rounds + 1)
 
-    def ci_brief(self, failed: List[Dict[str, str]]) -> str:
-        """What a fix session is told when the PR's checks failed: which, where to read them, the end of their logs — within
-        CI_BRIEF_CAP characters, the logs giving way first."""
+    def ci_brief(self, failed: List[Dict[str, str]], interactive: bool = False) -> str:
+        """What a fix session is told when the PR's checks failed: which, where to read them, the end of each failed job's log
+        (cut before the job's cleanup, without the per-line prefix) — within CI_BRIEF_CAP characters, the logs giving way
+        first. A log that is not there yet is waited for like the checks are: with the loop's interruptible sleep, and a stop
+        or pause meanwhile stops the run (StopRun) — the doc is `built` already, so the next run gates and ships it again.
+        An interactive ship waits with a plain sleep that nothing stops."""
         lines = ["The PR's checks failed on GitHub after the shell gate had passed (they run on GitHub, not here):"]
         for c in failed[:12]:
             wf = " (workflow %s)" % c["workflow"][:80] if c.get("workflow") else ""
@@ -1138,7 +1143,15 @@ class Engine:
                 "test, and never edit `.github/workflows/` to get green. Commit, then print SDLC_FIXED. A failure that is not "
                 "this change's (the CI environment, a missing secret, a flaky external service) cannot be fixed from here: print "
                 "SDLC_FIX_BLOCKED <why> instead.")
-        logs = self.forge.check_logs(failed)
+        stopped = False
+
+        def wait(seconds: float) -> bool:
+            nonlocal stopped
+            stopped = not self.sleep(seconds)
+            return not stopped
+        logs = self.forge.check_logs(failed, wait=None if interactive else wait)
+        if stopped:
+            raise StopRun(self.stopping or "paused")
         head = "\n".join(lines)
         if logs:
             fence = "```"

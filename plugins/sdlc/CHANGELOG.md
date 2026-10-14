@@ -3,6 +3,12 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-10-14
+
+### Fixed
+- The fix brief for failed PR checks now carries why the check failed. `gh run view --log-failed` prints the whole log of a failed job (gh 2.101.0 cannot match the lines to steps and marks every one `UNKNOWN STEP`), so the end of it was the job's cleanup: on a real failed run, 33 of the 42 lines a fix session got were post-job steps. The engine now cuts each job's log at `Post job cleanup.` (steps that run on failure come before it and stay), drops the job, step and time in front of every line, and marks where each job starts when a run has more than one.
+- A run whose log GitHub does not give yet ("still in progress", possible for a few seconds after its last check finished) is asked again after 10 seconds, up to three times, instead of going into the brief without its log. A stop or pause of the loop during that wait stops the run before a fix session starts; the doc is `built` already, so the next run gates and ships it again.
+
 ## [1.1.0] - 2026-10-14
 
 The loop now picks each session's effort itself, skips a self-check that would only repeat one item's own review, and on GitHub waits for the pull request's checks before it merges. It also keeps its promise about `SDLC_FIX_BLOCKED`, marks a continued window in the audit log, and no longer lets a refused start hide the last stop.

@@ -26,7 +26,9 @@ is CLEAN unless the head branch is in the db list "behind": then it is BEHIND, a
 branch is out of date" — until the head's tip on origin has changed since the first refused merge (the tip seen then is kept
 in "behind_seen"); the head then leaves the list and the merge goes through. `run view <id> --log-failed` prints
 db["run_logs"][id] when it has one, else a few lines that name the run and end with an error line; an id in the db list
-"run_view_fail" makes it fail instead."""
+"run_view_fail" makes it fail instead. db["run_in_progress"] = {id: N} is a run that is still being finalized: its first N
+`run view <id> --log-failed` calls print gh's "run <id> is still in progress; logs will be available when it is complete" to
+stderr and exit 1 (the calls so far are counted in db["run_asked"]), and the log is printed from the next one on."""
 import json
 import os
 import subprocess
@@ -192,6 +194,13 @@ if args[:2] == ["run", "view"] and len(args) > 2 and "--log-failed" in args:
     if rid in [str(i) for i in db.get("run_view_fail", [])]:
         sys.stderr.write("failed to get run log: HTTP 404: Not Found (run %s)\n" % rid)
         sys.exit(1)
+    if rid in [str(i) for i in db.get("run_in_progress", {})]:
+        asked = db.setdefault("run_asked", {})
+        asked[rid] = asked.get(rid, 0) + 1
+        save(db)
+        if asked[rid] <= int(db["run_in_progress"].get(rid, 0)):
+            sys.stderr.write("run %s is still in progress; logs will be available when it is complete\n" % rid)
+            sys.exit(1)
     text = db.get("run_logs", {}).get(rid)
     if text is None:
         text = ("build\tRun tests\t2026-10-14T10:00:00.0000000Z ##[group]Run make test\n"

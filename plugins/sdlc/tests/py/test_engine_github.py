@@ -15,7 +15,7 @@ from sdlclib import state as st
 from sdlclib.engine import CI_BRIEF_CAP, Outcome, StopRun, check_names
 from sdlclib.enqueue import EnqueueError
 from sdlclib.events import read_events
-from test_checks import check_run, run_link, status_context
+from test_checks import check_run, failed_job_log, run_link, status_context
 
 
 def clone_status(case):
@@ -910,6 +910,95 @@ class PrChecks(ChecksBase):
         self.assertIn("\nstatus: done\n", self.repo.origin_show("main", "work/a-first.md"))
         self.assertIsNotNone(self.repo.origin_show("main", "FIXED-a-first"))                          # the fix is in what was merged
 
+    def test_the_fix_session_is_told_the_end_of_the_failed_job_without_its_cleanup_or_the_prefix_of_each_line(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", conclusion="FAILURE", workflow="CI")], [check_run("build")])
+        raw, kept, cleanup = failed_job_log("build")                                                   # gh prints the whole job, every line prefixed
+        self.db_set(run_logs={"100": raw})
+        self.assertEqual(self.fast(max_items=1).run(), 0)
+        (prompt,) = self.fix_prompts()
+        shown = prompt.split("The end of what they printed:\n```\n", 1)[1].split("\n```\n", 1)[0]
+        self.assertEqual(shown, "== build ==\n" + "\n".join(kept))
+        self.assertTrue(shown.endswith("##[error]Process completed with exit code 1."), shown[-200:])
+        for line in cleanup:
+            self.assertNotIn(line, shown)
+        self.assertNotIn("\t", shown)
+        self.assertNotRegex(shown, r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d")
+        self.assertNotIn("\ufeff", shown)
+
+    def test_a_run_still_in_progress_when_the_fix_brief_is_made_is_waited_for_with_the_loops_sleep(self):
+        self.repo.add_items("a-first")
+        self.script("a-first", [check_run("build", conclusion="FAILURE", workflow="CI")], [check_run("build")])
+        raw, kept, _ = failed_job_log("build")
+        self.db_set(run_logs={"100": raw}, run_in_progress={"100": 2})
+        e = self.fast(max_items=1)
+        naps, loops_sleep = [], e.sleep
+
+        def sleep(seconds):
+            if seconds == 10:                                                  # the wait for the log: counted, not slept
+                naps.append(seconds)
+                return True
+            return loops_sleep(seconds)
+        e.sleep = sleep
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(naps, [10, 10])
+        self.assertEqual(len([c for c in self.gh_calls() if c.startswith("run view")]), 3)               # refused twice, then read
+        (prompt,) = self.fix_prompts()
+        self.assertIn("\n".join(kept[-4:]), prompt)                                                      # the log is in the brief after all
+        self.assertNotIn("(no log)", prompt)
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+
+    def stopped_while_the_log_is_waited_for(self, stop):
+        """The loop's first run on an item whose PR fails in a run that is not over yet: gh refuses the log once, so the fix
+        brief waits ten seconds — and `stop(engine)` happens during that wait. Checked here is what holds for either way of
+        stopping: no fix session, no round used, the doc back at `built` and committed, the PR still open. Returns the engine."""
+        self.repo.add_items("a-first")
+        failure = [check_run("build", conclusion="FAILURE", workflow="CI")]
+        self.script("a-first", failure, failure, [check_run("build")])        # each run's look sees it fail; the look after the fix, not
+        self.db_set(run_logs={"100": failed_job_log("build")[0]}, run_in_progress={"100": 1})
+        e = self.fast(max_items=1)
+        loops_sleep = e.sleep
+
+        def sleep(seconds):
+            if seconds == 10:                                                  # the wait for the log: somebody stops the loop meanwhile
+                stop(e)
+            return loops_sleep(seconds)                                        # the real one, which sees it and answers False at once
+        e.sleep = sleep
+        self.assertEqual(e.run(), 0)
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build"])            # no fix session
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec.get("ci_rounds", 0), 0)                                                   # and no round used
+        self.assertNotIn("state", rec)                                                                 # a stop: nobody has to look, nothing failed
+        self.assertNotIn("failures", rec)
+        self.assertEqual(self.repo.status_of("a-first", "sdlc/a-first"), "built")                      # back to built …
+        self.assertEqual(self.repo.git("log", "-1", "--format=%s", "sdlc/a-first"),                    # … and committed
+                         "sdlc(a-first): PR checks failed — back to built")
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "OPEN")
+        self.assertEqual(len([c for c in self.gh_calls() if c.startswith("run view")]), 1)             # asked once, never after the stop
+        return e
+
+    def test_a_pause_while_the_fix_brief_waits_for_a_log_starts_no_fix_session_and_the_next_run_goes_on_to_fix_it(self):
+        e = self.stopped_while_the_log_is_waited_for(lambda e: self.repo.write(".sdlc/state/pause", ""))
+        self.assertIn("stop=paused", self.log(e))
+        self.assertEqual([c["decision"] for c in self.events("loop.checks")], ["fail"])
+        os.remove(self.repo.path(".sdlc/state/pause"))                                                  # the person lets it go on
+        e2 = self.fast(max_items=1)
+        seen = self.watch_fix(e2)
+        self.assertEqual(e2.run(), 0)
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build", "a-first:fix"])
+        (s,) = seen
+        self.assertEqual((s["ci_rounds"], s["round"]), (1, 1))                                         # the first fix round, not the second
+        self.assertIn("\n".join(failed_job_log("build")[1][-4:]), self.fix_prompts()[0])               # with the log that was not there before
+        self.assertEqual([g["decision"] for g in self.events("loop.gate")], ["pass", "pass", "pass"])  # before the stop, after it, after the fix
+        self.assertEqual([c["decision"] for c in self.events("loop.checks")], ["fail", "fail", "pass"])
+        self.assertEqual(len(self.repo.gh_db()["prs"]), 1)                                              # the same PR all along
+        self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
+        self.assertNotIn("ci_rounds", self.repo.items_state()["a-first"])                              # a merge clears the count
+
+    def test_a_stop_request_while_the_fix_brief_waits_for_a_log_starts_no_fix_session_either(self):
+        e = self.stopped_while_the_log_is_waited_for(lambda e: setattr(e, "stopping", "stop requested"))
+        self.assertIn("stop=stop requested", self.log(e))
+
     def test_checks_that_keep_failing_end_with_a_person_after_the_fix_rounds_and_the_pr_is_flagged(self):
         self.repo.add_items("a-first")
         self.script("a-first", [check_run("build", conclusion="FAILURE"), check_run("lint")])
@@ -1204,6 +1293,21 @@ class PrChecks(ChecksBase):
         self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
         self.assertIn("\nstatus: done\n", self.repo.origin_show("main", "work/a-first.md"))
         self.assertEqual(self.repo.origin_show("main", "src/fix.txt"), "fixed\n")
+
+    def test_an_interactive_ship_waits_for_a_log_still_in_progress_with_a_plain_sleep(self):
+        self.built_branch()
+        self.script("a-first", [check_run("build", conclusion="FAILURE")])
+        raw, kept, _ = failed_job_log("build")
+        self.db_set(run_logs={"100": raw}, run_in_progress={"100": 1})
+        e = self.fast()
+        e.stopping = "stop requested"                                          # only a loop has one
+        with mock.patch.object(e, "sleep", side_effect=AssertionError("the loop's sleep")):
+            with mock.patch("sdlclib.gitops.time") as clock:                   # gitops' own clock: no real ten seconds
+                code, brief = e.ship_now("a-first")
+        self.assertEqual(code, 1)
+        clock.sleep.assert_called_once_with(10)
+        self.assertIn("\n".join(kept[-4:]), brief)
+        self.assertNotIn("(no log)", brief)
 
     def test_an_interactive_ship_that_runs_out_of_time_waiting_exits_2_with_the_reason(self):
         self.built_branch()
@@ -1525,12 +1629,73 @@ class Timing(RepoCase):
             self.assertEqual(e.checks_limit(), seconds, repr(value))
 
 
+class BriefWaits(ChecksBase):
+    """The wait for a log that is not there yet (its run still in progress), inside the brief a fix session gets."""
+    FAILED = [{"name": "build", "bucket": "fail", "link": run_link(100), "workflow": "CI"}]
+
+    def setUp(self):
+        super().setUp()
+        self.db_set(run_in_progress={"100": 1}, run_logs={"100": "boom"})
+        self.e = self.fast()
+
+    def run_views(self):
+        return [c for c in self.gh_calls() if c.startswith("run view")]
+
+    def test_the_loop_waits_with_its_own_sleep_and_the_log_is_in_the_brief(self):
+        naps = []
+        self.e.sleep = lambda seconds: naps.append(seconds) or True
+        brief = self.e.ci_brief(self.FAILED)
+        self.assertEqual(naps, [10])
+        self.assertIn("\n```\n== build ==\nboom\n```\n", brief)
+        self.assertEqual(len(self.run_views()), 2)
+
+    def test_a_stop_request_while_the_log_is_waited_for_stops_the_run_and_nothing_is_asked_after_it(self):
+        self.e.stopping = "stop requested"                                     # the loop's sleep answers False at once
+        with self.assertRaises(StopRun) as cm:
+            self.e.ci_brief(self.FAILED)
+        self.assertEqual((cm.exception.reason, cm.exception.code), ("stop requested", 0))
+        self.assertEqual(len(self.run_views()), 1)                              # asked once and refused, never again
+
+    def test_a_pause_while_the_log_is_waited_for_stops_the_run_the_same_way(self):
+        self.repo.write(".sdlc/state/pause", "")
+        with self.assertRaises(StopRun) as cm:
+            self.e.ci_brief(self.FAILED)
+        self.assertEqual((cm.exception.reason, cm.exception.code), ("paused", 0))
+        self.assertEqual(len(self.run_views()), 1)
+
+    def test_a_stop_request_is_not_looked_at_when_no_log_has_to_be_waited_for(self):
+        self.db_set(run_in_progress={})                                         # the log is there at the first ask
+        self.e.stopping = "stop requested"
+        self.assertIn("\n```\n== build ==\nboom\n```\n", self.e.ci_brief(self.FAILED))
+        self.repo.write(".sdlc/state/pause", "")
+        self.assertIn("\n```\n== build ==\nboom\n```\n", self.e.ci_brief(self.FAILED))
+
+    def test_an_interactive_brief_waits_with_a_plain_sleep_whatever_the_loops_flags_say(self):
+        self.e.stopping = "stop requested"
+        with mock.patch.object(self.e, "sleep", side_effect=AssertionError("the loop's sleep")):
+            with mock.patch("sdlclib.gitops.time") as clock:
+                brief = self.e.ci_brief(self.FAILED, interactive=True)
+        clock.sleep.assert_called_once_with(10)
+        self.assertIn("\n```\n== build ==\nboom\n```\n", brief)
+
+    def test_the_forge_is_handed_the_loops_sleep_and_for_an_interactive_ship_none(self):
+        waits = []
+        self.e.forge.check_logs = lambda failed, lines=60, wait=None: waits.append(wait) or ""
+        self.e.ci_brief(self.FAILED)
+        self.e.ci_brief(self.FAILED, interactive=True)
+        self.assertIsNone(waits[1])                                             # the forge's own plain sleep, which nothing stops
+        asked = []
+        self.e.sleep = lambda seconds: asked.append(seconds) or len(asked) < 2
+        self.assertEqual([waits[0](10), waits[0](5)], [True, False])           # it sleeps the loop's way and answers as that sleep does
+        self.assertEqual(asked, [10, 5])
+
+
 class Brief(RepoCase):
     """What a fix session is told about the failed checks."""
 
     def brief(self, failed, logs):
         e = self.repo.engine()
-        e.forge.check_logs = lambda f, lines=60: logs
+        e.forge.check_logs = lambda f, lines=60, wait=None: logs
         return e.ci_brief(failed)
 
     def test_the_sentence_the_checks_and_the_log_in_a_fenced_block_then_what_to_do(self):

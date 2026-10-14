@@ -10,7 +10,8 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .util import CmdResult, run, tail
 
@@ -238,8 +239,11 @@ class Forge:
         forge with CI to ask has any checks: here there is nothing to wait for."""
         return "none", []
 
-    def check_logs(self, failed: List[Dict[str, str]], lines: int = 60) -> str:
-        """What the failed checks printed, for the session that has to fix them."""
+    def check_logs(self, failed: List[Dict[str, str]], lines: int = 60, wait: Optional[Callable[[float], bool]] = None) -> str:
+        """What the failed checks printed, for the session that has to fix them: the end of each failed job's log, cut before
+        the job's cleanup, without the per-line prefix. A log that is not there yet (its run is still in progress) is asked
+        for again after a pause; `wait(seconds)` makes the pause and answers False when the caller is stopping, which ends the
+        waiting. None: a plain sleep."""
         return ""
 
     def merge_state(self, slug: str) -> str:
@@ -297,8 +301,13 @@ class LocalForge(Forge):
 
 
 RUN_LINK = re.compile(r"/actions/runs/(\d+)")
+# a line of `gh run view --log-failed`: job, step, timestamp (the first line of a log has a byte-order mark before it), text
+RUN_LOG_LINE = re.compile(r"^([^\t]*)\t([^\t]*)\t\ufeff?(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) ?(.*)$")
+POST_JOB_STEPS = "Post job cleanup."      # where a job's log turns to its post steps
 CHECK_LOG_RUNS = 3          # runs whose log is read: every `gh run view` is a slow call
 CHECK_LOGS_CAP = 6000       # characters of CI output a fix brief carries
+CHECK_LOG_WAIT = 10         # seconds before a run that is still in progress is asked for its log again …
+CHECK_LOG_RETRIES = 3       # … and how many times it is: 30 seconds in all
 
 
 def _check_entry(raw: dict) -> Dict[str, str]:
@@ -328,6 +337,35 @@ def end_of(text: str, n: int) -> str:
     if text[len(text) - n - 1] != "\n" and "\n" in cut:
         cut = cut.split("\n", 1)[1]
     return cut
+
+
+def trim_run_log(text: str) -> str:
+    """What `gh run view --log-failed` printed, cut down to what says why the job failed. gh prints the whole log of each
+    failed job, not only the failed step — it cannot match lines to steps — as `job<TAB>step<TAB>timestamp text`. The prefix
+    goes (a line without one is kept as it is, in the job before it), and so does a job's log from its first
+    `Post job cleanup.` on: the post steps and "Complete job" never say why it failed, and the steps that run on failure
+    come before that line. A log of more than one job has a `--- <job> ---` line before each."""
+    blocks: List[Tuple[str, List[str]]] = []        # (job, its lines): consecutive lines of one job are one block
+    job = ""
+    for line in text.splitlines():
+        m = RUN_LOG_LINE.match(line)
+        if m:
+            job, line = m.group(1), m.group(4)
+        if not blocks or blocks[-1][0] != job:
+            blocks.append((job, []))
+        blocks[-1][1].append(line)
+    out: List[str] = []
+    for job, block in blocks:
+        if len(blocks) > 1:
+            out.append("--- %s ---" % job)
+        out.extend(block[:block.index(POST_JOB_STEPS)] if POST_JOB_STEPS in block else block)
+    return "\n".join(out)
+
+
+def _plain_sleep(seconds: float) -> bool:
+    """The pause of a caller that nothing can stop: sleep, then go on."""
+    time.sleep(seconds)
+    return True
 
 
 class GitHubForge(Forge):
@@ -482,20 +520,42 @@ class GitHubForge(Forge):
         buckets = {c["bucket"] for c in found}
         return ("fail" if "fail" in buckets else "pending" if "pending" in buckets else "pass"), found
 
-    def check_logs(self, failed: List[Dict[str, str]], lines: int = 60) -> str:
-        """The tail of the log of each failed Actions run (its jobs share one log, and every `gh run view` is a slow call, so
-        at most CHECK_LOG_RUNS of them), headed with the failed checks' names; any other check by name and link. Within
-        CHECK_LOGS_CAP characters: a log's end says why it failed, so what goes is the front of each."""
-        logs: Dict[str, str] = {}            # run id -> the tail of its failed-step log ("" when it could not be read)
+    def check_logs(self, failed: List[Dict[str, str]], lines: int = 60, wait: Optional[Callable[[float], bool]] = None) -> str:
+        """For each failed Actions run — its jobs share one log, and every `gh run view` is a slow call, so at most
+        CHECK_LOG_RUNS of them — the end of each failed job's log, cut before the job's cleanup and without the per-line
+        prefix (`trim_run_log`), headed with the failed checks' names; any other check by name and link. gh refuses the log
+        of a run that is still in progress, which a run can be for a few seconds after its last check finished: such runs are
+        asked again together after CHECK_LOG_WAIT seconds, CHECK_LOG_RETRIES times at most (`wait`: see Forge.check_logs),
+        and one that stays refused is listed as having no log, like any log that cannot be read. Within CHECK_LOGS_CAP
+        characters: a log's end says why it failed, so what goes is the front of each."""
+        if wait is None:
+            wait = _plain_sleep
+        runs: List[str] = []                 # the runs whose log is read, in the order their checks come
+        for c in failed:
+            m = RUN_LINK.search(c.get("link") or "")
+            if m and m.group(1) not in runs and len(runs) < CHECK_LOG_RUNS:
+                runs.append(m.group(1))
+        logs: Dict[str, str] = {rid: "" for rid in runs}     # run id -> the end of its log ("" when it could not be read)
+        asking = runs
+        for attempt in range(CHECK_LOG_RETRIES + 1):
+            if attempt and not wait(CHECK_LOG_WAIT):
+                break
+            in_progress: List[str] = []
+            for rid in asking:
+                r = self._gh("run", "view", rid, "--log-failed", timeout=60)
+                if r.ok:
+                    logs[rid] = tail(trim_run_log(r.out), lines)
+                elif "still in progress" in r.text():
+                    in_progress.append(rid)
+            asking = in_progress
+            if not asking:
+                break
         names: Dict[str, List[str]] = {}     # run id -> the failed checks that ran in it
         rest: List[str] = []
         for c in failed:
             name, link = (c.get("name") or "check")[:120], c.get("link") or ""
             m = RUN_LINK.search(link)
             rid = m.group(1) if m else ""
-            if rid and rid not in logs and len(logs) < CHECK_LOG_RUNS:
-                r = self._gh("run", "view", rid, "--log-failed", timeout=60)
-                logs[rid] = tail(r.out, lines) if r.ok else ""
             if logs.get(rid):
                 names.setdefault(rid, []).append(name)
             else:
