@@ -236,4 +236,6 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
     - engine 475 tests on Python 3.12 and 3.9
     - `plugin validate --strict` and the marketplace
   - The limitations still open are listed under Known limitations.
-- [ ] P8 hand-off to the user: migration notes per repo (pilot, solar-next, …), merge to main, push and update only on the user's go-ahead
+- [x] P8 hand-off to the user: migration notes per repo (pilot, solar-next, …), merge to main, push and update only on the user's go-ahead
+  - A survey of the six 0.x repositories (init run in throwaway clones only) found 14 migration defects; all are fixed. The per-repository notes went to the user, not into this repository: they hold details of a company repository.
+  - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.0.0 in both profiles.
