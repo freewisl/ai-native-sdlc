@@ -311,4 +311,5 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
     - scripts 91
     - engine 779 tests on Python 3.12 and 3.9
     - `plugin validate --strict` and the marketplace
-- [ ] 1.1.1 release: merge to main, push and update on the user's go-ahead
+- [x] 1.1.1 release: merge to main, push and update on the user's go-ahead
+  - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.1.1 in both profiles.
