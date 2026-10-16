@@ -12,16 +12,19 @@ Release 1.2 comes from six audits of 1.1.2: the merge gate and git plumbing, the
 New key: `check.public_site` (default `true`). Every other change keeps the existing settings.
 
 ### Fixed — the loop
-- **The review must really run.** The engine reads each build and fix session's stream for an `Agent`/`Task` call to `sdlc-reviewer`. A build without one is a fixable gate failure, `the review did not run in a fresh context (no sdlc-reviewer subagent call in the build session) — run references/review.md steps 2–4 and record the tally`, so a fix session runs the review. Items built before 1.2 are not held to it. The go skill now says plainly that a loop build session is top level and launches the reviewer itself.
+- **The review must really run.** The engine reads each build and fix session's stream for an `Agent`/`Task` call to `sdlc-reviewer`. A build without one is a fixable gate failure, `the review did not run in a fresh context (no sdlc-reviewer subagent call in the build session) — run references/review.md steps 2–4 and record the tally`, so a fix session runs the review. Items built before 1.2 are not held to it, nor is a build that 1.1.x started and 1.2 continues. The go skill now says plainly that a loop build session is top level and launches the reviewer itself.
 - **Nothing on the item branch is overwritten.**
   - Before it works on an item, the loop fast-forwards to origin's `sdlc/<slug>`, so a person's fix on a needs-human PR or a reviewer's commit on a team design PR comes in first.
   - When both sides have commits the other lacks, the item goes to a person: `sdlc/<slug> on origin has commits this checkout does not have, and the other way round — merge them by hand, then retry`.
   - Every push is leased on the exact commit the loop last saw on origin (none, for a new branch). A lost lease goes to a person as `remote branch changed: …`.
   - A merge passes `--match-head-commit` with the pushed commit and is confirmed by PR number. Pull requests from forks are ignored, and an open PR wins over an old merged one with the same head name.
-- **Separate clones no longer take the same item.** On GitHub the loop holds an item with the ref `refs/sdlc/claims/<slug>` on origin. The push that creates it is leased on "no such ref", so one clone wins. The claim names only the git user, the checkout's folder and the time. It is renewed at each session and every five minutes while the loop waits for checks, released when the item is left, and taken over after `2 × loop.session_max_minutes` without renewal. A held item is skipped (`SKIP    <slug> — held by <user> in <folder> since <time>`). When origin cannot be asked, the loop warns once and goes on without a claim. Worktrees of one clone already used claim files; these are now created with `O_EXCL`, so of eight processes racing for one item exactly one wins.
+  - A `done` item that takes commits from origin (a person's fix after a merge that failed) goes back to `built`, so the gate runs on them before anything ships (`REGATE`). `sdlc.py ship` does the same.
+  - In team mode, a reviewer's commit on the design PR before the approval is part of the approved design. It no longer sends the build to a person as a design change.
+- **Separate clones no longer take the same item.** On GitHub the loop holds an item with the ref `refs/sdlc/claims/<slug>` on origin. The push that creates it is leased on "no such ref", so one clone wins. The claim names only the git user, the checkout's folder and the time. It is renewed at each session, every five minutes while the loop waits for checks and at least every half hour while it waits out a usage limit, released when the item is left, and taken over after `2 × loop.session_max_minutes` without renewal. A held item is skipped (`SKIP    <slug> — held by <user> in <folder> since <time>`). When origin cannot be asked, the loop warns once and goes on without a claim. Worktrees of one clone already used claim files; these are now created with `O_EXCL`, so of eight processes racing for one item exactly one wins.
+- **Loop sessions do not inherit a person's switches.** `RELEASE_APPROVAL` (or the name in `protect.deploy_approval_env`) and `SDLC_ALLOW_TEST_EDIT` in the shell that started the loop are no longer passed to its sessions, where they unlocked deploys and the test lock for unattended work. 1.1.2 passed them too.
 - **Old branches are brought up to date.**
   - Before a design or build session, a branch behind the default branch gets the default branch merged in. On a conflict the merge is undone, and the session's prompt names the conflicting files and says to merge first.
-  - A `ready` item whose branch was cut before its work doc existed (0.x, or an earlier item of the same name) keeps that branch as `sdlc-old/<slug>` and starts again from the default branch. The design session is told where the earlier work is. The first push replaces origin's branch, leased on its old commit, and the log says so (`FRESH`, `REPLACE`).
+  - A `ready` item whose branch was cut before its work doc existed (0.x, or an earlier item of the same name) keeps that branch as `sdlc-old/<slug>` and starts again from the default branch. The design session is told where the earlier work is. The first push replaces origin's branch, leased on its old commit, and the log says so (`FRESH`, `REPLACE`). The old branch's open PR is closed with a comment before that push and a new PR is opened, so its old approvals do not count for the new work. A run that stops before the first push no longer sends the next attempt to a person as a divergence.
 - **Run-end reasons are true.** They are computed over the `--items` selection when there is one:
   - `queue empty`
   - `selected items finished`, with ` · N other item(s) not selected` when the queue has more
@@ -29,7 +32,7 @@ New key: `check.public_site` (default `true`). Every other change keeps the exis
 
   An `--items` name that is no work doc refuses the start: `no work doc named x`.
 - **A network blip no longer stops the loop.** A failed fetch is `WARN    fetch failed: …; going on with what is here`, said once per run. The loop stops only when the default branch has really diverged from origin's.
-- **The self-check cleans up after itself.** Only new `work/*.md` files survive. Every other change the session made is undone: edits to existing work docs or `.sdlc/config.json`, staged files, and new files and directories (names read NUL-separated). An edited work doc used to stay behind and stop the next pass with "the working tree is not clean". A self-check that did not finish (usage limit, cap, error) is not counted, keeps its range for the next check, and sends a usage limit through the same handling as an item's session. `loop.self_check_max_items: 0` now means no `ready` findings; it used to mean three.
+- **The self-check cleans up after itself.** Only new `work/*.md` files survive. Every other change the session made is undone: edits to existing work docs or `.sdlc/config.json`, staged files, and new files and directories (names read NUL-separated). An edited work doc used to stay behind and stop the next pass with "the working tree is not clean". A commit the session made on the default branch is taken back as well. A self-check that did not finish (usage limit, cap, error) is not counted, keeps its range for the next check (after two failures that were no usage limit, the run stops trying), and sends a usage limit through the same handling as an item's session. `loop.self_check_max_items: 0` now means no `ready` findings; it used to mean three.
 - **Worktrees.** An item whose branch is checked out in another worktree is skipped for this pass (`SKIP    <slug> — checked out in <path>`) instead of stopping the run.
 - **Smaller loop fixes.**
   - A PR-checks fix round is counted when its fix session returns, so a stop or a service error does not use one.
@@ -57,6 +60,7 @@ New key: `check.public_site` (default `true`). Every other change keeps the exis
   - Rust `#[test]`, `#[tokio::test]` and Swift `func test…` count as test cases.
   - A test file renamed to another test path is compared by counts. A test renamed to a non-test path counts as deleted.
 - **Work docs.** A byte-order mark before the front matter is accepted. `depends_on` written as a YAML block list is read. With two `## Review` sections, the last tally counts and the doc is reported.
+- **Settings.** A list setting written as one string (`"generated_paths": "dist/**"`) is read as a list of one. The gate, the protected-path check and the REVIEW.md that init writes used to take it apart character by character.
 
 ### Fixed — init
 - **0.x workflow lines.** A CLAUDE.md, AGENTS.md or project skill that still tells sessions to merge PRs themselves (`gh pr merge`), keep the queue in `intent/` or read `spec.md`/`plan.md` is named with file and line, as an init NOTE and a `--check` WARN. Init does not edit those lines. Meanwhile the hooks block `gh pr merge` during sdlc work.
@@ -81,6 +85,7 @@ New key: `check.public_site` (default `true`). Every other change keeps the exis
   - Compound commands (`cd x && y`) get one permission per part.
   - A `gh` that is logged in but does not answer is a WARN, not a FAIL.
   - Deploy patterns equal to the defaults are not written out.
+  - The `items` row of `--check` names the items the queue holds for a person, including those blocked after repeated failures. It used to look for a state that nothing writes.
 - **Templates.** The CLAUDE.md sections and the work-dir README name the configured work dir. The tally rule reads `validated=<yes|no>`.
 
 ### Fixed — hooks
@@ -93,13 +98,15 @@ New key: `check.public_site` (default `true`). Every other change keeps the exis
   - A block names the file and line and the way out.
 - **Push and merge.**
   - `git push origin HEAD` and `@` on the default branch are resolved.
-  - During sdlc work, `gh pr merge` and a push to the default branch are blocked whatever `protect.block_direct_push` says.
-- **Test lock.** It now sees `$(…)`, `bash <<EOF`, `bash -s`, `pushd`, and directory operands of `git checkout`/`restore`. The test-runner config files above are locked like tests.
+  - During sdlc work, `gh pr merge` and every `git push` are blocked whatever `protect.block_direct_push` says. The push belongs to the engine: a session that pushed its own branch made the loop see a lost lease and hand the item to a person.
+  - A slug with deploy words (`release-prod-banner`) no longer blocks `sdlc.py ship <slug>` or `git push -u origin sdlc/<slug>`: `sdlc.py` is not a deploy, and `sdlc/<slug>` refs are left out of the match. A real deploy on the same line is still caught.
+- **Test lock.** It now sees `$(…)`, `bash <<EOF`, `bash -s`, `pushd`, and directory operands of `git checkout`/`restore`. The test-runner config files above are locked like tests. With `loop.forge: local` an existing test is measured against the local default branch, as the gate does, not against `origin/<default>`.
 - **post-bash.** Failed commands are recorded too (`PostToolUseFailure`). A command counts as the verify command only when a simple command starts with it.
 - **Paths and messages.**
   - A file outside the project is no longer matched against the project's globs or run through its formatter.
   - Commit scope with `-a` is read correctly.
   - On macOS, the session-start context adds one line about zsh and BSD tools.
+  - The session-start context no longer reports a loop as running when its pid was reused by another process: it checks the start time in `loop.pid`, as the engine does.
 - **Globs.** A leading `/` or `./` roots a pattern. `**/dir/` and `src/*/x/` work. A string is accepted where a list is expected. Python and bash agree on all 19,722 pairs of the drift corpus.
 
 ### Changed — skills and agents

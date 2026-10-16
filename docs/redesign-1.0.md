@@ -282,7 +282,7 @@ These numbers shaped F5 and F6: the startup prompt is a real cost of every sessi
 
 Branch `improve-1.2`. The user: "진짜 니가 놀랄정도로 완벽하게 만들어봐 그리고 이후에 지금 사용하고있는 프로젝트들에 다 적용시켜". So 1.2 is not a feature release. It is everything six independent audits of 1.1.2 could find, each finding reproduced by a script before it was fixed.
 
-**How it was found.** Six read-only audits ran in parallel, each on the strongest model, each in its own area: the gate and git plumbing, the loop, init (against throwaway clones of the user's repositories), the hooks (probe corpora), the skills against the code, and the transcripts of the real loop runs on two private web apps. One ledger collected every finding with a decision. Implementation went to six agents with disjoint files (plumbing, gate, init, hooks, skills, engine), and the engine came last because it uses the others' new APIs. Each diff was reviewed before it was applied.
+**How it was found.** Six read-only audits ran in parallel, each on the strongest model, each in its own area: the gate and git plumbing, the loop, init (against throwaway clones of the user's repositories), the hooks (probe corpora), the skills against the code, and the transcripts of the real loop runs on two private web apps. One ledger collected every finding with a decision. Implementation went to six agents with disjoint files (plumbing, gate, init, hooks, skills, engine), and the engine came last because it uses the others' new APIs. Each diff was reviewed before it was applied. With all six in, a seventh review followed whole flows across the seams between those areas (a fresh start that fails before its first push, a reviewer's commit on a team design PR, a person's fix on a `done` item, a usage-limit wait, the self-check) and found 14 more bugs, each reproduced. Two more agents fixed them: engine, gate and config in one, hooks in the other.
 
 **Decisions**
 - **The review is enforced from the session log, not trusted from the doc.** A real build session on a private web app skipped the reviewer, wrote `validated=yes` and merged unattended. Text alone ("launch the reviewer") had been there. The engine now reads the `subagent_type` of every tool call in the build and fix streams. It accepts `Agent` and `Task`, because the tool was renamed. A build without an `sdlc-reviewer` call fails the gate as fixable, so the cure is a fix session that runs the review, not a person. `None` (an item built before 1.2, or an interactive ship) checks nothing: the interactive session reports to a user who watches.
@@ -293,6 +293,8 @@ Branch `improve-1.2`. The user: "진짜 니가 놀랄정도로 완벽하게 만�
 - **Stop reasons say what is true.** One stop line per run is what the user reads, so it is computed over what the run was asked to do. Each part names the items and says who must act.
 - **Fail closed in the gate.** A gate that cannot compute its diff used to see "no changes" and pass. Every check that reads git or manifests now runs under a guard that turns an exception into a reason for a person.
 - **Hooks: speed is safety.** A guard that times out blocks, because it fails closed. So the 43.7 s test-lock walk over 800 directories was a correctness bug, not a performance one. The deploy gate's false positives on read-only commands were the other half: a guard that blocks `gh pr create --body "…deploy…"` teaches people to switch it off.
+- **A session never pushes, and never inherits a person's switch.** The leases made a session's own push look like a person's commit, so the hooks now refuse every `git push` while an item is active; the push is the engine's. The loop also stopped handing its sessions the person's `RELEASE_APPROVAL` and `SDLC_ALLOW_TEST_EDIT`, which 1.1.2 passed on too: a switch a person set for themselves must not unlock unattended work.
+- **What came in after the gate is gated.** A `done` doc that takes commits from origin goes back to `built`. A reviewer's commit on a team design PR, made before the approval, is part of the approved design (`design_sha` moves to the approved tip, and only to a `planned` commit on top of the recorded one).
 - **Interactive text moved out of the loop's prompt.** Every loop session loaded the go skill's interactive section, about 1.2k tokens it never used. It lives in `references/interactive.md` now.
 
 **What was not changed.** A pid file written before 1.2 has no start time, so it is still checked by pid alone; the next loop start rewrites it. Item state stays per checkout (see Known limitations).
@@ -370,9 +372,10 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
   - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.1.2 in both profiles.
 - [x] 1.2 built: six audits of 1.1.2 and the fixes for every finding (review enforced from the session log, exact-sha leases and sync with origin, claims on origin across clones, stale-branch catch-up, true stop reasons, fail-closed gate with a recorded design, init checks for 0.x workflow lines and public sites, faster and quieter hooks, skills and agents matched to the code), with tests and docs
   - `tests/run.sh` parts pass:
-    - hooks 2620
+    - hooks 2906
     - scripts 91
-    - engine 1238 tests on Python 3.12 and 3.9
+    - engine 1290 tests on Python 3.12 and 3.9
     - `plugin validate --strict` and the marketplace
   - Trigger evals: 7 of 7 ($0.40).
+  - The seam review's three flow repros (fresh start, team reviewer commit, a person's fix on a `done` item) no longer reproduce; the person's fix now goes through the gate (`REGATE`).
   - End-to-end on a scratch repository without a remote (real claude 2.1.301, this checkout's plugin through `loop.isolate_sessions`): two items designed, built, gated and merged, each build calling the reviewer agent (`review_seen` recorded), and a clean self-check, in 5 minutes for $1.47.
