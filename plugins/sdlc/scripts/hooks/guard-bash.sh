@@ -13,11 +13,16 @@
 # -i, awk without system() …), `gh pr|issue|run list|api` reads, a GET-only curl, kubectl/helm/terraform read verbs, test runners,
 # git commands that only read or record, and the body of a heredoc that no shell reads — a tool only while nothing on the line makes
 # it run a program (rg --pre, git -c, find -exec, an env prefix …). A shell is given its raw text only when it reads its script from
-# standard input (`… | bash`). A command line it cannot split is matched as plain text, as before.
+# standard input (`… | bash`). A command line it cannot split is matched as plain text, as before. A slug may carry deploy words
+# (release-prod-banner), so the plugin's own program is not a deploy — sdlc.py, run directly or as the script of python/python3, at any
+# path (deploy_sdlc_py) — and in the text that is matched the branch refs sdlc/<slug> and sdlc-old/<slug> after a git word and the slug
+# argument of an sdlc.py subcommand are replaced by `_` (deploy_scrub_slugs); the rest of the line — `sdlc.py ship x && ./deploy.sh prod`
+# — is checked as before.
 # (3) and (4) are best effort: the hook reads the command line, it does not run it — a program that writes on its own (python -c,
 # patch, git apply, make, a package manager, curl -o …) or a path built from a variable or brace expansion is not seen.
-# (2) also holds while an sdlc item is active (the work doc branch is checked out): then a session never merges — `gh pr merge` and any
-# push to the default branch are refused whatever protect.block_direct_push says: the merge belongs to the shell gate.
+# (2) also holds while an sdlc item is active (the work doc branch is checked out): then a session never merges and never pushes —
+# `gh pr merge` and every `git push` (any remote, any refspec) are refused whatever protect.block_direct_push says: the merge belongs to
+# the shell gate, the push to the engine (`sdlc.py ship` or the loop; the loop leases each push on the commit it last saw on origin).
 # Reads: protect.{deploy_patterns,deploy_approval_env,block_direct_push,default_branch,protect_tests,test_paths}, paths.work,
 #        secrets.scan_commits, .sdlc/state/active-work (lib/common.sh), SDLC_ALLOW_TEST_EDIT (environment); a version-1 config's
 #        environments.production.{patterns,approval_env}
@@ -247,6 +252,27 @@ deploy_test_runs() {
   esac
   return 1
 }
+# deploy_sdlc_py → 0 when the simple command in W[] (command word at TL_K) runs the plugin's sdlc.py: the file itself, or the script
+# operand of python/python3/pythonX.Y (past options such as -u or -W x) — at any path. Its arguments are slugs and subcommands, not a deploy.
+deploy_sdlc_py() {
+  local k=$TL_K nw=${#W[@]} a
+  case "${W[$TL_K]##*/}" in
+    sdlc.py) return 0;;
+    python|python[0-9]*) ;;
+    *) return 1;;
+  esac
+  k=$((k + 1))
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      -W|-X|--check-hash-based-pycs) k=$((k + 1));;          # options that take a value
+      -c|-m|-|-*[cm]) return 1;;                              # code or a module, not a script
+      -*) ;;
+      *) [ "${a##*/}" = sdlc.py ]; return;;
+    esac
+  done
+  return 1
+}
 # deploy_runner_word → 0 when a word of the simple command in W[] makes the words after it a command: a shell, ssh, eval, xargs, watch …
 deploy_runner_word() {
   local k=$TL_K nw=${#W[@]} b
@@ -305,7 +331,9 @@ deploy_clause() {
   if [ "$TL_K" -lt "$nw" ]; then
     base="${W[$TL_K]##*/}"
     case " $SDLC_SHELLS " in *" $base "*) shell=1; mode=whole;; esac
-    if [ "$shell" = 0 ]; then
+    if [ "$shell" = 0 ] && deploy_sdlc_py; then
+      skip=1
+    elif [ "$shell" = 0 ]; then
       case " $SDLC_TEXT_TOOLS " in
         *" $base "*) if deploy_text_runs; then mode=whole; else skip=1; fi;;
         *) case "$base" in
@@ -369,6 +397,52 @@ deploy_nested() {
   DEPLOY_NESTED=$((DEPLOY_NESTED + 1))
   deploy_collect "$body"
 }
+# deploy_scrub_slugs <candidates, one line each> → the same lines with every slug that names a work item replaced by `_`: a branch ref
+# sdlc/<slug> or sdlc-old/<slug> (also behind refs/heads/, refs/remotes/<remote>/ or <remote>/, on either side of a refspec, as the value
+# of --opt=value) in a word that follows a git word, and the slug argument(s) of an sdlc.py subcommand (`sdlc.py [--root d] ship <slug>`,
+# also behind python; accept takes several). A slug is [a-z0-9][a-z0-9._-]*, so `release-prod-banner` is a work item, not a deploy. Nothing
+# else is touched: the git word or sdlc.py must come first, a `&&`, `;`, `|` or `&` ends the command, and a line without sdlc/, sdlc-old/ or
+# sdlc.py passes unchanged (a path such as ./sdlc/deploy-prod.sh is not a branch ref: no git word in front).
+SDLC_SCRUB_AWK='
+BEGIN {
+  REF = "^(refs/heads/|refs/remotes/[^/]+/|[^/]+/)?sdlc(-old)?/[a-z0-9][a-z0-9._-]*$"
+  SLUG = "^[a-z0-9][a-z0-9._-]*$"
+  SUBS = " ship retry drop rate gate answer accept "
+}
+function refs(w,   v, p, pre, n, i, out, part) {
+  v = ""; pre = ""
+  if (substr(w, 1, 1) == "-" && (p = index(w, "=")) > 0) { v = substr(w, 1, p); w = substr(w, p + 1) }
+  if (substr(w, 1, 1) == "+") { pre = "+"; w = substr(w, 2) }
+  n = split(w, part, ":"); out = ""
+  for (i = 1; i <= n; i++) out = out (i > 1 ? ":" : "") (part[i] ~ REF ? "_" : part[i])
+  return v pre out
+}
+{
+  if ($0 !~ /sdlc\/|sdlc-old\/|sdlc\.py/) { print; next }
+  n = split($0, t, /[ \t]+/); out = ""; git = 0; py = 0; acc = 0
+  for (i = 1; i <= n; i++) {
+    w = t[i]; if (w == "") continue
+    if (w ~ /^(\|\||&&|\||;|&)$/) { git = 0; py = 0 }
+    else if (py == 3) py = 1
+    else if (py == 1) {
+      if (w == "--root") py = 3
+      else if (substr(w, 1, 1) == "-") { }
+      else if (index(SUBS, " " w " ")) { py = 2; acc = (w == "accept") }
+      else py = 0
+    }
+    else if (py == 2) { if (w ~ SLUG) w = "_"; if (w != "_" || !acc) py = 0 }
+    else if (w ~ /(^|\/)sdlc\.py$/) py = 1
+    else if (w ~ /(^|\/)git$/) git = 1
+    else if (git) w = refs(w)
+    out = out (out == "" ? "" : " ") w
+  }
+  print out
+}'
+deploy_scrub_slugs() {
+  local out
+  out=$(printf '%s' "$1" | LC_ALL=C awk "$SDLC_SCRUB_AWK" 2>/dev/null) && [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+  printf '%s\n' "$1"
+}
 # deploy_hit <command> → 0 when a simple command of it matches a deploy pattern: SDLC_DEPLOY_PATTERN is the pattern and
 # SDLC_DEPLOY_PART the text it matched (that simple command, words joined by single spaces)
 deploy_hit() {
@@ -376,6 +450,7 @@ deploy_hit() {
   [ -n "$SDLC_DEPLOY_PATTERNS" ] || return 1
   deploy_collect "$1"
   [ -n "$DEPLOY_CAND" ] || return 1
+  case "$DEPLOY_CAND" in *sdlc/*|*sdlc-old/*|*sdlc.py*) DEPLOY_CAND=$(deploy_scrub_slugs "$DEPLOY_CAND");; esac
   SDLC_DEPLOY_PATTERN=$(deploy_match "$DEPLOY_CAND") || return 1
   SDLC_DEPLOY_PART=$(printf '%s\n' "$DEPLOY_CAND" | grep -E -i -m 1 -e "$SDLC_DEPLOY_PATTERN" 2>/dev/null)
   return 0
@@ -400,8 +475,11 @@ fi
 # (2) no direct path to the default branch — branch protection in a hook, for repositories where GitHub rulesets are unavailable.
 #     Parses each `git push` clause (split on && ; | ||): refspecs (+, refs/heads/, src:dst, HEAD and @ = the current branch),
 #     --all/--mirror, --delete <default>, bare `git push` while on the default branch, `git -C <dir> push`. Feature-branch pushes and
-#     PR creation are allowed. While an sdlc item is active the merge is the shell gate's: `gh pr merge` and every push to the default
-#     branch are refused whatever protect.block_direct_push says (push_clause, read from the tokenized command line, nested bodies too).
+#     PR creation are allowed. While an sdlc item is active the merge is the shell gate's and the push is the engine's: `gh pr merge`,
+#     every push to the default branch (the gate's message) and every other `git push` — any remote, refspec or `-C <dir>` (the engine's
+#     message) are refused whatever protect.block_direct_push says (push_clause, read from the tokenized command line, nested bodies too:
+#     the loop leases each push on the commit it last saw on origin, a push from the session makes it see a lost lease). `sdlc.py ship`
+#     runs git itself, outside the command line: it is a python command and is not a push here.
 push_hits_default() { # push_hits_default <clause> <default-branch> <current-branch> → prints a reason and returns 0 when the clause pushes to the default branch
   local def="$2" cur="$3" tok seen_git=0 seen_push=0 skipnext=0 remote="" refspecs="" all=0 delete=0 r dst
   # shellcheck disable=SC2086
@@ -435,16 +513,33 @@ push_hits_default() { # push_hits_default <clause> <default-branch> <current-bra
   if [ -z "$refspecs" ] && [ $delete = 0 ] && [ "$cur" = "$def" ]; then printf 'bare push while on %s' "$def"; return 0; fi
   return 1
 }
-# push_clause — walk_scan callback: the simple command in W[] is a push to the default branch (PUSH_DEF, with PUSH_CUR checked out) or a
-# merge of a pull request → PUSH_REASON, 0
-PUSH_DEF=""; PUSH_CUR=""; PUSH_REASON=""
+# git_pushes <k> → 0 when the git command in W[] (its name at index <k>) has push as its subcommand, past the global options (-C <dir>,
+# -c <name=value>, --git-dir <dir>, --work-tree <dir>, --namespace <name>, --config-env <name=var> take a value; -p, --no-pager … do not).
+# Read from the words, not from a re-split string: `git -C "my dir" push` is a push.
+git_pushes() {
+  local k=$(($1 + 1)) nw=${#W[@]} a
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      -C|-c|--git-dir|--work-tree|--namespace|--config-env) k=$((k + 1));;
+      -*) ;;
+      push) return 0;;
+      *) return 1;;
+    esac
+  done
+  return 1
+}
+# push_clause — walk_scan callback: the simple command in W[] is a push to the default branch (PUSH_DEF, with PUSH_CUR checked out), a
+# merge of a pull request (PUSH_KIND merge: the shell gate's) or any other `git push` (PUSH_KIND push: the engine's) → PUSH_REASON, 0
+PUSH_DEF=""; PUSH_CUR=""; PUSH_REASON=""; PUSH_KIND=""
 push_clause() {
   local nw=${#W[@]} k base a sub="" sub2="" r
   tl_cmdword; k=$TL_K
   [ "$k" -lt "$nw" ] || return 1
   base="${W[$k]##*/}"
   case "$base" in
-    git) if r=$(push_hits_default "${W[*]:$k}" "$PUSH_DEF" "$PUSH_CUR"); then PUSH_REASON="$r"; return 0; fi;;
+    git) if r=$(push_hits_default "${W[*]:$k}" "$PUSH_DEF" "$PUSH_CUR"); then PUSH_REASON="$r"; PUSH_KIND=merge; return 0; fi
+         if git_pushes "$k"; then PUSH_REASON="git push"; PUSH_KIND=push; return 0; fi;;
     gh) k=$((k + 1))
         while [ "$k" -lt "$nw" ]; do
           a="${W[$k]}"; k=$((k + 1))
@@ -454,28 +549,28 @@ push_clause() {
             *) if [ -z "$sub" ]; then sub="$a"; else sub2="$a"; break; fi;;
           esac
         done
-        if [ "$sub" = pr ] && [ "$sub2" = merge ]; then PUSH_REASON="gh pr merge"; return 0; fi
+        if [ "$sub" = pr ] && [ "$sub2" = merge ]; then PUSH_REASON="gh pr merge"; PUSH_KIND=merge; return 0; fi
         if [ "$sub" = api ]; then
           for a in "${W[@]}"; do
-            case "$a" in *pulls/*/merge*|*mergePullRequest*|*enablePullRequestAutoMerge*) PUSH_REASON="a pull request merged through the API"; return 0;; esac
+            case "$a" in *pulls/*/merge*|*mergePullRequest*|*enablePullRequestAutoMerge*) PUSH_REASON="a pull request merged through the API"; PUSH_KIND=merge; return 0;; esac
           done
         fi;;
   esac
   return 1
 }
-push_guard=false; work_active=false
+push_guard=false; work_active=false; active_slug=""
 if [ "$initialized" = true ]; then
   [ "$(cfg_bool "$root" .protect.block_direct_push true)" = "true" ] && push_guard=true
-  sdlc_work_active "$root" && work_active=true
+  active_slug=$(active_work_slug "$root"); [ -z "$active_slug" ] || work_active=true
 fi
 case "$cmd" in *push*|*merge*)
   if [ "$push_guard" = true ] || [ "$work_active" = true ]; then
     def=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'); [ -z "$def" ] && def=$(cfg "$root" .protect.default_branch main)
     cur=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    reason=""; merge_gate=false
+    reason=""; gate_kind=""
     if [ "$work_active" = true ]; then
-      PUSH_DEF="$def"; PUSH_CUR="$cur"; PUSH_REASON=""
-      if walk_scan "$cmd" 0 push_clause; then reason="$PUSH_REASON"; merge_gate=true; fi
+      PUSH_DEF="$def"; PUSH_CUR="$cur"; PUSH_REASON=""; PUSH_KIND=""
+      if walk_scan "$cmd" 0 push_clause; then reason="$PUSH_REASON"; gate_kind="$PUSH_KIND"; fi
     fi
     if [ -z "$reason" ] && [ "$push_guard" = true ]; then
       old_ifs="$IFS"; IFS=$'\n'
@@ -488,8 +583,11 @@ case "$cmd" in *push*|*merge*)
     fi
     if [ -n "$reason" ]; then
       log_event "$root" hook.guard deny direct_push "{\"cmd\":$(json_escape "$cmd_short"),\"branch\":\"$def\",\"reason\":$(json_escape "$reason")}"
-      if [ "$merge_gate" = true ]; then
-        block "'$cmd_short' ($reason): the merge is the shell gate's (\`sdlc.py ship\`); a session never merges. Why: while an sdlc item is active ($(active_work_slug "$root")) its change reaches '$def' only through the gate, which checks it first — this holds whatever protect.block_direct_push says. To proceed: commit on the sdlc branch and stop there — \`sdlc.py ship <slug>\` (interactive) or the loop pushes, opens the PR and merges after the gate."
+      if [ "$gate_kind" = merge ]; then
+        block "'$cmd_short' ($reason): the merge is the shell gate's (\`sdlc.py ship\`); a session never merges. Why: while an sdlc item is active ($active_slug) its change reaches '$def' only through the gate, which checks it first — this holds whatever protect.block_direct_push says. To proceed: commit on the sdlc branch and stop there — \`sdlc.py ship <slug>\` (interactive) or the loop pushes, opens the PR and merges after the gate."
+      fi
+      if [ "$gate_kind" = push ]; then
+        block "'$cmd_short': the push belongs to the engine (\`sdlc.py ship\` or the loop); a session never pushes while an sdlc item is active. Why: the loop leases every push on the commit it last saw on origin, so a push from the session makes the engine see a lost lease and hand the item ($active_slug) to a person — this holds whatever protect.block_direct_push says. To proceed: commit on the sdlc branch and stop there — \`sdlc.py ship <slug>\` (interactive) or the loop pushes, opens the PR and merges after the gate."
       fi
       block "pushing to the default branch '$def' ($reason: '$cmd_short'). Why: anything the agent writes arrives as a pull request through branch protection — there is no direct path to the default branch (protect.block_direct_push). To proceed: push a feature branch and open a PR (git push -u origin <branch> && gh pr create) — /sdlc:go and /sdlc:run do this and merge through the gate; to allow direct pushes in this repository set protect.block_direct_push: false."
     fi

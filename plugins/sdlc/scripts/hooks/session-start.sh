@@ -1,7 +1,9 @@
 #!/bin/bash
 # SessionStart — log the session, record it in .sdlc/state, and inject a compact SDLC context block.
 # Reads: hooks.session_context, hooks.log_events, verify.*, commands.*, protect.*, paths.work, the active work doc
-# (.sdlc/state/active-work, see lib/common.sh) and the loop engine's .sdlc/state/loop.pid + loop-status.json.
+# (.sdlc/state/active-work, see lib/common.sh) and the loop engine's .sdlc/state/loop.pid + loop-status.json. A loop counts as running
+# when loop.pid's pid is alive and, when the file records a start time (`<pid> <start time>`), `ps` reports the same one for it —
+# a reused pid number is not the loop (lib/hooks-extra.sh same_process, as the engine's util.same_process); a pid-only file is taken at its word.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../lib/common.sh"
@@ -41,8 +43,9 @@ fi
 
 loop_line=""
 if [ -f "$root/.sdlc/state/loop.pid" ]; then
-  pid=""; read -r pid _ < "$root/.sdlc/state/loop.pid" || true
-  if is_int "$pid" && [ "$pid" -gt 0 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null; then
+  pid=""; pstart=""; read -r pid pstart < "$root/.sdlc/state/loop.pid" || true     # `<pid> <start time>`; an older file has the pid only
+  pstart=$(squeeze_ws "$pstart")
+  if is_int "$pid" && [ "$pid" -gt 0 ] 2>/dev/null && same_process "$pid" "$pstart"; then
     lf="$root/.sdlc/state/loop-status.json"
     lstate=$(json_file_get "$lf" .state); litem=$(json_file_get "$lf" .item); lphase=$(json_file_get "$lf" .phase)
     loop_line="${lstate:-running}${litem:+ — $litem}${lphase:+ ($lphase)}, pid $pid — /sdlc:status shows the details"

@@ -171,15 +171,18 @@ test_lock_on() {
   return 0
 }
 # test_base_rev <root> → SDLC_TEST_BASE (cached for the run): the commit existing tests are measured against — where HEAD
-# branched off the default branch, which is origin/<protect.default_branch> when that exists, else the local branch. "-" when
-# there is no such commit (not a repository, no commits, no default branch).
+# branched off the default branch, which is origin/<protect.default_branch> when that exists, else the local branch; with
+# loop.forge "local" only the local branch (the merge gate measures the same way — gitops.make_forge sets prefer_local: a local
+# forge merges there, whatever origin has). "-" when there is no such commit (not a repository, no commits, no default branch).
 test_base_rev() {
   [ -n "$SDLC_TEST_BASE" ] && return 0
-  local def ref b
+  local def ref b forge
   SDLC_TEST_BASE="-"
   def=$(cfg "$1" .protect.default_branch main)
   case "$def" in -*) def=main;; esac                       # never hand git something that reads as an option
+  forge=$(cfg "$1" .loop.forge auto)
   for ref in "origin/$def" "$def"; do
+    [ "$forge" = local ] && [ "$ref" != "$def" ] && continue   # a local forge: origin's copy of the branch is not the base
     git -C "$1" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 || continue
     b=$(git -C "$1" merge-base HEAD "$ref" 2>/dev/null) || b=""
     SDLC_TEST_BASE="${b:-$ref}"; return 0
@@ -700,4 +703,33 @@ run_capped() {
     sleep 0.1
   done
   wait "$pid"
+}
+
+# ---------- process identity (session-start) ----------
+# A pid number is reused once its process ends; the start time is not. The loop writes `<pid> <start time>` to .sdlc/state/loop.pid
+# (sdlclib state.write_pid), and these two mirror sdlclib util.proc_start / util.same_process, one `ps` call each.
+# squeeze_ws <text> → the words of <text> joined by single spaces (no globbing, no external command)
+squeeze_ws() {
+  local w out="" noglob=1
+  case $- in *f*) ;; *) noglob=0; set -f;; esac
+  for w in $1; do out="${out:+$out }$w"; done
+  [ "$noglob" = 1 ] || set +f
+  printf '%s' "$out"
+}
+# proc_start <pid> → the start time as `ps` prints it (LC_ALL=C, runs of white space squeezed to one space); empty when the process is not
+# running or `ps` cannot say
+proc_start() {
+  local s
+  s=$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null) || return 0
+  squeeze_ws "$s"
+}
+# same_process <pid> <start> → 0 when <pid> is alive and — when <start> (recorded when the process wrote its pid down) is not empty —
+# still the process that started then: another start time means the number belongs to a newer process. Without a recorded start, or when
+# `ps` cannot say, being alive is all there is to go by.
+same_process() {
+  local now
+  kill -0 "$1" 2>/dev/null || return 1
+  [ -n "${2:-}" ] || return 0
+  now=$(proc_start "$1")
+  [ -z "$now" ] || [ "$now" = "$2" ]
 }

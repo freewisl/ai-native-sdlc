@@ -2229,10 +2229,10 @@ pa2() { # pa2 <0|2> <command> — an sdlc item is active; protect.block_direct_p
   run_hook guard-bash "$PAN" "$(j_bash "$PAN" "$c")"; assert_rc "1.2 active work ($want, block_direct_push=false): $(short "$c")" "$want"
 }
 PUSHACTIVE=(
-  $'0|git push origin HEAD'
-  $'0|git push -u origin HEAD'
-  $'0|git push origin sdlc/planned'
-  $'0|git push'
+  $'2|git push origin HEAD'                       # the push belongs to the engine — any push, not only the default branch's
+  $'2|git push -u origin HEAD'
+  $'2|git push origin sdlc/planned'
+  $'2|git push'
   $'0|gh pr create --fill'
   $'0|gh pr view 12'
   $'0|gh pr list'
@@ -2274,6 +2274,90 @@ run_hook guard-bash "$PON" "$(j_bash "$PON" "git push origin main")"
 assert_rc "1.2 outside sdlc work block_direct_push=false still allows the push" 0
 run_hook guard-bash "$PO" "$(j_bash "$PO" "git push origin main")"
 assert_has "1.2 outside sdlc work the old message stays" "$ERR" "gh pr create"
+
+echo "-- guard-bash: while an item is active the push is the engine's — no git push at all; sdlc.py ship and gh pr create stay free"
+# The loop leases every push on the commit it last saw on origin: a session that pushes its own branch makes the engine see a lost lease.
+PUSHENGINE=(
+  $'2|git push origin HEAD:sdlc/planned'
+  $'2|git push origin +sdlc/planned'
+  $'2|git push --force-with-lease origin sdlc/planned'
+  $'2|git push --force origin sdlc/planned'
+  $'2|git push --tags'
+  $'2|git push --dry-run origin HEAD'
+  $'2|git push upstream sdlc/planned'
+  $'2|git push git@example.com:o/r.git HEAD'
+  $'2|git push origin feature/other'
+  $'2|git push origin --delete sdlc/old'
+  $'2|git -C . push origin HEAD'
+  $'2|git -C ../other push'
+  $'2|git -C "my dir" push origin HEAD'
+  $'2|git -c http.extraHeader=x push origin HEAD'
+  $'2|git --no-pager push'
+  $'2|git --git-dir=.git push origin HEAD'
+  $'2|git --git-dir .git push origin HEAD'
+  $'2|git --config-env=x=Y push origin HEAD'
+  $'2|git --config-env x=Y push origin HEAD'
+  $'2|/usr/bin/git push origin HEAD'
+  $'2|env GIT_TRACE=1 git push origin HEAD'
+  $'2|GIT_TRACE=1 git push origin HEAD'
+  $'2|sudo git push origin HEAD'
+  $'2|command git push origin HEAD'
+  $'2|cd src && git push origin HEAD'
+  $'2|git status && git push'
+  $'2|git add -A; git commit -qm x; git push -u origin sdlc/planned'
+  $'2|git status | cat; git push'
+  $'2|bash -c "git push origin HEAD"'
+  $'2|sh -c \'git push -u origin sdlc/planned\''
+  $'2|bash -c "cd x && git push"'
+  $'2|eval "git push origin HEAD"'
+  $'2|echo $(git push origin HEAD)'
+  $'2|echo "$(git push origin HEAD)"'
+  $'2|bash <<EOF\ngit push origin HEAD\nEOF'
+  $'2|bash -s <<\'EOF\'\ncd x\ngit push\nEOF'
+  $'2|git push origin HEAD 2>&1 | tail -3'
+  $'0|git commit -m "push the branch later"'
+  $'0|git commit -m "git push origin HEAD is the engine\'s job"'
+  $'0|echo "git push origin HEAD"'
+  $'0|git log --oneline --grep push'
+  $'0|git log origin/sdlc/planned..HEAD'
+  $'0|git config alias.p push'
+  $'0|git fetch origin && git merge --ff-only origin/main'
+  $'0|git pull --ff-only'
+  $'0|git remote -v'
+  $'0|git status --short'
+  $'0|cat <<EOF\ngit push origin HEAD\nEOF'
+  $'0|gh pr create --fill --head sdlc/planned'
+  $'0|gh pr create --title "push button" --body "git push is the engine\'s"'
+  $'0|python3 /x/plugins/sdlc/scripts/sdlc.py ship planned'
+  $'0|python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sdlc.py" ship planned'
+  $'0|python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sdlc.py" ship push-notifications'
+  $'0|python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sdlc.py" ship merge-sort'
+  $'0|python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sdlc.py" gate planned --json'
+)
+for p in "${PUSHENGINE[@]}"; do pa2 "${p%%|*}" "${p#*|}"; done
+run_hook guard-bash "$PA" "$(j_bash "$PA" "git push -u origin sdlc/planned")"
+assert_has "session push message: the push belongs to the engine" "$ERR" "the push belongs to the engine"
+assert_has "session push message: says why — the lost lease" "$ERR" "lease"
+assert_has "session push message: names the active item" "$ERR" "(planned)"
+assert_has "session push message: commit and stop, ship or the loop pushes, opens the PR and merges after the gate" "$ERR" "commit on the sdlc branch and stop there — \`sdlc.py ship <slug>\` (interactive) or the loop pushes, opens the PR and merges after the gate"
+assert_has "session push message follows the what / Why / To proceed pattern" "$ERR" "Why: "
+assert_has "session push message: …and To proceed" "$ERR" "To proceed: "
+assert_lacks "session push message is not the default-branch one" "$ERR" "a session never merges"
+run_hook guard-bash "$PA" "$(j_bash "$PA" "git push origin main")"
+assert_has "a push to the default branch keeps the shell gate's message" "$ERR" "a session never merges"
+assert_true "a refused session push is logged as a direct_push deny" "$(log_has "$PA" '"event":"hook.guard".*"decision":"deny".*direct_push')" "$(tail -3 "$PA/.sdlc/logs/events.jsonl" 2>/dev/null)"
+# not active: today's rules — only the default branch is guarded
+PX=$(fresh_active); gitp "$PX" checkout -q -b feature/q       # active-work still names the item, but its branch is not checked out
+for c in 'git push origin HEAD' 'git push -u origin feature/q' 'git push' 'git push origin sdlc/planned'; do
+  run_hook guard-bash "$PX" "$(j_bash "$PX" "$c")"; assert_rc "no active item (another branch is checked out): $c is not blocked" 0
+done
+run_hook guard-bash "$PX" "$(j_bash "$PX" "git push origin main")"
+assert_rc "no active item: a push to the default branch is still blocked (protect.block_direct_push)" 2
+PY=$(fresh_git)
+run_hook guard-bash "$PY" "$(j_bash "$PY" "git push origin sdlc/x")"
+assert_rc "no active-work file (on main): pushing an sdlc branch is not blocked — only the default-branch guard applies" 0
+gitp "$PY" checkout -q -b sdlc/x; run_hook guard-bash "$PY" "$(j_bash "$PY" "git push -u origin sdlc/x")"
+assert_rc "no active-work file (on sdlc/x): a push is not blocked" 0
 
 echo "-- 1.2 guard-bash: the test lock reaches \$(...), shell heredocs, pushd and directory operands of checkout/restore"
 PL=$(fresh_active)
@@ -2860,6 +2944,175 @@ glob_match 'qa/*' $'qa/a.sh\n' || gl_nl="$gl_nl qa/*-missed"
 glob_match 'qa/' $'qa/a.sh\n' || gl_nl="$gl_nl qa/-missed"
 assert_eq "glob: a path with a trailing newline no longer matches a pattern that ends before it (qa/a.sh, *.sh); qa/* and qa/ take it as a name" "$gl_nl" ""
 assert_true "glob: file names with bytes that are no valid UTF-8 match like any other, in every locale ($gl_bytes of 4 locales)" "$([ "$gl_bytes" = 4 ] && echo true || echo false)" "$gl_bytes"
+
+# ======================================================================
+echo "-- deploy gate: a slug with deploy words (release-prod-banner, deploy-docs, live-…) does not block the sdlc commands"
+# sdlc.py is the plugin's program: a slug is a name, whatever it says. Its branch sdlc/<slug> after a git word is a name too. What else
+# is on the line is checked as before — a real deploy next to them is still caught (with and without .sdlc/config.json).
+SLUGS=(
+  $'0|python3 "/x/plugins/sdlc/scripts/sdlc.py" ship release-prod-banner'
+  $'0|python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sdlc.py" retry live-deploy-status'
+  $'0|python3 /x/sdlc.py ship deploy-docs'
+  $'0|python3 -u /x/sdlc.py ship release-prod-banner'
+  $'0|python3 -W ignore /x/sdlc.py retry live-deploy'
+  $'0|python3.11 /x/sdlc.py ship release-prod-banner'
+  $'0|/usr/bin/python3 /x/sdlc.py ship release-prod-banner'
+  $'0|/x/sdlc.py ship release-prod-banner'
+  $'0|env FOO=1 python3 /x/sdlc.py ship release-prod-banner'
+  $'0|cd repo && python3 /x/sdlc.py ship release-prod-banner'
+  $'0|python3 /x/sdlc.py --root /r ship release-prod-banner'
+  $'0|python3 /x/sdlc.py drop deploy-prod "no longer needed"'
+  $'0|python3 /x/sdlc.py answer release-prod-banner "ship it to production"'
+  $'0|python3 /x/sdlc.py rate release-prod-banner good'
+  $'0|python3 /x/sdlc.py gate release-prod-banner --json'
+  $'0|python3 /x/sdlc.py accept deploy-a release-prod-b live-c'
+  $'0|echo start; python3 /x/sdlc.py ship release-prod-banner; echo end'
+  $'0|python3 /x/sdlc.py ship release-prod-banner > out.log 2>&1'
+  $'0|bash -c "python3 /x/sdlc.py ship release-prod-banner"'
+  $'0|ssh host \'python3 /x/sdlc.py ship release-prod-banner\''
+  $'0|git push -u origin sdlc/release-prod-banner'
+  $'0|git push origin HEAD:sdlc/release-prod-banner'
+  $'0|git push origin sdlc/release-prod-banner:sdlc/release-prod-banner'
+  $'0|git push origin +sdlc/release-prod-banner:sdlc/release-prod-banner'
+  $'0|git push --force-with-lease=sdlc/release-prod-banner:abc123 origin sdlc/release-prod-banner'
+  $'0|git push origin refs/heads/sdlc/release-prod-banner'
+  $'0|git push origin :sdlc-old/release-prod-banner'
+  $'0|git push origin sdlc-old/live-deploy'
+  $'0|git push --set-upstream origin sdlc/live-deploy'
+  $'0|git -C /r push -u origin sdlc/release-prod-banner'
+  $'0|git push -u origin sdlc/deploy-docs && gh pr create --fill'
+  $'0|git switch -c sdlc/release-prod-banner main'
+  $'0|git switch sdlc/release-prod-banner'
+  $'0|git branch -D sdlc/release-prod-banner'
+  $'0|cat work/release-prod-banner.md'
+  $'2|python3 /x/sdlc.py ship x && ./deploy.sh prod'
+  $'2|python3 /x/sdlc.py ship x; ./deploy.sh prod'
+  $'2|python3 /x/sdlc.py ship x | ./deploy.sh prod'
+  $'2|python3 /x/sdlc.py ship release-prod-banner && ./deploy.sh prod'
+  $'2|./deploy.sh prod && python3 /x/sdlc.py ship release-prod-banner'
+  $'2|python3 /x/sdlc.py ship x && kubectl apply -f x.yaml -n production'
+  $'2|python3 /x/sdlc.py ship x && git push heroku release-prod'
+  $'2|python3 /x/sdlc.py ship x $(./deploy.sh prod)'
+  $'2|python3 /x/sdlc.py ship x `./deploy.sh prod`'
+  $'2|python3 /x/sdlc.py ship x\n./deploy.sh prod'
+  $'2|git push origin sdlc/x && ./deploy.sh prod'
+  $'2|git push origin sdlc/release-prod-banner && ./deploy.sh prod'
+  $'2|git push origin sdlc/x ; kubectl apply -f x -n production'
+  $'2|git push origin sdlc/x:release-prod-deploy'
+  $'2|git push release-prod-remote sdlc/x'
+  $'2|bash -c "python3 /x/sdlc.py ship x && ./deploy.sh prod"'
+  $'2|ssh host \'python3 /x/sdlc.py ship x && ./deploy.sh prod\''
+  $'2|python3 /x/other.py deploy prod'
+  $'2|python3 /x/other.py ship release-prod-banner'
+  $'2|python3 -c "import os; os.system(\'deploy prod\')"'
+  $'2|python3 -m deploy prod'
+  $'2|./sdlc/deploy-prod.sh'
+  $'2|cd .. && ./sdlc/release-prod.sh'
+  $'2|./deploy.sh sdlc/release-prod-banner'
+  $'2|bash sdlc/deploy-prod.sh'
+  $'2|make deploy ENV=prod sdlc/x'
+)
+for p in "${SLUGS[@]}"; do gate2 "${p%%|*}" "${p#*|}"; done
+run_hook guard-bash "$GI" "$(j_bash "$GI" 'python3 /x/sdlc.py ship x && ./deploy.sh prod')"
+assert_has "slug scrub: the message of a real deploy next to sdlc.py names the command that matched" "$ERR" ", in './deploy.sh prod'"
+gate2 0 'python3 /x/sdlc.py ship x && ./deploy.sh prod' RELEASE_APPROVAL=REL-9
+GS=$(fresh); set_cfg "$GS" protect.deploy_patterns '["ship-[a-z]+-it"]'
+run_hook guard-bash "$GS" "$(j_bash "$GS" 'python3 /x/sdlc.py ship ship-it-it')"
+assert_rc "a configured pattern: a slug that matches it is a name for sdlc.py too" 0
+run_hook guard-bash "$GS" "$(j_bash "$GS" 'git push -u origin sdlc/ship-it-it')"
+assert_rc "a configured pattern: …and as an sdlc/<slug> branch after git" 0
+run_hook guard-bash "$GS" "$(j_bash "$GS" 'ship-it-it now && python3 /x/sdlc.py ship x')"
+assert_rc "a configured pattern: the rest of the line is matched as before" 2
+SLUGDOCS=$(fresh_active release-prod-banner)           # the slug is an active item: its own commands still run
+run_hook guard-bash "$SLUGDOCS" "$(j_bash "$SLUGDOCS" 'python3 /x/sdlc.py ship release-prod-banner')"
+assert_rc "an active item named release-prod-banner: sdlc.py ship passes the deploy gate and the push guard" 0
+run_hook guard-bash "$SLUGDOCS" "$(j_bash "$SLUGDOCS" 'git commit -qm "sdlc(release-prod-banner): gate passed"')"
+assert_rc "an active item named release-prod-banner: committing on its branch passes" 0
+
+echo "-- test lock: loop.forge local measures against the local default branch, like the merge gate"
+# A test merged locally by an earlier item (local forge: origin is not pushed to) exists as far as the gate is concerned.
+LB="$WORK/lf-origin.git"; git init -q --bare -b main "$LB" >/dev/null 2>&1
+LF=$(fresh_git); gitp "$LF" remote add origin "$LB" >/dev/null 2>&1; gitp "$LF" push -q origin main >/dev/null 2>&1
+mk "$LF" tests/test_merged.py 'def test_a(): assert 1'; gitp "$LF" add -A >/dev/null 2>&1; gitp "$LF" commit -qm "item a, merged locally (origin is behind)" >/dev/null 2>&1
+activate "$LF" planned
+mk "$LF" tests/test_added.py 'def test_b(): assert 1'; gitp "$LF" add -A >/dev/null 2>&1; gitp "$LF" commit -qm "this change adds a test" >/dev/null 2>&1
+lf_copy() { cp -R "$LF" "$WORK/lf-$1" && printf '%s' "$WORK/lf-$1"; }      # lf_copy <name> → a copy of $LF to give its own loop.forge
+LFN=$(lf_copy local); set_cfg "$LFN" loop.forge '"local"'
+run_hook guard-edit "$LF" "$(j_edit "$LF" "$LF/tests/test_merged.py" "changed")"
+assert_rc "forge auto with an origin that is behind: a test merged locally is measured against origin/main — new, free (as the engine does)" 0
+run_hook guard-edit "$LFN" "$(j_edit "$LFN" "$LFN/tests/test_merged.py" "changed")"
+assert_rc "forge local: the same test exists on the local main — locked" 2
+assert_has "forge local: the message names the test file" "$ERR" "tests/test_merged.py"
+run_hook guard-edit "$LFN" "$(j_edit "$LFN" "$LFN/tests/test_added.py" "changed")"
+assert_rc "forge local: a test this change adds is still free" 0
+run_hook guard-bash "$LFN" "$(j_bash "$LFN" "rm tests/test_merged.py")"
+assert_rc "forge local: guard-bash locks the same test (rm)" 2
+run_hook guard-bash "$LFN" "$(j_bash "$LFN" "rm tests/test_added.py")"
+assert_rc "forge local: guard-bash leaves a test this change adds alone (rm)" 0
+run_hook guard-bash "$LF" "$(j_bash "$LF" "rm tests/test_merged.py")"
+assert_rc "forge auto: guard-bash measures against origin/main (rm of a locally merged test passes)" 0
+for fv in github auto; do
+  LFX=$(lf_copy "$fv"); set_cfg "$LFX" loop.forge "\"$fv\""
+  run_hook guard-edit "$LFX" "$(j_edit "$LFX" "$LFX/tests/test_merged.py" "changed")"
+  assert_rc "forge \"$fv\": origin/main is the base (a locally merged test is new)" 0
+done
+LFY=$(lf_copy upper); set_cfg "$LFY" loop.forge '"Local"'
+run_hook guard-edit "$LFY" "$(j_edit "$LFY" "$LFY/tests/test_merged.py" "changed")"
+assert_rc "forge \"Local\": only the exact value local counts, as in gitops.make_forge" 0
+LFO=$(fresh_active); set_cfg "$LFO" loop.forge '"local"'
+run_hook guard-edit "$LFO" "$(j_edit "$LFO" "$LFO/tests/x_test.py" "changed")"
+assert_rc "forge local without any remote: an existing test is locked" 2
+LFP=$(fresh_active)
+run_hook guard-edit "$LFP" "$(j_edit "$LFP" "$LFP/tests/x_test.py" "changed")"
+assert_rc "forge not set, no remote: an existing test is locked (unchanged)" 2
+
+echo "-- session-start: a loop is running only when loop.pid's pid has the start time the file records (a reused pid is not the loop)"
+SS=$(fresh); mkdir -p "$SS/.sdlc/state"
+printf '{"state":"running","item":"demo","phase":"build","pid":%s}\n' "$$" > "$SS/.sdlc/state/loop-status.json"
+MYSTART=$(LC_ALL=C ps -o lstart= -p $$ 2>/dev/null | tr -s ' \t' ' ' | sed 's/^ //; s/ $//')
+if [ -n "$MYSTART" ]; then
+  ss_loop() { run_hook session-start "$SS" "$(j_session "$SS" SessionStart)" "$@"; }
+  printf '%s %s\n' "$$" "$MYSTART" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_has "loop.pid with the live start time: the Loop line shows" "$OUT" "Loop: running — demo (build), pid $$"
+  printf '%s %s\n' "$$" "$(LC_ALL=C ps -o lstart= -p $$)" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_has "…with the start time as ps prints it (padded day of the month): the same" "$OUT" "Loop: running"
+  printf '%s   %s\n' "$$" "$(printf '%s' "$MYSTART" | sed 's/ /   /g')" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_has "…runs of spaces in the file are squeezed (state.read_pid does too)" "$OUT" "Loop: running"
+  printf '%s %s\n' "$$" "$(printf '%s' "$MYSTART" | tr ' ' '\t')" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_has "…and so are tabs" "$OUT" "Loop: running"
+  printf '%s Thu Jan 1 00:00:00 1970\n' "$$" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_lacks "a live pid with another start time is another process: no phantom Loop line" "$OUT" "Loop:"
+  assert_rc "…and the hook still exits 0" 0
+  printf '%s not-a-time\n' "$$" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_lacks "a start time that is not one the process has: no Loop line" "$OUT" "Loop:"
+  printf '%s\n' "$$" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_has "an older file with the pid only: taken at its word (kill -0)" "$OUT" "Loop: running — demo (build), pid $$"
+  printf '%s   \n' "$$" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_has "a pid followed by blanks only is the old format" "$OUT" "Loop: running"
+  ( exit 0 ) & ss_dead=$!; wait "$ss_dead" 2>/dev/null
+  printf '%s %s\n' "$ss_dead" "$MYSTART" > "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_lacks "a dead pid with a start time: no Loop line" "$OUT" "Loop:"
+  FAKEPS="$WORK/fakeps"; mkdir -p "$FAKEPS"; printf '#!/bin/sh\nexit 1\n' > "$FAKEPS/ps"; chmod +x "$FAKEPS/ps"
+  printf '%s Thu Jan 1 00:00:00 1970\n' "$$" > "$SS/.sdlc/state/loop.pid"; ss_loop PATH="$FAKEPS:$PATH"
+  assert_has "ps cannot say (no output): being alive is all there is to go by, as util.same_process" "$OUT" "Loop: running"
+  # the hook asks ps once, for the pid in the file, with LC_ALL=C
+  REALPS=$(command -v ps)
+  printf '#!/bin/sh\necho "$LC_ALL $*" >> "%s/ps.calls"\nexec "%s" "$@"\n' "$WORK" "$REALPS" > "$FAKEPS/ps"; chmod +x "$FAKEPS/ps"; rm -f "$WORK/ps.calls"
+  printf '%s %s\n' "$$" "$MYSTART" > "$SS/.sdlc/state/loop.pid"; ss_loop PATH="$FAKEPS:$PATH"
+  assert_eq "one ps call per session start, LC_ALL=C, for the pid of loop.pid" "$(cat "$WORK/ps.calls" 2>/dev/null)" "C -o lstart= -p $$"
+  printf '%s\n' "$$" > "$SS/.sdlc/state/loop.pid"; rm -f "$WORK/ps.calls"; ss_loop PATH="$FAKEPS:$PATH"
+  assert_true "an old-format file asks ps nothing" "$([ ! -e "$WORK/ps.calls" ] && echo true || echo false)" "$(cat "$WORK/ps.calls" 2>/dev/null)"
+  rm -f "$SS/.sdlc/state/loop.pid"; ss_loop
+  assert_lacks "no loop.pid: no Loop line" "$OUT" "Loop:"
+else
+  echo "SKIP  session-start loop start time (ps -o lstart= -p \$\$ prints nothing here)"
+fi
+px_start=$( . "$PLUGIN/scripts/lib/hooks-extra.sh"; proc_start $$ ); px_none=$( . "$PLUGIN/scripts/lib/hooks-extra.sh"; proc_start 999999999 )
+px_sq=$( . "$PLUGIN/scripts/lib/hooks-extra.sh"; squeeze_ws $'  a \t b   c ' ); px_glob=$( cd "$PLUGIN" && . "$PLUGIN/scripts/lib/hooks-extra.sh"; squeeze_ws '*' )
+assert_eq "proc_start: the start time ps prints for a live pid, squeezed (as util.proc_start)" "$px_start" "$MYSTART"
+assert_eq "proc_start: nothing for a pid that is not running" "$px_none" ""
+assert_eq "squeeze_ws: the words joined by single spaces" "$px_sq" "a b c"
+assert_eq "squeeze_ws: a * is not expanded" "$px_glob" "*"
 
 # ======================================================================
 echo "-- timing"
