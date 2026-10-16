@@ -62,17 +62,37 @@ def _dump_value(v) -> str:
 
 
 def split_frontmatter(text: str) -> Tuple[Dict[str, object], str]:
+    """(front matter, the rest). A byte-order mark in front of the first `---` is ignored. A value is a scalar, a flow list
+    (`[a, b]`) or — for a key with nothing after the colon — a YAML block list on the lines below it (`  - a`)."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
     if not text.startswith("---"):
         return {}, text
     lines = text.split("\n")
     meta: Dict[str, object] = {}
+    key = ""
+    open_list = False                       # the last key had no value: `- item` lines under it are its list
     for i in range(1, len(lines)):
         line = lines[i]
         if line.strip() == "---":
             return meta, "\n".join(lines[i + 1:])
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*):\s?(.*)$", line)
         if m:
-            meta[m.group(1)] = _parse_value(m.group(2))
+            key = m.group(1)
+            meta[key] = _parse_value(m.group(2))
+            open_list = not m.group(2).strip()
+            continue
+        if open_list:
+            item = re.match(r"^\s*-(?:\s+(.*?))?\s*$", line)
+            if item:
+                value = _parse_value(re.sub(r"\s+#.*$", "", item.group(1) or ""))
+                if not isinstance(meta[key], list):
+                    meta[key] = []
+                if value != "":
+                    meta[key].append(value)     # type: ignore[union-attr]
+                continue
+            if line.strip() and not line.strip().startswith("#"):
+                open_list = False
     return {}, text
 
 
@@ -157,10 +177,16 @@ class WorkDoc:
                 break
         self.sections.insert(pos, [name, "\n" + body + "\n"])
 
+    def review_count(self) -> int:
+        return sum(1 for title, _ in self.sections if title.lower() == "review")
+
     def review_tally(self) -> Optional[Tuple[int, int, str]]:
+        """The last `SDLC_REVIEW_TALLY` line of the `## Review` sections: a second review supersedes the first."""
         m = None
-        for m in TALLY_RE.finditer(self.section("Review")):
-            pass
+        for title, body in self.sections:
+            if title.lower() == "review":
+                for m in TALLY_RE.finditer(body):
+                    pass
         if not m:
             return None
         return int(m.group(1)), int(m.group(2)), (m.group(3) or "")
@@ -195,6 +221,8 @@ def problems(doc: WorkDoc, file_slug: str = "", work: str = "work") -> List[str]
         p.append("status '%s' is not one of %s" % (doc.status, ", ".join(STATUSES)))
     if not doc.section("Goal"):
         p.append("no Goal section")
+    if doc.review_count() > 1:
+        p.append("more than one ## Review section")
     return p
 
 
