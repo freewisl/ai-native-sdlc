@@ -616,11 +616,12 @@ class TestRunnerConfig(GateCase):
             self.assertIn(p, got[0])
 
     def test_a_new_conftest_is_free_and_test_changes_allowed_lifts_the_lock(self):
-        self.on_main({"conftest.py": "import pytest\n"})
+        self.on_main({"conftest.py": "import pytest\n", "tests/test_base.py": "def test_base():\n    assert 1 + 1 == 2\n"})
         sha = self.design(test_changes="allowed")
-        self.build(test_changes="allowed", files={"conftest.py": "import pytest\n# touched\n", "tests/conftest.py": "import pytest\n"})
+        self.build(test_changes="allowed", files={"tests/conftest.py": "import pytest\n",
+                                                  "tests/test_base.py": "def test_base():\n    assert 2 == 1 + 1\n"})
         res = self.gate(design_sha=sha)
-        self.assertTrue(res.passed, res.summary())
+        self.assertTrue(res.passed, res.summary())                       # a new conftest and a changed test: both free
 
     def test_deleting_a_configuration_file_is_a_deleted_test_file(self):
         self.on_main({"pytest.ini": "[pytest]\n"})

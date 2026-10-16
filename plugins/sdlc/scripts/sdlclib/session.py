@@ -17,12 +17,16 @@ import signal
 import subprocess
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from .util import epoch, plugin_root, read_json, run, write_json
 
 LIMIT_RE = re.compile(r"(?:You've |you have )?hit your ([A-Za-z' ]+?) limit[^\n]*", re.I)
 RESET_EPOCH_KEYS = ("resetsAt", "resets_at")
+# Environment variables that are a person's switch, never a session's: the hooks read them as "a person said so". A loop
+# session that inherited them would unlock the hooks for itself. The deploy approval's name is configurable
+# (`protect.deploy_approval_env`); `RELEASE_APPROVAL` is its default and is dropped whatever the config says.
+PERSON_ONLY_ENV = ("SDLC_ALLOW_TEST_EDIT", "RELEASE_APPROVAL")
 
 
 class SessionResult:
@@ -150,7 +154,8 @@ def classify_limit(text: str, rate: Optional[dict]) -> tuple:
 
 class Runner:
     def __init__(self, root: str, claude_bin: str = "", plugin_dir: str = "", costs_path: str = "",
-                 max_turns: int = 500, allowed_tools: str = "", budget_usd: float = 0.0, isolate: bool = False):
+                 max_turns: int = 500, allowed_tools: str = "", budget_usd: float = 0.0, isolate: bool = False,
+                 drop_env: Iterable[str] = ()):
         self.root = root
         # --claude-bin, then SDLC_CLAUDE_BIN, then the CLAUDE_BIN other tools read, then claude on PATH
         self.claude = claude_bin or os.environ.get("SDLC_CLAUDE_BIN") or os.environ.get("CLAUDE_BIN") or \
@@ -161,6 +166,7 @@ class Runner:
         self.allowed_tools = allowed_tools
         self.budget = budget_usd
         self.isolate = isolate      # loop.isolate_sessions: a session reads this project's settings and the sdlc plugin only
+        self.drop_env = tuple(n for n in drop_env if n)     # person-only variables besides PERSON_ONLY_ENV
         self._flags: Optional[str] = None
         self.current: Optional[subprocess.Popen] = None
         self.interrupt = False      # set from a signal handler: stop the running session gracefully
@@ -220,6 +226,8 @@ class Runner:
         env = dict(os.environ)
         env.pop("CLAUDECODE", None)            # a nested claude refuses to start inside another session otherwise
         env.pop("CLAUDE_CODE_ENTRYPOINT", None)
+        for name in PERSON_ONLY_ENV + self.drop_env:        # the person's switches stay with the person
+            env.pop(name, None)
         cmd = self.command(prompt, res.sid, bool(resume_sid), model, effort)
         res.started = epoch()
         with open(log, "a", encoding="utf-8") as out:

@@ -133,7 +133,7 @@ class Engine:
         self.pause_file = os.path.join(root, str(L("pause_file", ".sdlc/state/pause")))
         self.runner = Runner(root, claude_bin=claude_bin, plugin_dir=plugin_dir, max_turns=int(L("max_turns", 500) or 500),
                              allowed_tools=str(L("allowed_tools", "") or ""), budget_usd=float(L("budget_usd_per_session", 0) or 0),
-                             isolate=bool(L("isolate_sessions", False)))
+                             isolate=bool(L("isolate_sessions", False)), drop_env=(self.cfg.deploy_approval_env,))
         self.claims = st.Claims(self.git.common_dir(), root)
         self.log_path = os.path.join(root, ".sdlc", "logs", "run-%s.log" % stamp())
         self.stopping = ""            # set by a signal: finish nothing more, stop the session gracefully
@@ -155,6 +155,7 @@ class Engine:
         self.self_checks = 0
         self.merged_since_check: List[str] = []   # slugs this loop merged since the run began or the last self-check
         self.skip_noted = False                   # the "self-check skipped" line is said once per run
+        self.self_check_misses = 0                # self-checks in a row that failed for another reason than a limit: a third is not tried
         self.status: Dict[str, object] = {}
         self.retry_delay = 60.0       # after a service error
         self.limit_margin = 60.0      # past a usage-limit reset before trying again
@@ -565,6 +566,7 @@ class Engine:
             return                                   # unreadable at this moment: keep what the run has
         if fresh.raw != self.cfg.raw:
             self.cfg = fresh
+            self.runner.drop_env = tuple(n for n in (fresh.deploy_approval_env,) if n)
             self.say("CONFIG  .sdlc/config.json changed on %s — the next items use the new one" % self.default)
 
     def scan(self) -> Dict[str, Item]:
@@ -658,6 +660,11 @@ class Engine:
         if not remote:
             st.update(self.root, slug, remote_sha="")
             return ""
+        if remote == st.item(self.root, slug).get("replaces"):
+            # a branch that was cut again (`start_over`): origin still holds only the old work, which the first push replaces —
+            # it is not a divergence to settle, and nothing of it comes in. Origin moving past it is somebody's push (below).
+            st.update(self.root, slug, remote_sha=remote)
+            return ""
         mine = "refs/heads/" + b
         how = self.git.relation(mine, "refs/remotes/origin/" + b)
         if how == "diverged":
@@ -670,8 +677,21 @@ class Engine:
             if not self.git("merge", "--ff-only", "-q", remote).ok:
                 return self.git.with_reason("cannot fast-forward %s to origin's (%s)" % (b, remote[:10]))
             self.say("SYNC    %s — took %s commit(s) from origin's %s (%s)" % (slug, n or "?", b, remote[:10]))
+            self.regate(slug)
         st.update(self.root, slug, remote_sha=remote)
         return ""
+
+    def regate(self, slug: str) -> None:
+        """Commits came in from origin onto a `done` item — a person's fix after a merge that failed, say. The gate passed
+        without them, so the doc goes back to `built` and the gate runs again before anything is shipped."""
+        d = self.doc(slug)
+        if d is None or d.status != "done":
+            return
+        d.status = "built"
+        d.save()
+        self.git("add", "--", os.path.relpath(self.doc_path(slug), self.root))
+        self.git("commit", "-q", "--no-verify", "-m", "sdlc(%s): back to built — commits came in from origin" % slug)
+        self.say("REGATE  %s — what came in from origin was not gated: back to built" % slug)
 
     # ------------------------------------------------------------------ claims on origin
     def take_remote_claim(self, slug: str) -> str:
@@ -847,8 +867,11 @@ class Engine:
                 rec["old_branch"], self.base(), rec["old_branch"]))
         extra = extra.strip("\n")
         extra_fp = digest(extra)
-        if phase == "build" and not rec.get("review_seen"):
-            st.update(self.root, slug, review_seen=False)     # until a window of this item shows the reviewer subagent being called
+        if phase == "build" and "review_seen" not in rec and stop.get("phase") != "build":
+            # a build this version starts: false until a window of this item shows the reviewer subagent being called. A build
+            # that an older version stopped (`stop` in its record, no `review_seen` — it never wrote one) is continued with the
+            # key left unknown, which the gate does not hold against it: the review may well have run before the stop.
+            st.update(self.root, slug, review_seen=False)
         resume_sid, cont_reason, last_fp = "", "", ""
         if stop and stop.get("phase") == phase:
             last_fp = str(stop.get("fp") or "")
@@ -1069,9 +1092,29 @@ class Engine:
                           (res.limit_text, until if reset else "at an unknown time"))
         self.set_status(state="waiting-limit", wake_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(epoch() + wait)))
         self.say("LIMIT   %s — waiting %d min" % (res.limit_text, wait // 60))
-        if not self.sleep(wait):
+        if not self.sleep_holding(slug, wait):
             raise StopRun(self.stopping or "paused")
         self.set_status(state="running", wake_at="")
+
+    def sleep_holding(self, slug: str, seconds: float) -> bool:
+        """`sleep` for as long as a usage limit lasts — hours — without letting the claim on origin lapse: it is renewed every
+        `claim_interval` seconds on the way, so that a loop in another clone does not find it stale and take the item. (The
+        claim files of `state.Claims` need nothing: they go by the process being alive.) "" for no item, as in a self-check.
+        False when a stop was requested meanwhile."""
+        step, left = self.claim_interval(), seconds
+        while left > 0:
+            chunk = min(step, left)
+            if not self.sleep(chunk):
+                return False
+            left -= chunk
+            if left > 0 and slug:
+                self.refresh_remote_claim(slug)
+        return True
+
+    def claim_interval(self) -> float:
+        """Seconds between two renewals of the claim on origin while the loop sits on it without a session: a third of the time
+        after which another clone takes a claim for abandoned (`take_remote_claim`), and never more than half an hour."""
+        return max(0.1, min(30 * 60.0, 2 * self.session_minutes * 60 / 3))
 
     # ------------------------------------------------------------------ outcomes
     def fail(self, slug: str, reason: str, count: bool = True) -> str:
@@ -1152,12 +1195,30 @@ class Engine:
                 return self.stale_push(slug, url)
             return self.fail(slug, "could not open the design PR: %s" % url, count=False)
         if self.forge.approved(slug):
-            st.update(self.root, slug, approved=True)
+            self.design_approved(slug)
             return Outcome.ADVANCED
         st.update(self.root, slug, state="awaiting-approval", pr=url)
         self.say("REVIEW  %s — design PR %s waits for approval" % (slug, url))
         self.event("loop.item", "awaiting-approval", url, {"slug": slug, "pr": url})
         return Outcome.AWAITING
+
+    def design_approved(self, slug: str, **fields: object) -> None:
+        """A person approved the design PR: what they approved is what origin's `sdlc/<slug>` holds now, so that commit becomes
+        the design the gate holds the build to (`design_sha`) — a reviewer who edited the doc before approving has not changed
+        it after the design. Only a commit on top of the recorded design that still says `planned`: nothing a build session made
+        (it ends with `built`) and nothing on a branch that is not the design's."""
+        sha = self.approved_tip(slug)
+        st.update(self.root, slug, approved=True, **dict(fields, **({"design_sha": sha} if sha else {})))
+
+    def approved_tip(self, slug: str) -> str:
+        """origin's tip of `sdlc/<slug>` when it is the recorded design or a commit on top of it whose work doc still says
+        `planned`; "" otherwise (nothing recorded, origin has no such branch, or the tip is something else)."""
+        recorded = str(st.item(self.root, slug).get("design_sha") or "")
+        tip = self.git.remote_sha("sdlc/" + slug)
+        if not recorded or not tip or not self.git.head(recorded) or not self.git.is_ancestor(recorded, tip):
+            return ""
+        text = self.git.show(tip, os.path.relpath(self.doc_path(slug), self.root))
+        return tip if text is not None and WorkDoc.parse(text).status == "planned" else ""
 
     def poll_team(self, items: Dict[str, Item]) -> None:
         """Team mode: notice approvals and merges done by people since the last look."""
@@ -1167,7 +1228,7 @@ class Engine:
             if it.phase not in TEAM_WAITS:
                 continue
             if it.phase == "approval" and self.forge.approved(it.slug):
-                st.update(self.root, it.slug, approved=True, state=None)
+                self.design_approved(it.slug, state=None)
                 it.phase, it.wait, it.wait_kind = "build", "", ""
                 self.say("APPROVED %s — design approved; building" % it.slug)
             elif it.phase == "awaiting-merge":
@@ -1289,8 +1350,14 @@ class Engine:
                 rec = st.item(self.root, slug)
             expect = str(rec.get("remote_sha") or "")
             if rec.get("replaces"):
+                old = rec.get("old_branch") or "a local branch"
                 self.say("REPLACE %s — the push replaces the older %s on origin (%s); the earlier work stays as %s" % (
-                    slug, b, str(rec["replaces"])[:10], rec.get("old_branch") or "a local branch"))
+                    slug, b, str(rec["replaces"])[:10], old))
+                # Before the push, not after: `forge.publish` reuses an open PR of the same head branch, so the older work's PR
+                # — with its reviews — would take the new commits and be read as the approval of the new design. Closed first,
+                # it never holds them, and a push that loses its lease leaves nothing but a closed PR of work that is replaced.
+                self.forge.close(slug, "replaced: %s was cut again from %s; the earlier work stays as %s in the checkout that "
+                                       "ran the loop" % (b, self.default, old))
         tip = self.git.head("refs/heads/" + b)
         ok, url = self.forge.publish(slug, title, pr_body(self.cfg, d, slug, rec), draft=draft, expect=expect)
         if self.forge.kind == "github":
@@ -1555,8 +1622,11 @@ class Engine:
         if dirty:
             return 1, "commit your changes first: " + dirty_summary(dirty)
         s = self.doc_status(slug)
+
+        def not_ready(status: str) -> str:
+            return "work/%s.md says '%s' — set status: built (with the review tally) when the change is ready" % (slug, status)
         if s not in ("built", "done"):
-            return 1, "work/%s.md says '%s' — set status: built (with the review tally) when the change is ready" % (slug, s)
+            return 1, not_ready(s)
         if not self.claims.take(slug):
             return 2, "another loop is working on %s" % slug
         holder = self.take_remote_claim(slug)
@@ -1568,6 +1638,9 @@ class Engine:
             why = self.sync_remote(slug)      # behind origin's: fast-forward; both moved: a person (nothing is pushed over theirs)
             if why:
                 return 2, why
+            s = self.doc_status(slug)         # what came in may have changed it: a `done` item with commits from origin is `built` again
+            if s not in ("built", "done"):
+                return 1, not_ready(s)
             if s == "built":
                 res = run_gate(self.cfg, self.git, slug, self.base())
                 self.event("loop.gate", "pass" if res.passed else "fail", res.summary()[:500], dict(res.as_dict(), slug=slug))
@@ -1600,7 +1673,7 @@ class Engine:
         reviewed again here — its own review covered the whole diff — so it takes `loop.self_check_min_items` of them (the
         run says so once when it skips for that)."""
         if self.team or not bool(self.cfg.get("loop.self_check", True)) or self.self_checks >= 2 or self.only \
-                or not self.merged_since_check or self.git.head() == self.from_sha:
+                or self.self_check_misses >= 2 or not self.merged_since_check or self.git.head() == self.from_sha:
             return False
         try:
             need = max(1, int(self.cfg.get("loop.self_check_min_items", 2)))
@@ -1632,9 +1705,11 @@ class Engine:
         self.say("CHECK   reviewing what merged (%s) (%s)" % (rng, session_note(model, effort, effort_why)))
         self.set_status(state="running", item="", phase="self-check", phase_started=now_iso(), model=model, effort=effort)
         before = set(self.git.untracked())
+        branch = self.git.branch()
         log = os.path.join(self.root, ".sdlc", "logs", "sessions", "%s-self-check.jsonl" % stamp())
         res = self.runner.run("/sdlc:go --self-check %s" % rng, log, min(self.session_minutes, 60), model, effort)
         self.cost += res.cost_delta
+        self.undo_commits(branch, head)
         self.event("loop.session", res.status, "self-check", {"slug": "", "phase": "self-check", "sid": res.sid,
                                                               "cost_usd": res.cost_delta, "turns": res.turns,
                                                               "log": os.path.relpath(log, self.root), "effort": effort,
@@ -1644,6 +1719,7 @@ class Engine:
         if res.status != "ok":
             return self.self_check_not_ok(res, model, merged, new_docs)
         self.self_checks += 1
+        self.self_check_misses = 0
         self.self_limit_hits = 0
         self.from_sha = head
         paths = new_docs
@@ -1686,6 +1762,18 @@ class Engine:
         self.event("self_check", "allow", rng, {"items": [d.slug for d in docs], "ready": ready})
         return len(docs)
 
+    def undo_commits(self, branch: str, head: str) -> None:
+        """The self-check writes new work docs and commits nothing — it runs on the default branch, which only a merge moves.
+        A commit it made anyway is taken back, its changes kept in the index so that `clean_after_self_check` treats them like
+        any other change of the session: undone, except for new work docs. A session that moved to another branch is left there."""
+        if not head or self.git.branch() != branch or self.git.head() == head:
+            return
+        if self.git("reset", "-q", "--soft", head).ok:
+            self.say("CHECK   the session committed on %s — taken back" % (branch or "the default branch"))
+        else:
+            self.say(self.git.with_reason("CHECK   the session committed on %s and the commit could not be taken back" % (
+                branch or "the default branch")))
+
     def clean_after_self_check(self, before: set, work: str) -> List[str]:
         """The self-check writes new work docs and nothing else: every other change it made is undone, wherever it is and
         whatever its name — every tracked file back to what it was (staged or not, existing work docs and
@@ -1725,6 +1813,7 @@ class Engine:
         for p in docs:
             if os.path.exists(p):
                 os.remove(p)
+        self.merged_since_check = merged        # whatever stopped it: the range is still to be reviewed, so the check is due again
         why = {"limited": res.limit_text, "timeout": "time cap (%d min)" % min(self.session_minutes, 60),
                "interrupted": "stopped by request", "max_turns": "turn cap", "budget": "budget cap"}.get(
                    res.status, res.api_error or res.status)
@@ -1734,12 +1823,12 @@ class Engine:
         if res.status == "interrupted" or self.stopping:
             raise StopRun(self.stopping or "interrupted")
         if res.status != "limited":
+            self.self_check_misses += 1         # due again, though not for ever: after two such misses this run stops trying
             return 0
         self.self_limit_hits += 1
         if self.self_limit_hits > 3:
             raise StopRun("usage limit hit %d times in a row (%s)" % (self.self_limit_hits, res.limit_text))
         self.handle_limit(res, model, "self_check")           # waits, switches model, or raises StopRun
-        self.merged_since_check = merged                       # due again, once the limit is over
         return 1
 
 

@@ -24,7 +24,7 @@ import sys
 import tempfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .config import CONFIG_REL, DEFAULTS, OBJECT_SECTIONS, Config, config_version, migrate_v1
+from .config import CONFIG_REL, DEFAULTS, OBJECT_SECTIONS, Config, as_list, config_version, migrate_v1
 from .util import now_iso, plugin_root, plugin_version, read_json, read_text, run, write_json
 from .workdoc import RESERVED_FILES, RESERVED_SLUGS, SLUG_RE, WorkDoc, list_docs, problems, split_frontmatter
 
@@ -1339,7 +1339,8 @@ def init(root: str, lang: str = "", mode: str = "", commands: str = "", dry: boo
     paths = dict(DEFAULTS["paths"], **(cfg.get("paths") or {}))
     cmds = {k: str((cfg.get("commands") or {}).get(k) or "") for k in COMMAND_KEYS}
     put(root, paths["work"] + "/README.md", render(tpl(lang, "work-README.md"), work_dir=paths["work"]), out)
-    gen = ", ".join((cfg.get("protect") or {}).get("generated_paths") or []) or \
+    generated = as_list((cfg.get("protect") or {}).get("generated_paths"))       # the file's own value: one string is a list of one
+    gen = ", ".join(str(g) for g in (generated if isinstance(generated, list) else [])) or \
         ("TODO: 생성 파일 경로 (.sdlc/config.json 의 protect.generated_paths 에도 적는다)" if lang == "ko" else
          "TODO: generated paths (also protect.generated_paths in .sdlc/config.json)")
     review_md(root, paths["review"], lang, gen, out)
@@ -1705,6 +1706,7 @@ def check(root: str) -> Dict[str, Any]:
     """What is set up, what is missing, what to do about it. Changes nothing."""
     from . import state as st
     from .gitops import Git, make_forge, remote_host
+    from .queue import scan
     from .session import Runner
     rows: List[Dict[str, str]] = []
 
@@ -1827,7 +1829,8 @@ def check(root: str) -> Dict[str, Any]:
         "not running" + ((" — last stop: %s" % last["stop"]) if last.get("stop") else ""))
     if os.path.exists(os.path.join(root, str(cfg.get("loop.pause_file") or DEFAULTS["loop"]["pause_file"]))):
         row("warn", "pause", "pause file", "paused — `sdlc.py resume` removes it")
-    waiting = sorted(s for s, r in st.load_items(root).items() if r.get("state") in ("needs-human", "blocked"))
+    queue = scan(cfg, git, git.base_ref(branch), st.load_items(root))        # the queue's own reading: `blocked` is an item that failed too often
+    waiting = sorted(s for s, it in queue.items() if it.phase in ("needs-human", "blocked"))
     if waiting:
         row("warn", "items", "items", "waiting for a person: " + ", ".join(waiting[:5]))
     left = leftovers(root, old)

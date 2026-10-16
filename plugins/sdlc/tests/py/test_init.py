@@ -2648,8 +2648,12 @@ class Check(Case):
 
     def test_items_waiting_for_a_person_and_a_running_loop_are_reported(self):
         self.ready()
+        for slug in ("a-first", "b-second", "c-third"):                    # items are the work docs on the default branch
+            self.repo.write("work/%s.md" % slug, "---\nslug: %s\ntitle: %s\nstatus: ready\ncreated: 2026-10-12T01:00:00Z\n---\n\n"
+                            "## Goal\nDo it.\n" % (slug, slug))
+        self.repo.commit("queue")
         self.repo.write(".sdlc/state/items.json", json.dumps({"a-first": {"state": "needs-human", "reasons": ["new dependency"]},
-                                                              "b-second": {"state": "blocked"}, "c-third": {"failures": 1}}))
+                                                              "b-second": {"failures": 3}, "c-third": {"failures": 1}}))
         self.repo.write(".sdlc/state/loop.pid", "%d\n" % os.getpid())
         self.repo.write(".sdlc/state/loop-status.json", json.dumps({"stop": "queue empty"}))
         _, got = self.repo.check()

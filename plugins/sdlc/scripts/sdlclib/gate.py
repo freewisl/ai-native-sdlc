@@ -19,7 +19,7 @@ import re
 import threading
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set, Tuple, TypeVar
 
-from .config import DEFAULTS, Config
+from .config import DEFAULTS, Config, as_list
 from .gitops import Git
 from .util import any_glob, read_text, run, run_shell, tail
 from .workdoc import WorkDoc
@@ -330,12 +330,19 @@ def test_changes_changed(cfg: Config, git: Git, slug: str, base: str, head: str,
 def existing_tests_changed(cfg: Config, git: Git, slug: str, base: str, head: str, *, design_sha: str = "") -> Optional[str]:
     """Existing test files (present where the branch left the default branch) that the branch modified, deleted or renamed
     away, when the design did not allow that. Test files the branch adds are free. Without a design commit the value is
-    `none` — never what head says."""
-    frozen = test_changes_of(design_text(cfg, git, slug, base, head, design_sha))
-    if frozen == "allowed" or not cfg.get("protect.protect_tests", True):
+    `none` — never what head says. The test runner's own configuration (`TEST_CONFIG_GLOBS`) is not the tests: the design's
+    `test_changes: allowed` does not cover an existing one of those, which always goes to a person."""
+    if not cfg.get("protect.protect_tests", True):
         return None
+    frozen = test_changes_of(design_text(cfg, git, slug, base, head, design_sha))
     kinds = {"M": "modified", "T": "modified", "D": "deleted or renamed"}
-    files = ["%s (%s)" % (path, kinds[st]) for st, path in flat_changes(git, base, head) if st in kinds and is_test_path(cfg, path)]
+    hit = [(path, kinds[st]) for st, path in flat_changes(git, base, head) if st in kinds and is_test_path(cfg, path)]
+    if frozen == "allowed":
+        config = ["%s (%s)" % (path, how) for path, how in hit if TEST_CONFIG_RE.search(path)]
+        if not config:
+            return None
+        return "existing test configuration changed, which test_changes: allowed does not cover — " + _list(config, 8)
+    files = ["%s (%s)" % (path, how) for path, how in hit]
     if not files:
         return None
     return "existing tests changed, but the design said test_changes: none — " + _list(files, 8)
@@ -606,7 +613,8 @@ def protected_lists(cfg: Config, git: Git, base: str, head: str) -> Tuple[List[s
         frozen_file = str(cfg.get("protect.frozen_paths_file", "") or "")
     else:
         protect = raw.get("protect") if isinstance(raw.get("protect"), dict) else {}
-        generated = protect.get("generated_paths") if isinstance(protect.get("generated_paths"), list) else []
+        generated = as_list(protect.get("generated_paths"))          # read from the file itself: one string is a list of one
+        generated = generated if isinstance(generated, list) else []
         frozen_file = str(protect.get("frozen_paths_file") or DEFAULTS["protect"]["frozen_paths_file"])
     text = None
     if frozen_file:

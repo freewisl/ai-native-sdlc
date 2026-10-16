@@ -269,8 +269,10 @@ class OriginSync(RepoCase):
         self.assertEqual(self.repo.gh_db()["prs"][0]["state"], "MERGED")
         self.assertEqual(self.repo.origin_show("main", "PERSON.txt"), "a person's commit\n")        # not lost
         merge = self.merge_calls()[-1]
-        self.assertEqual(merge[merge.index("--match-head-commit") + 1], person)     # the PR is merged at the commit that was pushed
-        self.assertEqual(self.repo.items_state()["a-first"]["remote_sha"], person)
+        head = merge[merge.index("--match-head-commit") + 1]
+        self.assertNotEqual(head, person)                                           # what came in is gated again, so the branch moved on
+        self.repo.git("merge-base", "--is-ancestor", person, head)                  # raises when the person's commit is not under it
+        self.assertEqual(self.repo.items_state()["a-first"]["remote_sha"], head)    # the PR is merged at the commit that was pushed
 
     def test_both_sides_having_commits_is_for_a_person_and_nothing_is_pushed_over_theirs(self):
         self.repo.add_items("a-first")
@@ -426,7 +428,8 @@ class TeamDesignPr(RepoCase):
         self.assertEqual(self.repo.origin_show("sdlc/a-first", "src/a-first.txt"), "built a-first\n")
         self.repo.git("merge-base", "--is-ancestor", reviewer, "origin/sdlc/a-first")                # raises when it is not
         self.assertFalse(self.repo.gh_db()["prs"][0]["isDraft"])
-        self.assertEqual(self.repo.items_state()["a-first"]["design_sha"], design)    # the reviewer's commit is not the design
+        self.assertEqual(self.repo.items_state()["a-first"]["design_sha"], reviewer)  # the design as approved includes their commit
+        self.assertNotEqual(reviewer, design)
 
 
 # =====================================================================================================================

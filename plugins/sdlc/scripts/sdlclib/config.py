@@ -102,6 +102,24 @@ class NotInitialized(Exception):
     pass
 
 
+def as_list(value: Any) -> Any:
+    """A setting that holds a list, written as one string: `"dist/**"` is `["dist/**"]` and `""` is `[]`. Anything else is
+    returned as it is."""
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return value
+
+
+def default_of(dotted: str) -> Any:
+    """The built-in default of a dotted setting (`protect.test_paths`); None when there is none."""
+    cur: Any = DEFAULTS
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
 def section(raw: Any, key: str) -> Dict[str, Any]:
     """`raw[key]` when it is an object; `{}` for a missing, null or mistyped section (`"commands": "make"`)."""
     v = raw.get(key) if isinstance(raw, dict) else None
@@ -272,12 +290,23 @@ class Config:
     def escalate_model(self) -> str:
         return str(self.get("loop.escalate_model", "") or "")
 
+    @property
+    def deploy_approval_env(self) -> str:
+        """The environment variable a person sets to approve a deploy (`protect.deploy_approval_env`) — theirs alone, so a loop
+        session must not inherit it."""
+        return str(self.get("protect.deploy_approval_env", "") or "").strip()
+
     def get(self, dotted: str, default: Any = None) -> Any:
+        """The setting at a dotted path. A setting whose built-in default is a list (the glob and command lists) that the file
+        wrote as one string comes back as a list of that string — callers iterate it, and a string would be taken apart
+        character by character."""
         cur: Any = self.data
         for part in dotted.split("."):
             if not isinstance(cur, dict) or part not in cur:
                 return default
             cur = cur[part]
+        if isinstance(cur, str) and isinstance(default_of(dotted), list):
+            return as_list(cur)
         return cur if cur is not None else default
 
     @property
