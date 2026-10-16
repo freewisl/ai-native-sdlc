@@ -88,6 +88,8 @@ j_multi()  { printf '{%s,"hook_event_name":"PreToolUse","tool_name":"MultiEdit",
 j_nb()     { printf '{%s,"hook_event_name":"PreToolUse","tool_name":"NotebookEdit","tool_use_id":"t1","tool_input":{"notebook_path":%s,"cell_id":"c1","new_source":%s}}' "$(base "$1")" "$(json_escape "$2")" "$(json_escape "$3")"; }
 j_bash()   { printf '{%s,"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":%s,"description":"test"}}' "$(base "$1")" "$(json_escape "$2")"; }
 j_postbash(){ printf '{%s,"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":%s},"tool_response":{"stdout":%s,"stderr":%s,"interrupted":%s}}' "$(base "$1")" "$(json_escape "$2")" "$(json_escape "$3")" "$(json_escape "$4")" "${5:-false}"; }
+j_postbashfail(){ printf '{%s,"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":%s},"error":%s,"is_interrupt":false}' "$(base "$1")" "$(json_escape "$2")" "$(json_escape "Exit code 1
+$3")"; }
 j_postedit(){ printf '{%s,"hook_event_name":"PostToolUse","tool_name":"Edit","tool_use_id":"t1","tool_input":{"file_path":%s,"old_string":"x","new_string":"y"},"tool_response":{"filePath":%s}}' "$(base "$1")" "$(json_escape "$2")" "$(json_escape "$2")"; }
 j_stop()   { printf '{%s,"hook_event_name":"Stop","stop_hook_active":%s,"last_assistant_message":"done"}' "$(base "$1")" "$2"; }
 j_session(){ printf '{%s,"hook_event_name":"%s","source":"startup"}' "$(base "$1")" "$2"; }
@@ -504,12 +506,12 @@ GP=$(fresh)
 gate_pass()  { local c="$1"; shift; run_hook guard-bash "$GP" "$(j_bash "$GP" "$c")" "$@"; assert_rc "deploy gate passes: $(short "$c")" 0; }
 gate_block() { local c="$1"; shift; run_hook guard-bash "$GP" "$(j_bash "$GP" "$c")" "$@"; assert_rc "deploy gate blocks: $(short "$c")" 2; }
 # the word lists are the contract: a change to one of them shows up here (the behavior tests below pin both sides of each list)
-TEXT_TOOLS="echo printf cat grep egrep fgrep rg ag ack head tail wc sort uniq cut tr diff jq"      # not less and more: they run what a ! line or LESSOPEN says
+TEXT_TOOLS="echo printf cat grep egrep fgrep rg ag ack head tail wc sort uniq cut tr diff jq ls stat file du df tree pwd readlink realpath basename dirname which whereis type test [ [[ cd pushd popd true false : date uname hostname id whoami yq xq column nl od xxd hexdump strings md5sum sha1sum sha256sum shasum cksum cmp comm join paste fold fmt rev tac seq sleep"      # not less and more: they run what a ! line or LESSOPEN says; not sed, awk, find: they run what -i, e, system() and -exec say
 SHELL_CMDS="sh bash zsh dash ksh ssh"
 GIT_LOCAL="commit log show diff grep checkout switch branch tag status add rm mv merge fetch pull stash remote cherry-pick restore reset revert blame clean describe ls-files rev-parse rev-list shortlog worktree apply am archive bundle clone init notes reflog format-patch cat-file show-ref name-rev for-each-ref diff-tree range-diff cherry show-branch gc fsck prune maintenance sparse-checkout"
 GIT_RUNS="rebase bisect submodule difftool mergetool config"       # they run what they are given (--exec, run, foreach, a tool, an alias): not on the list
 GIT_C_INERT="user.name=* user.email=*"                              # the -c settings that run nothing: they name the committer
-ENV_INERT="LANG=* LC_*=* TZ=* TERM=* NO_COLOR=* COLUMNS=* GIT_PAGER=cat GIT_PAGER= PAGER=cat PAGER= GIT_AUTHOR_NAME=* GIT_AUTHOR_EMAIL=* GIT_AUTHOR_DATE=* GIT_COMMITTER_NAME=* GIT_COMMITTER_EMAIL=* GIT_COMMITTER_DATE=*"      # language, time zone, terminal; a pager that is cat or empty; author and committer
+ENV_INERT="LANG=* LC_*=* TZ=* TERM=* NO_COLOR=* COLUMNS=* GIT_PAGER=cat GIT_PAGER= PAGER=cat PAGER= GIT_EDITOR=true GIT_EDITOR=: GIT_SEQUENCE_EDITOR=true GIT_SEQUENCE_EDITOR=: GIT_AUTHOR_NAME=* GIT_AUTHOR_EMAIL=* GIT_AUTHOR_DATE=* GIT_COMMITTER_NAME=* GIT_COMMITTER_EMAIL=* GIT_COMMITTER_DATE=*"      # language, time zone, terminal; a pager that is cat or empty; author and committer
 assert_eq "the text tools the gate skips are exactly the specified ones" "$(sed -n 's/^SDLC_TEXT_TOOLS="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$TEXT_TOOLS"
 assert_eq "the shells whose heredoc bodies the gate reads are exactly the specified ones" "$(sed -n 's/^SDLC_SHELLS="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$SHELL_CMDS"
 assert_eq "the git commands the gate skips are exactly the listed ones (push is not among them)" "$(sed -n 's/^SDLC_GIT_LOCAL="\(.*\)"$/\1/p' "$PLUGIN/scripts/hooks/guard-bash.sh")" "$GIT_LOCAL"
@@ -571,9 +573,14 @@ for t in $TEXT_TOOLS; do
   gate_pass "$t release to prod"
   gate_pass "/usr/bin/$t deploy production"
 done
-for t in sed awk find ls xargs make npm yarn pnpm python python3 pytest node perl ruby tee gh curl kubectl docker rm mv cp ln touch mkdir chmod tar scp rsync \
-         pip go cargo mvn gradle open code vim cd export set test bash sh zsh dash ksh ssh less more; do
+for t in xargs make npm yarn pnpm python python3 node perl ruby tee gh kubectl docker rm mv cp ln touch mkdir chmod tar scp rsync \
+         pip go cargo mvn gradle open code vim export set bash sh zsh dash ksh ssh less more; do
   gate_block "$t release to prod"
+done
+# 1.2: these only read while nothing on the line makes them run a program — a deploy word among their arguments is a name, a pattern
+# or a path (sed and awk without -i / an e command / system(); find without -exec; ls, cd, test; a test runner; curl without -X POST/-d)
+for t in sed awk find ls pytest curl cd test; do
+  gate_pass "$t release to prod"
 done
 # a pager is no text tool: it runs what a ! line or LESSOPEN says
 gate_block '/usr/bin/less deploy production'
@@ -883,8 +890,8 @@ assert_has "message: names the simple command that matched" "$ERR" ", in './depl
 assert_has "message: names the pattern" "$ERR" "(deploy|release|rollout|promote)"
 assert_has "message: still names the approval env and the config key" "$ERR" "RELEASE_APPROVAL"
 assert_has "message: points at protect.deploy_patterns" "$ERR" "protect.deploy_patterns"
-assert_has "message: says which commands are not looked at" "$ERR" "text tools"
-assert_has "message: says that a text tool or git running a program is looked at" "$ERR" "when it runs a program (--pre, --pager, git -c, --exec, an env prefix"
+assert_has "message: says which commands are not looked at" "$ERR" "except text and read-only tools"
+assert_has "message: says that a program's prose arguments are skipped" "$ERR" "prose arguments are skipped"
 assert_true "log: the matched part is in the event" "$(log_has "$P" '"part":"\./deploy\.sh prod"')" "$(cat "$P/.sdlc/logs/events.jsonl" 2>/dev/null)"
 run_hook guard-bash "$P" "$(j_bash "$P" './deploy.sh prod')"
 assert_lacks "message: one simple command needs no 'in …'" "$ERR" ", in '"
@@ -1329,7 +1336,7 @@ mkdir -p "$P/tests/few" "$P/tests/lots"
 run_hook guard-bash "$P" "$(j_bash "$P" "rm tests/few/*")"
 assert_rc "free: a glob over 20 of the change's own tests" 0
 run_hook guard-bash "$P" "$(j_bash "$P" "rm tests/lots/*")"
-assert_rc "limit: a glob over more own tests than the per-command lookup cap (30) is treated as existing — blocked" 2
+assert_rc "free: a glob over 45 of the change's own tests (the base is listed once, there is no per-file lookup cap to hit)" 0
 run_hook guard-bash "$P" "$(j_bash "$P" "rm tests/x_test.py tests/few/t1_test.py")"
 assert_rc "locked: an existing test next to an own one" 2
 P=$(fresh); gitp "$P" init -q . >/dev/null 2>&1; gitp "$P" symbolic-ref HEAD refs/heads/sdlc/planned
@@ -1607,7 +1614,7 @@ out=$(bash "$SS" --staged "$R" --untracked 2>&1); rc=$?
 assert_eq "--untracked: the secret in an untracked file exits 1" "$rc" 1
 assert_has "--untracked: the hit names a pattern" "$out" "pattern#"
 assert_lacks "--untracked: the secret is never printed" "$out" "${AWS_KEY:0:12}"
-assert_lacks "--untracked: neither is the file name or its text" "$out" "u.py"
+assert_has "--untracked: the hit names the file and the line (1.2)" "$out" "src/u.py:1"
 out=$(bash "$SS" --staged "$R" --all --untracked 2>&1); rc=$?
 assert_eq "--all --untracked together" "$rc" 1
 rm -f "$R/src/u.py"
@@ -1827,10 +1834,10 @@ assert_rc "post-bash exits 0" 0
 assert_true "passing test run → last_verify_ok=true" "$([ "$(state_of "$P" last_verify_ok)" = true ] && echo true || echo false)" "$(cat "$P/.sdlc/state/session-$SID.json")"
 assert_true "last_verify_cmd recorded" "$([ "$(state_of "$P" last_verify_cmd)" = "npm test -- --ci" ] && echo true || echo false)" "$(state_of "$P" last_verify_cmd)"
 assert_true "events.jsonl has verify.run pass" "$(log_has "$P" '"event":"verify.run".*"decision":"pass"')" "$(cat "$P/.sdlc/logs/events.jsonl")"
-run_hook post-bash "$P" "$(j_postbash "$P" "npm test" "" "FAIL src/app.test.js")"
-assert_true "FAIL in stderr → last_verify_ok=false" "$([ "$(state_of "$P" last_verify_ok)" = false ] && echo true || echo false)" "$(state_of "$P" last_verify_ok)"
-run_hook post-bash "$P" "$(j_postbash "$P" "npm test" "= 1 failed, 20 passed =" "")"
-assert_true "'1 failed' in stdout → false" "$([ "$(state_of "$P" last_verify_ok)" = false ] && echo true || echo false)" "$(state_of "$P" last_verify_ok)"
+run_hook post-bash "$P" "$(j_postbashfail "$P" "npm test" "FAIL src/app.test.js")"
+assert_true "a failed verify command (PostToolUseFailure) → last_verify_ok=false" "$([ "$(state_of "$P" last_verify_ok)" = false ] && echo true || echo false)" "$(state_of "$P" last_verify_ok)"
+run_hook post-bash "$P" "$(j_postbash "$P" "npm test | tail -20" "= 1 failed, 20 passed =" "")"
+assert_true "'1 failed' in the output of a piped run → false (the pipe hides the exit code)" "$([ "$(state_of "$P" last_verify_ok)" = false ] && echo true || echo false)" "$(state_of "$P" last_verify_ok)"
 run_hook post-bash "$P" "$(j_postbash "$P" "npm test" "Tests run: 4, Failures: 0, Errors: 0 -- BUILD SUCCESS" "")"
 assert_true "'Failures: 0' is not a failure" "$([ "$(state_of "$P" last_verify_ok)" = true ] && echo true || echo false)" "$(state_of "$P" last_verify_ok)"
 run_hook post-bash "$P" "$(j_postbash "$P" "npm test" "" "" true)"
@@ -1859,7 +1866,7 @@ assert_has "block reason says fix the code, not the test" "$OUT" "fix the code, 
 assert_lacks "block reason does not mention removed skills" "$OUT" "/sdlc:verify"
 run_hook stop-verify "$P" "$(j_stop "$P" true)"
 assert_true "stop_hook_active=true → always allowed" "$([ -z "$OUT" ] && [ "$RC" = 0 ] && echo true || echo false)" "rc=$RC out=$OUT"
-run_hook post-bash "$P" "$(j_postbash "$P" "npm test" "" "FAIL")"
+run_hook post-bash "$P" "$(j_postbashfail "$P" "npm test" "FAIL")"
 run_hook stop-verify "$P" "$(j_stop "$P" false)"
 assert_has "failed verify after edit → still blocked" "$OUT" '"decision":"block"'
 assert_has "failed verify reason mentions the failure" "$OUT" "verify run failed"
@@ -1950,11 +1957,13 @@ after=$(wc -l < "$P/.sdlc/logs/events.jsonl")
 assert_true "log_events=false suppresses logging" "$([ "$before" = "$after" ] && echo true || echo false)" "before=$before after=$after"
 
 # ======================================================================
-echo "-- robustness: empty / garbage stdin never blocks"
+echo "-- robustness: empty stdin never blocks, garbage stdin blocks only in the two guards (they fail closed)"
 P=$(fresh)
 for h in session-start session-end guard-edit guard-bash post-edit post-bash stop-verify; do
   run_hook "$h" "$P" ""
   assert_rc "empty stdin: $h exits 0" 0
+done
+for h in session-start session-end post-edit post-bash stop-verify; do         # the guards block on garbage (1.2: they fail closed)
   run_hook "$h" "$P" "not json at all {"
   assert_rc "garbage stdin: $h exits 0" 0
 done
@@ -2045,6 +2054,552 @@ else
 fi
 
 # ======================================================================
+# 1.2 — hook fixes. One section per fix; the arrays between @@ markers are generated from the probe files the fixes were developed with.
+echo "-- 1.2 deploy gate: prose, read-only commands and test runs pass — real deploys stay blocked (with and without .sdlc/config.json)"
+GI=$(fresh); GN=$(fresh_plain)
+gate2() { # gate2 <0|2> <command> [VAR=val …] — the same verdict in an initialized project and in one without .sdlc/config.json
+  local want="$1" c="$2"; shift 2
+  run_hook guard-bash "$GI" "$(j_bash "$GI" "$c")" "$@"; assert_rc "1.2 deploy gate ($want, initialized): $(short "$c")" "$want"
+  run_hook guard-bash "$GN" "$(j_bash "$GN" "$c")" "$@"; assert_rc "1.2 deploy gate ($want, no config): $(short "$c")" "$want"
+}
+DG=(
+  $'0|gh pr create --title "Add banner" --body "Before we deploy to prod, check the banner"'
+  $'0|gh pr create --title "Notes" --body "$(cat <<\'EOF\'\n## Summary\nReady to release to production next week.\nEOF\n)"'
+  $'0|gh pr create --fill --body-file notes/deploy-production.md'
+  $'0|gh issue create --title "deploy prod broke" --body "rollout to live failed"'
+  $'0|gh pr comment 12 --body "please deploy to production after review"'
+  $'0|gh pr view 7 --json body --jq .body'
+  $'0|gh run list --workflow deploy-production.yml'
+  $'0|gh run view 123 --log'
+  $'0|gh api "repos/o/r/deployments?environment=Production"'
+  $'0|gh api repos/o/r/deployments --jq \'.[] | select(.environment=="Production") | .sha\''
+  $'0|curl -s https://my-app-production.vercel.app/x'
+  $'0|curl -sI https://my-app-production.vercel.app/release-notes'
+  $'0|curl -s "https://api.example.com/v1/deployments?target=production"'
+  $'0|ls deploy/prod'
+  $'0|ls .github/workflows/deploy-production.yml'
+  $'0|find .github/workflows -name "deploy-production*"'
+  $'0|find deploy/prod -type f'
+  $'0|stat deploy/prod'
+  $'0|cd deploy/prod && ls'
+  $'0|test -f deploy/prod/values.yaml'
+  $'0|[ -d deploy/prod ] && echo yes'
+  $'0|[[ -d deploy/production ]] && echo yes'
+  $'0|awk \'/release/ && /production/\' CHANGELOG.md'
+  $'0|awk -F: \'{print $1}\' deploy/prod/hosts'
+  $'0|sed -n \'1,40p\' .github/workflows/deploy-production.yml'
+  $'0|sed -n 1,40p deploy/prod/values.yaml'
+  $'0|yq \'.jobs.deploy\' .github/workflows/deploy-production.yml'
+  $'0|yq e \'.release.production\' deploy/prod/values.yaml'
+  $'0|node -e "console.log(\'release to production\')"'
+  $'0|python3 -c "print(\'deploy to prod\')"'
+  $'0|node --test test/release-production.test.js'
+  $'0|pytest -k "not production"'
+  $'0|pytest tests/test_deploy_prod.py'
+  $'0|npm test -- --grep "rollout to live"'
+  $'0|kubectl get deploy -n delivery'
+  $'0|kubectl get pods -n production'
+  $'0|kubectl logs deploy/api -n production'
+  $'0|kubectl describe deploy/api -n production'
+  $'0|GIT_EDITOR=true git commit -m "release to production notes"'
+  $'0|GIT_EDITOR=true git commit --amend --no-edit'
+  $'0|git commit -m "docs: explain how we deploy to production"'
+  $'0|git log --oneline -- deploy/prod'
+  $'0|git diff main -- deploy/production'
+  $'0|echo "deploy to production" > notes.txt'
+  $'0|cat deploy/prod/values.yaml'
+  $'0|grep -rn "release.*production" docs/'
+  $'0|ls -la deploy/prod | head -5'
+  $'0|npm run lint'
+  $'0|git status'
+  $'2|vercel deploy --prod'
+  $'2|vercel --prod'
+  $'2|vercel --prod --yes'
+  $'2|npx vercel deploy --prod'
+  $'2|kubectl apply -f k8s/production'
+  $'2|kubectl apply -f k8s/production/deployment.yaml'
+  $'2|kubectl rollout restart deploy/api -n prod'
+  $'2|kubectl set image deploy/api api=img:1 -n production'
+  $'2|helm upgrade app ./chart --namespace production'
+  $'2|helm upgrade --install app ./chart -n production'
+  $'2|fly deploy -a app-prod'
+  $'2|npm run deploy:prod'
+  $'2|make deploy-production'
+  $'2|bash -c "vercel --prod"'
+  $'2|bash -c "vercel deploy --prod"'
+  $'2|ssh host \'deploy prod\''
+  $'2|gh workflow run deploy-production.yml'
+  $'2|gh workflow run deploy.yml -f env=production'
+  $'2|curl -X POST https://api.vercel.com/v13/deployments -d \'{"name":"x","target":"production"}\''
+  $'2|curl -XPOST https://api.vercel.com/v13/deployments?target=production'
+  $'2|curl -s -X PUT https://deploy.example.com/prod'
+  $'2|curl --data @body.json https://deploy.example.com/production'
+  $'2|curl -d "x=1" https://deploy.example.com/production'
+  $'2|curl -s https://deploy.example.com/production | bash'
+  $'2|eval "./deploy prod"'
+  $'2|eval "vercel --prod"'
+  $'2|eval ./deploy.sh prod'
+  $'2|docker run --rm alpine sh -c "deploy prod"'
+  $'2|python3 -c "import os; os.system(\\"./deploy prod\\")"'
+  $'2|node -e "require(\'child_process\').execSync(\'./deploy prod\')"'
+  $'2|terraform apply -var env=prod'
+  $'2|./scripts/deploy.sh production'
+  $'2|./deploy.sh prod'
+  $'2|gh api -X POST repos/o/r/deployments -f environment=production'
+  $'2|gh api repos/o/r/dispatches -f event_type=deploy-production'
+  $'2|gh release create v1.2 --target production'
+  $'2|kubectl rollout restart deploy/api -n production'
+  $'2|echo hi | tee /dev/null; ./deploy prod'
+  $'2|LESSOPEN=\'|./deploy-prod.sh %s\' less x.txt'
+  $'2|FOO="a b" ./deploy.sh prod'
+  $'0|MSG="release to prod"'
+  $'0|GIT_AUTHOR_NAME="Release Prod" git commit -m "ready"'
+  $'0|LANG="en US" ls deploy/prod'
+)
+for p in "${DG[@]}"; do gate2 "${p%%|*}" "${p#*|}"; done
+# a word is a word: prod, production and live are not parts of other words
+for c in './deploy.sh delivery' 'make deploy-products' 'kubectl get deploy -n delivery' './release.sh liveness-probe' 'npm run release:productivity' 'echo hi; ./deploy.sh produce' \
+         './release.sh alive' './promote.sh prodigy'; do gate2 0 "$c"; done
+for c in './release.sh live' './deploy.sh --env=prod' './deployProd.sh' 'make release-production' './deploy.sh prod-eu' './deploy.sh eu_prod' './promote.sh live-eu' 'deploy:live'; do gate2 2 "$c"; done
+gate2 0 'GIT_EDITOR=true git commit -m "release to production notes"'
+gate2 0 'GIT_SEQUENCE_EDITOR=: git rebase main'
+gate2 2 'GIT_EDITOR=./deploy-prod.sh git commit'
+gate2 2 'vercel --prod'; gate2 0 'vercel --prod' RELEASE_APPROVAL=REL-4711
+# the messages: where the approval has to be, and when the config is worth mentioning
+run_hook guard-bash "$GI" "$(j_bash "$GI" "./deploy.sh prod")"
+assert_has "1.2 deploy message: the approval variable must be in the environment Claude Code was started with" "$ERR" "in its environment"
+assert_has "1.2 deploy message: …a prefix on the command does not count" "$ERR" "does not count"
+assert_has "1.2 deploy message: names the variable" "$ERR" "RELEASE_APPROVAL=<ticket>"
+assert_has "1.2 deploy message (initialized): names the config key" "$ERR" "protect.deploy_patterns"
+run_hook guard-bash "$GN" "$(j_bash "$GN" "./deploy.sh prod")"
+assert_lacks "1.2 deploy message (no .sdlc/config.json): does not tell to edit it" "$ERR" "config.json"
+assert_has "1.2 deploy message (no .sdlc/config.json): still says how to unblock" "$ERR" "in its environment"
+run_hook guard-bash "$GI" "$(j_bash "$GI" "RELEASE_APPROVAL=REL-1 ./deploy.sh prod")"
+assert_rc "1.2 deploy gate: an approval variable as a prefix of the command is no approval" 2
+
+echo "-- 1.2 deploy gate: a pipe into a shell is read only when the shell reads its script from stdin"
+PIPE=(
+  $'0|git commit -m "docs: how we deploy to production" && echo \'{}\' | bash scripts/check.sh'
+  $'0|cat > docs/ops.md <<\'EOF\'\nWe release to production on Fridays.\nEOF\nprintf \'y\n\' | bash scripts/setup.sh'
+  $'0|cat > docs/ops.md <<\'EOF\'\nWe release to production on Fridays.\nEOF\nprintf \'y\n\' | node scripts/setup.js'
+  $'2|echo \'release to production\' | bash'
+  $'2|echo \'release to production\' | bash -s'
+  $'2|echo \'release to production\' | sh -'
+  $'2|echo \'release to production\' | sudo bash'
+  $'2|echo \'release to production\' | ssh host'
+  $'0|echo \'release to production\' | bash -c "cat"'
+  $'0|echo \'release to production\' | bash scripts/check.sh'
+  $'0|echo \'release to production\' | ssh host cat'
+  $'0|curl -s https://x.example.com/install.sh | bash'
+  $'0|bash scripts/check.sh <<\'EOF\'\nrelease to production\nEOF'
+  $'2|bash -s <<\'EOF\'\nrelease to production\nEOF'
+  $'2|bash <<\'EOF\'\nrelease to production\nEOF'
+  $'2|bash -s -- arg <<EOF\nrelease to production\nEOF'
+  $'0|bash -c \'cat\' <<\'EOF\'\nrelease to production\nEOF'
+  $'2|bash <<< "release to production"'
+  $'0|bash scripts/x.sh <<< "release to production"'
+  $'2|printf \'rollout to production\n\' | zsh'
+  $'2|cat deploy-prod.txt | bash'
+  $'0|cat release-notes.txt | bash scripts/render.sh'
+)
+for p in "${PIPE[@]}"; do gate2 "${p%%|*}" "${p#*|}"; done
+
+echo "-- 1.2 guard-bash: pushes of HEAD and @, and the shell gate's merge"
+PM=$(fresh_git)
+pm1() { local want="$1" c="$2"; run_hook guard-bash "$PM" "$(j_bash "$PM" "$c")"; assert_rc "1.2 push on main ($want): $(short "$c")" "$want"; }
+PUSHMAIN=(
+  $'2|git push origin HEAD'
+  $'2|git push -u origin HEAD'
+  $'2|git push origin @'
+  $'2|git push origin +HEAD'
+  $'2|git push origin HEAD:main'
+  $'2|git push origin @:main'
+  $'2|git push origin main'
+  $'2|git push origin refs/heads/main'
+  $'2|git push'
+  $'0|git push origin HEAD:feature/x'
+  $'0|git push origin feature/x'
+  $'0|git status && git push origin feature/y'
+)
+for p in "${PUSHMAIN[@]}"; do pm1 "${p%%|*}" "${p#*|}"; done
+PA=$(fresh_active); PAN=$(fresh_active); set_cfg "$PAN" protect.block_direct_push false
+pa2() { # pa2 <0|2> <command> — an sdlc item is active; protect.block_direct_push on (the default) and off
+  local want="$1" c="$2"
+  run_hook guard-bash "$PA" "$(j_bash "$PA" "$c")"; assert_rc "1.2 active work ($want, block_direct_push default): $(short "$c")" "$want"
+  run_hook guard-bash "$PAN" "$(j_bash "$PAN" "$c")"; assert_rc "1.2 active work ($want, block_direct_push=false): $(short "$c")" "$want"
+}
+PUSHACTIVE=(
+  $'0|git push origin HEAD'
+  $'0|git push -u origin HEAD'
+  $'0|git push origin sdlc/planned'
+  $'0|git push'
+  $'0|gh pr create --fill'
+  $'0|gh pr view 12'
+  $'0|gh pr list'
+  $'0|gh pr checks 12'
+  $'0|echo "gh pr merge 12"'
+  $'0|git commit -m "gh pr merge is the gate\'s job"'
+  $'2|git push origin main'
+  $'2|git push origin HEAD:main'
+  $'2|git push origin @:main'
+  $'2|git push -u origin HEAD:refs/heads/main'
+  $'2|git push --all origin'
+  $'2|git push origin sdlc/planned:main'
+  $'2|gh pr merge 12'
+  $'2|gh pr merge 12 --squash --delete-branch'
+  $'2|gh pr merge --auto'
+  $'2|gh -R o/r pr merge 3'
+  $'2|gh pr merge'
+  $'2|bash -c "gh pr merge 12"'
+  $'2|sh -c \'git push origin main\''
+  $'2|echo $(gh pr merge 12)'
+  $'2|echo "$(gh pr merge 12)"'
+  $'2|cd x && gh pr merge 12'
+  $'2|git status; gh pr merge 12'
+  $'2|gh api repos/o/r/pulls/3/merge -X PUT'
+  $'2|gh api graphql -f query=\'mutation { mergePullRequest(input:{pullRequestId:"x"}) { clientMutationId } }\''
+  $'2|bash <<\'EOF\'\ngh pr merge 12\nEOF'
+  $'2|bash -s <<EOF\ngit push origin main\nEOF'
+  $'2|eval "git push origin main"'
+)
+for p in "${PUSHACTIVE[@]}"; do pa2 "${p%%|*}" "${p#*|}"; done
+run_hook guard-bash "$PAN" "$(j_bash "$PAN" "gh pr merge 12 --squash")"
+assert_has "1.2 merge message: the merge is the shell gate's" "$ERR" "the merge is the shell gate's (\`sdlc.py ship\`); a session never merges"
+run_hook guard-bash "$PAN" "$(j_bash "$PAN" "git push origin main")"
+assert_has "1.2 push message while sdlc work is active: the same" "$ERR" "a session never merges"
+PO=$(fresh_git); PON=$(fresh_git); set_cfg "$PON" protect.block_direct_push false
+run_hook guard-bash "$PO" "$(j_bash "$PO" "gh pr merge 12 --squash")"
+assert_rc "1.2 outside sdlc work gh pr merge is not blocked" 0
+run_hook guard-bash "$PON" "$(j_bash "$PON" "git push origin main")"
+assert_rc "1.2 outside sdlc work block_direct_push=false still allows the push" 0
+run_hook guard-bash "$PO" "$(j_bash "$PO" "git push origin main")"
+assert_has "1.2 outside sdlc work the old message stays" "$ERR" "gh pr create"
+
+echo "-- 1.2 guard-bash: the test lock reaches \$(...), shell heredocs, pushd and directory operands of checkout/restore"
+PL=$(fresh_active)
+pl1() { local want="$1" c="$2"; run_hook guard-bash "$PL" "$(j_bash "$PL" "$c")"; assert_rc "1.2 test lock ($want): $(short "$c")" "$want"; }
+LOCK=(
+  $'2|echo "$(rm tests/x_test.py)"'
+  $'2|echo `rm tests/x_test.py`'
+  $'2|echo "`rm tests/x_test.py`"'
+  $'2|echo "done: $(sed -i \'s/a/b/\' tests/x_test.py)"'
+  $'2|bash <<\'EOF\'\nrm tests/x_test.py\nEOF'
+  $'2|bash -s <<EOF\nrm tests/x_test.py\nEOF'
+  $'2|sh <<\'EOF\'\nsed -i \'s/a/b/\' tests/x_test.py\nEOF'
+  $'2|sudo bash -s <<\'EOF\'\nmv tests/x_test.py /tmp/\nEOF'
+  $'0|bash scripts/foo.sh <<\'EOF\'\nrm tests/x_test.py\nEOF'
+  $'0|bash -c \'cat\' <<\'EOF\'\nrm tests/x_test.py\nEOF'
+  $'2|cat > notes.txt <<EOF\n$(rm tests/x_test.py)\nEOF'
+  $'0|cat > notes.txt <<\'EOF\'\n$(rm tests/x_test.py)\nEOF'
+  $'0|echo "$(ls tests)"'
+  $'0|echo "$(cat tests/x_test.py)"'
+  $'2|pushd tests && rm x_test.py'
+  $'2|pushd tests >/dev/null; rm x_test.py'
+  $'2|pushd tests; sed -i s/a/b/ x_test.py'
+  $'0|pushd src && popd && rm x_test.py'
+  $'2|pushd src && popd && rm tests/x_test.py'
+  $'0|(cd src && rm x_test.py)'
+  $'2|git checkout main -- tests'
+  $'2|git checkout main -- tests/'
+  $'2|git checkout -- tests'
+  $'2|git checkout HEAD -- tests'
+  $'2|git checkout main -- .'
+  $'2|git restore tests'
+  $'2|git restore tests/'
+  $'2|git restore --source=main tests'
+  $'2|git restore --source=HEAD~1 --worktree --staged tests'
+  $'2|git restore src'
+  $'2|git checkout main -- src'
+  $'2|git restore --source=main .'
+  $'0|git restore .'
+  $'0|git checkout .'
+  $'0|git checkout -- .'
+  $'0|git restore --staged tests'
+  $'0|git restore --staged .'
+  $'0|git checkout feature/x'
+  $'0|git checkout -b feature/new'
+  $'0|git checkout main'
+  $'0|git restore build'
+  $'0|git restore schemas'
+  $'2|rm -rf tests'
+  $'2|rm -rf src'
+  $'0|rm -rf build'
+  $'0|rm -rf node_modules/*'
+  $'0|rm -rf ./node_modules/*'
+  $'0|rm -rf build/*'
+  $'2|rm -rf tests/*'
+  $'2|rm -rf ./tests/*'
+  $'2|rm -rf src/*'
+  $'2|rm -rf ./src/*'
+  $'2|cd tests && rm *'
+)
+for p in "${LOCK[@]}"; do pl1 "${p%%|*}" "${p#*|}"; done
+
+echo "-- 1.2 guard-bash: a lock check costs one listing of the base, not one per directory"
+PF=$(fresh); mk "$PF" src/foo/tests/x_test.py; mk "$PF" pkgs/m5/tests/y_test.py
+i=0; while [ "$i" -lt 800 ]; do mk "$PF" "pkgs/m$i/lib/a.py"; mk "$PF" "src/mod$i/a.py"; i=$((i + 1)); done
+git_init "$PF"; activate "$PF" planned
+i=0; while [ "$i" -lt 800 ]; do mkdir -p "$PF/node_modules/pkg$i" && echo '{}' > "$PF/node_modules/pkg$i/package.json"; i=$((i + 1)); done   # untracked, as dependencies are
+unset i
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf node_modules/*")"
+assert_true "1.2 rm -rf node_modules/* (800 untracked directories): allowed in under 2 s" "$([ "$RC" = 0 ] && [ "$MS" -lt 2000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf ./node_modules/*")"
+assert_true "1.2 rm -rf ./node_modules/*: the same" "$([ "$RC" = 0 ] && [ "$MS" -lt 2000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf pkgs/*")"
+assert_true "1.2 rm -rf pkgs/* (800 directories, one holds a test of the base): blocked in under 2 s" "$([ "$RC" = 2 ] && [ "$MS" -lt 2000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+assert_has "1.2 …and names the test" "$ERR" "pkgs/m5/tests/y_test.py"
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf src/*")"
+assert_true "1.2 rm -rf src/* blocked: src/foo/tests/x_test.py existed at the base (800 more directories do not slow it)" "$([ "$RC" = 2 ] && [ "$MS" -lt 2000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf tests/*")"
+assert_rc "1.2 rm -rf tests/* still blocked" 2
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf pkgs/m1* pkgs/m2*")"
+assert_rc "1.2 a glob over directories without tests is allowed" 0
+set_cfg "$PF" protect.test_paths '["auto", "qa/**"]'
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf pkgs/*")"
+assert_true "1.2 explicit test_paths (matched per file of the listing): rm -rf pkgs/* blocked in under 2 s" "$([ "$RC" = 2 ] && [ "$MS" -lt 2000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf node_modules/*")"
+assert_true "1.2 explicit test_paths: rm -rf node_modules/* allowed in under 2 s" "$([ "$RC" = 0 ] && [ "$MS" -lt 2000 ] && echo true || echo false)" "rc=$RC ${MS}ms"
+set_cfg "$PF" protect.test_paths '["auto"]'
+mk "$PF" pkgs/m7/tests/new_test.py; rm -f "$PF/pkgs/m5/tests/y_test.py"       # a test this change adds is free; the base's own test is already gone
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf pkgs/m7")"
+assert_rc "1.2 a directory with only this change's own tests is free" 0
+run_hook guard-bash "$PF" "$(j_bash "$PF" "rm -rf pkgs/m5")"
+assert_rc "1.2 …and so is one whose base test is no longer there" 0
+rm -rf "$PF/node_modules"
+
+echo "-- 1.2 test-config files are test files (guard-edit and guard-bash)"
+PC=$(fresh)
+TCFG="conftest.py pkg/conftest.py a/b/c/conftest.py pytest.ini jest.config.js jest.config.ts jest.config.mjs vitest.config.ts vitest.config.mts vitest.workspace.ts vitest.workspace.json karma.conf.js .mocharc .mocharc.json .mocharc.yml playwright.config.ts cypress.config.js packages/web/cypress.config.ts phpunit.xml phpunit.xml.dist app/phpunit.xml.dist"
+NOTCFG="notjest.config.js jest.config/readme.md conftest.pyc phpunit.xml.bak mocharc.json src/my.mocharc.json"
+for f in $TCFG $NOTCFG; do mk "$PC" "$f"; done
+git_init "$PC"; activate "$PC" planned
+for f in $TCFG; do
+  run_hook guard-edit "$PC" "$(j_edit "$PC" "$PC/$f" "changed")"
+  assert_rc "1.2 test-config file locked (edit): $f" 2
+  run_hook guard-bash "$PC" "$(j_bash "$PC" "sed -i s/x/y/ $f")"
+  assert_rc "1.2 test-config file locked (sed -i): $f" 2
+done
+for f in $NOTCFG; do
+  run_hook guard-edit "$PC" "$(j_edit "$PC" "$PC/$f" "changed")"
+  assert_rc "1.2 not a test-config file (edit allowed): $f" 0
+done
+run_hook guard-edit "$PC" "$(j_write "$PC" "$PC/newpkg/conftest.py" "import pytest")"
+assert_rc "1.2 a NEW conftest.py is free" 0
+run_hook guard-bash "$PC" "$(j_bash "$PC" "echo x > newpkg2/pytest.ini")"
+assert_rc "1.2 …and a new pytest.ini written by a shell command" 0
+
+echo "-- 1.2 no jq: a big payload goes through, an unreadable one is blocked"
+PJ=$(fresh_git)
+if [ -n "${NOJQ:-}" ] && [ -d "$NOJQ" ]; then
+  BIG=$(awk 'BEGIN { for (i = 0; i < 24000; i++) printf "line %d of a long file with some words\n", i }')
+  run_hook guard-edit "$PJ" "$(j_write "$PJ" "$PJ/src/big.txt" "$BIG")" PATH="$NOJQ"
+  assert_rc "1.2 no-jq: a 900 KB Write goes through guard-edit (the payload is not an environment variable any more)" 0
+  run_hook guard-edit "$PJ" "$(j_write "$PJ" "$PJ/src/big.txt" "$BIG
+aws_key = '$AWS_KEY'")" PATH="$NOJQ"
+  assert_rc "1.2 no-jq: …and a secret at the end of it is found" 2
+  BIGC=$(awk 'BEGIN { for (i = 0; i < 4000; i++) printf "line %d of a long file with some words\n", i }')
+  run_hook guard-bash "$PJ" "$(j_bash "$PJ" "echo '$BIGC' > /dev/null && ./deploy.sh prod")" PATH="$NOJQ"
+  assert_rc "1.2 no-jq: a 150 KB command line through guard-bash (over the 128 KB a single environment string may have on Linux), the deploy at its end is found" 2
+  unset BIG BIGC
+  NOTOOL="$WORK/nojq-nopy-bin"; mkdir -p "$NOTOOL"
+  for t in bash sh cat sed grep awk tr date stat mkdir mv rm basename dirname git head tail wc find ls sleep env cp touch cut sort uniq tee mktemp cmp xargs kill perl; do
+    src=$(command -v "$t" 2>/dev/null); [ -n "$src" ] && ln -sf "$src" "$NOTOOL/$t"
+  done
+  run_hook guard-bash "$PJ" "$(j_bash "$PJ" "ls")" PATH="$NOTOOL"
+  assert_rc "1.2 neither jq nor python3: guard-bash blocks (fails closed)" 2
+  assert_has "1.2 …and says what is missing" "$ERR" "neither jq nor python3"
+  run_hook guard-edit "$PJ" "$(j_edit "$PJ" "$PJ/src/app.py" "x = 1")" PATH="$NOTOOL"
+  assert_rc "1.2 neither jq nor python3: guard-edit blocks" 2
+fi
+for h in guard-edit guard-bash; do
+  run_hook "$h" "$PJ" "not json at all {"
+  assert_rc "1.2 garbage stdin: $h blocks (a guard that cannot read a call does not let it through)" 2
+  assert_has "1.2 …with a clear message ($h)" "$ERR" "not valid JSON"
+  run_hook "$h" "$PJ" '[1,2,3]'
+  assert_rc "1.2 a JSON array is no tool call: $h blocks" 2
+  run_hook "$h" "$PJ" ''
+  assert_rc "1.2 empty stdin: $h still exits 0" 0
+done
+
+echo "-- 1.2 secret scan: case-sensitive tokens, unquoted values and the credential shapes that were missed"
+SS="$PLUGIN/scripts/secret-scan.sh"
+# the samples are assembled from pieces, like the fake secrets above: this file carries no secret-shaped line itself
+ss_hit() { # ss_hit <label> <text> [want 1|0]
+  local out rc; out=$(printf '%s\n' "$2" | bash "$SS" --text 2>/dev/null); rc=$?
+  assert_eq "1.2 secret scan (${3:-1}): $1" "$rc" "${3:-1}"
+}
+LOW_AWS=$(printf '%s' "$AWS_KEY" | tr 'A-Z' 'a-z')
+ss_hit "an AWS key id" "id = \"$AWS_KEY\""
+ss_hit "…but not its lower-case spelling" "x = \"$LOW_AWS\"" 0
+ss_hit "…and not inside base64 data in another case" "blob = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA${LOW_AWS}BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\"" 0
+ss_hit "a keyword in capitals, quoted" 'PASS''WORD = "Zx9Qk2Lm7Pw4Rt6Vbn"'
+ss_hit "a keyword in mixed case, quoted" 'Pass''word: "Zx9Qk2Lm7Pw4Rt6Vbn"'
+ss_hit "a .env value without quotes" 'DATABASE_PASS''WORD=QedUStPKR0CsTy4Qwb8D'
+ss_hit "a YAML value without quotes" '  pass''word: wkNhFdnXsiVpzz63Ff'
+ss_hit "a properties value" 'spring.datasource.pass''word=kCzJr4i0B3JrTAwR'
+ss_hit "an unquoted AWS secret access key" "AWS_SECRET""_ACCESS_KEY=4y9ojfljoQoaF1LlqsajAIxNKu8iS2G8NPRVdD53"
+ss_hit "an AWS secret access key in an ini file" "aws_secret""_access_key = X83RZJzzzzgEOzdmenCkhvMdgaKjIg8xNbe3nNyj"
+ss_hit "an OpenAI project key" "OPENAI_API_KEY=sk-""proj-u8jzPde0IgxLd6GncfBAepfJBd0Kh8oOOL8dKLzdocJ2isAj_IhKtJ0RlgLKOmxgJ"
+ss_hit "a Stripe live key" "STRIPE_SECRET_KEY=sk_""live_fKtHF4vUCsMehGAkWvj7FAc9"
+ss_hit "a Stripe live key in code" "require('stripe')('sk_""live_QeWJKY40uvSwMFLZDe1f8rES')"
+ss_hit "a Slack incoming webhook" "SLACK_WEBHOOK=https://hooks.""slack.com/services/TOQ9WMXEH/BH2FDEETF/jgVvVqE1SkHbn88HxjSI6bWH"
+ss_hit "an npm token" "NPM_TOKEN=npm_""tP3fS2qHx6kwXoIIXGvOoNZYW2mZp0zVZomH"
+ss_hit "a GitHub server token" "token: ghs_""FwUbbYrEqmSM9wCZ7Uw9xfogoEmvnEN5N1aE"
+ss_hit "an encrypted private key" "-----BEGIN ENCRYPTED ""PRIVATE KEY-----"
+ss_hit "a JSON api key with quotes" '"api_''key": "UkkibjL5DZPjN0MEQ7wjJJibaZUPgHV7"'
+ss_hit "an Authorization header" "Author""ization: Bearer iB3m03nbqnsGpWLuqIA1id6Vw5DQL05HA064GiIj"
+for ph in 'PASS''WORD=changeme-please-now' 'API_''KEY=your_api_key_goes_here1' 'TOK''EN=<token-from-the-portal>' 'SEC''RET=${SECRET_FROM_ENV}' 'pass''word: ***************' \
+          'PASS''WORD=dummy-password-1234' 'sec''ret: test' 'pass''word: example-password-123' 'DB_PASS''WORD=REPLACE_ME_1234567' 'api_''key: xxxxxxxxxxxxxxxx1' \
+          'tok''en: placeholder-token-123' 'SECRET_''KEY={{ secret_key_1234567 }}' 'PASS''WORD=short' 'pass''word=changeme' 'sec''ret: <your-secret-here-123>'; do
+  ss_hit "a placeholder is not a credential: $ph" "$ph" 0
+done
+# real files: a lockfile of integrity hashes, a .env.example, a Dockerfile
+SC_DIR="$WORK/sscorpus"; mkdir -p "$SC_DIR"
+awk 'BEGIN { print "{\n  \"name\": \"demo\",\n  \"lockfileVersion\": 3,\n  \"packages\": {"
+  for (i = 0; i < 400; i++) { h = ""; for (j = 0; j < 86; j++) h = h substr("0123456789abcdef", (i * 7 + j * 13 + int(i * j / 3)) % 16 + 1, 1)
+    printf "    \"node_modules/pkg%d\": { \"version\": \"1.%d.0\", \"resolved\": \"https://registry.npmjs.org/pkg%d/-/pkg%d-1.%d.0.tgz\", \"integrity\": \"sha512-%s\" },\n", i, i, i, i, i, h }
+  print "    \"\": {}\n  }\n}" }' > "$SC_DIR/package-lock.json"
+{ printf '%s\n' '# copy to .env and fill in' "DATABASE_URL=post""gres://user:pass""word@localhost:5432/app" 'API_''KEY=your_api_key_here' 'SECRET_''KEY=change-me-to-a-long-random-string' \
+    'JWT_SEC''RET=<generate with openssl rand -hex 32>' 'STRIPE_SECRET_''KEY=sk_''test_xxxxxxxxxxxxxxxxxxxxxxxx' 'SMTP_PASS''WORD=' 'AUTH_TOK''EN=${AUTH_TOKEN}'; } > "$SC_DIR/.env.example"
+printf '%s\n' 'FROM node:20-alpine' 'ARG NPM_TOKEN' 'ENV NODE_ENV=production' 'RUN echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc' > "$SC_DIR/Dockerfile"
+for f in package-lock.json .env.example Dockerfile; do
+  bash "$SS" --text < "$SC_DIR/$f" >/dev/null 2>&1; assert_eq "1.2 secret scan: no hit in the corpus file $f" "$?" "0"
+done
+# a hit names where it is, and says when it sits in encoded data
+printf 'one\ntwo\nkey = "%s"\n' "$AWS_KEY" > "$SC_DIR/a.txt"
+assert_has "1.2 secret scan --text: the line number is reported" "$(bash "$SS" --text < "$SC_DIR/a.txt")" "line 3"
+assert_lacks "1.2 secret scan: the secret itself is never printed" "$(bash "$SS" --text < "$SC_DIR/a.txt")" "$AWS_KEY"
+printf 'data = "%s%s%s"\n' "$(printf 'A%.0s' $(seq 1 70))" "$AWS_KEY" "$(printf 'B%.0s' $(seq 1 70))" > "$SC_DIR/b.txt"
+assert_has "1.2 secret scan: a hit inside a long base64-like run is marked encoded" "$(bash "$SS" --text < "$SC_DIR/b.txt")" "encoded"
+assert_lacks "1.2 secret scan: a plain hit is not marked encoded" "$(bash "$SS" --text < "$SC_DIR/a.txt")" "encoded"
+SR=$(fresh_git); mkdir -p "$SR/cfg"; printf 'a = 1\nb = 2\naws = "%s"\n' "$AWS_KEY" > "$SR/cfg/keys.py"; gitp "$SR" add cfg/keys.py
+assert_has "1.2 secret scan --staged: file and line" "$(bash "$SS" --staged "$SR")" "cfg/keys.py:3"
+printf 'later = "%s"\n' "$AWS_KEY" > "$SR/new.py"
+assert_has "1.2 secret scan --untracked: file and line" "$(bash "$SS" --staged "$SR" --untracked)" "new.py:1"
+# this very file must pass the scanner it tests
+bash "$SS" --text < "$HERE/hooks.sh" >/dev/null 2>&1; assert_eq "1.2 secret scan: tests/hooks.sh itself carries no secret-shaped line" "$?" "0"
+
+echo "-- 1.2 commit scan: -a/--all only counts inside the git commit clause; the block says where and how to get out"
+PK=$(fresh_git); printf 'aws = "%s"\n' "$AWS_KEY" >> "$PK/src/app.py"           # tracked, modified, not staged
+run_hook guard-bash "$PK" "$(j_bash "$PK" "git commit -m x && ls -la")"
+assert_rc "1.2 git commit -m x && ls -la: the -la of ls is not commit -a" 0
+run_hook guard-bash "$PK" "$(j_bash "$PK" "git commit -m x; ls -a")"
+assert_rc "1.2 git commit -m x; ls -a" 0
+run_hook guard-bash "$PK" "$(j_bash "$PK" "git commit -m x | tee -a log.txt")"
+assert_rc "1.2 …| tee -a is not commit -a" 0
+run_hook guard-bash "$PK" "$(j_bash "$PK" 'git commit -m "-a"')"
+assert_rc "1.2 a message that reads -a is not commit -a" 0
+for c in 'git commit -am x' 'git commit -a -m x' 'git commit -m x -a' 'git commit --all -m x' 'git commit -m x --all' 'git commit -m x -qa' 'git -c user.name=x commit -a -m y' \
+         'echo start && git commit -m x -a && ls' 'git commit -m "a b" --all'; do
+  run_hook guard-bash "$PK" "$(j_bash "$PK" "$c")"
+  assert_rc "1.2 commit -a sees the unstaged secret: $c" 2
+done
+run_hook guard-bash "$PK" "$(j_bash "$PK" "git commit -am x")"
+assert_has "1.2 commit secret block names the file and line" "$ERR" "src/app.py:"
+assert_has "1.2 commit secret block names the way out" "$ERR" "secrets.scan_commits: false"
+assert_has "1.2 commit secret block says how to take the value out" "$ERR" "git restore --staged"
+assert_lacks "1.2 commit secret block does not print the secret" "$ERR" "$AWS_KEY"
+printf 'blob = "%s%s%s"\n' "$(printf 'A%.0s' $(seq 1 70))" "$AWS_KEY" "$(printf 'B%.0s' $(seq 1 70))" > "$PK/src/blob.py"; gitp "$PK" checkout -q -- src/app.py; gitp "$PK" add src/blob.py
+run_hook guard-bash "$PK" "$(j_bash "$PK" "git commit -m x")"
+assert_rc "1.2 a hit inside base64 data still blocks a commit" 2
+assert_has "1.2 …and the message says it looks like encoded data" "$ERR" "encoded data"
+run_hook guard-edit "$PK" "$(j_write "$PK" "$PK/src/blob2.py" "$(cat "$PK/src/blob.py")")"
+assert_rc "1.2 the same blob in an edit blocks" 2
+assert_has "1.2 …and the edit message says it looks like encoded data" "$ERR" "encoded data"
+assert_lacks "1.2 …(taking the value from the environment is advice for credentials)" "$ERR" "take the value from the environment"
+run_hook guard-edit "$PK" "$(j_write "$PK" "$PK/src/k.py" "aws = '$AWS_KEY'")"
+assert_has "1.2 edit secret block: the line of the new content" "$ERR" "line 1"
+assert_has "1.2 edit secret block: for a credential, take the value from the environment" "$ERR" "environment"
+
+echo "-- 1.2 post-bash: what counts as a verify run and how it is judged"
+PV=$(fresh); set_cfg "$PV" commands.test '"npm test"'; set_cfg "$PV" verify.commands '["node --test test/", "pytest -q"]'
+vstate() { state_of "$PV" "$1"; }
+jb() { # jb <event> <command> <stdout> <stderr> [extra tool_input json] [extra tool_response json]  — a PostToolUse/PostToolUseFailure payload
+  local ev="$1" c="$2" so="$3" se="$4" ti="${5:-}" tr="${6:-}"
+  if [ "$ev" = PostToolUseFailure ]; then
+    printf '{%s,"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":%s%s},"error":%s,"is_interrupt":false}' "$(base "$PV")" "$(json_escape "$c")" "$ti" "$(json_escape "Exit code 1
+$so$se")"
+  else
+    printf '{%s,"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":%s%s},"tool_response":{"stdout":%s,"stderr":%s,"interrupted":false%s}}' "$(base "$PV")" "$(json_escape "$c")" "$ti" "$(json_escape "$so")" "$(json_escape "$se")" "$tr"
+  fi
+}
+reset_v() { rm -f "$PV/.sdlc/state/session-$SID.json"; }
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUseFailure "npm test" "3 failing" "")"
+assert_eq "1.2 PostToolUseFailure of a verify command: recorded as failed" "$(vstate last_verify_ok)" "false"
+assert_eq "1.2 …under its name" "$(vstate last_verify_name)" "test"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test" "all good" "")"
+assert_eq "1.2 PostToolUse of a verify command: a pass" "$(vstate last_verify_ok)" "true"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test" "" "Error: something logged but the run passed")"
+assert_eq "1.2 PostToolUse: 'Error:' in the output does not make it a failure" "$(vstate last_verify_ok)" "true"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test" "FAIL: expected a banner (a test of the failure path)" "")"
+assert_eq "1.2 PostToolUse: 'FAIL' in the output does not make it a failure either (no pipe)" "$(vstate last_verify_ok)" "true"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test | tail -20" "Tests: 3 failed, 10 passed" "")"
+assert_eq "1.2 piped through tail: a failing summary in the output counts" "$(vstate last_verify_ok)" "false"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test | tail -20" "Tests: 13 passed" "")"
+assert_eq "1.2 piped through tail: a passing summary is a pass" "$(vstate last_verify_ok)" "true"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test || echo failed" "" "")"
+assert_eq "1.2 || is no pipe" "$(vstate last_verify_ok)" "true"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test" "" "" ',"run_in_background":true')"
+assert_eq "1.2 a background run records nothing (run_in_background)" "$(vstate last_verify_name)" ""
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm test" "started" "" "" ',"backgroundTaskId":"b1"')"
+assert_eq "1.2 a background run records nothing (backgroundTaskId in the response)" "$(vstate last_verify_name)" ""
+for c in 'cd app && npm test' 'CI=1 npm test' 'time npm test' 'FOO=1 BAR="a b" npm test -- --watch=false' 'npm test | tail -5' 'echo go; npm test' 'sudo -n npm test' 'bash -c "npm test"' 'node --test test/' 'cd x && node --test test/ 2>&1'; do
+  reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "$c" "ok" "")"
+  assert_true "1.2 a simple command that starts with the verify command is a run: $c" "$([ -n "$(vstate last_verify_name)" ] && echo true || echo false)" "$(cat "$PV/.sdlc/state/session-$SID.json" 2>/dev/null)"
+done
+for c in $'cat >> work/x.md <<EOF\nrun node --test test/ and npm test\nEOF' 'echo "npm test"' 'cat >> work/x.md' 'git commit -m "npm test is green"' 'ls test/ npm' 'grep -r "node --test test/" .' 'echo npm test > notes.txt' 'cat npm-test-notes.txt' 'npm tests'; do
+  reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "$c" "ok" "")"
+  assert_eq "1.2 a command that only mentions the verify command is no run: $(short "$c")" "$(vstate last_verify_name)" ""
+done
+set_cfg "$PV" verify.commands '["npm run build && npm test"]'
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "cd web && npm run build && npm test" "ok" "")"
+assert_true "1.2 a verify command of two clauses: both, in order" "$([ -n "$(vstate last_verify_name)" ] && echo true || echo false)" "$(cat "$PV/.sdlc/state/session-$SID.json" 2>/dev/null)"
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "npm run build" "ok" "")"
+assert_eq "1.2 …only the first clause is not that command" "$(vstate last_verify_name)" ""
+set_cfg "$PV" verify.commands '["pytest -k \"not slow\""]'
+reset_v; run_hook post-bash "$PV" "$(jb PostToolUse "pytest -k 'not slow' -q" "ok" "")"
+assert_true "1.2 quotes are normalized: pytest -k 'not slow' is pytest -k \"not slow\"" "$([ -n "$(vstate last_verify_name)" ] && echo true || echo false)" "$(cat "$PV/.sdlc/state/session-$SID.json" 2>/dev/null)"
+assert_true "1.2 hooks.json registers post-bash for PostToolUseFailure" "$(grep -A3 '"PostToolUseFailure"' "$PLUGIN/hooks/hooks.json" | grep -q 'post-bash.sh' && echo true || echo false)" "$(cat "$PLUGIN/hooks/hooks.json")"
+
+echo "-- 1.2 paths outside the project: no frozen/generated/test rule, no formatter; the secret scan still applies"
+PX=$(fresh_git); activate "$PX" planned; OUTD="$WORK/outside-$$"; mkdir -p "$OUTD"
+set_cfg "$PX" protect.generated_paths '["**/*.png", "**"]'
+printf '%s\n' '**' >> "$PX/.sdlc/frozen-paths.txt"
+run_hook guard-edit "$PX" "$(j_write "$PX" "$OUTD/og-image.png" "png")"
+assert_rc "1.2 a Write outside the project is not 'generated' or 'frozen'" 0
+run_hook guard-edit "$PX" "$(j_write "$PX" "$OUTD/x_test.py" "def test(): pass")"
+assert_rc "1.2 …and not a project test" 0
+run_hook guard-edit "$PX" "$(j_write "$PX" "$OUTD/notes.txt" "aws = '$AWS_KEY'")"
+assert_rc "1.2 …but the secret scan follows the text wherever it is written" 2
+run_hook guard-edit "$PX" "$(j_write "$PX" "$PX/img/og-image.png" "png")"
+assert_rc "1.2 inside the project the same patterns still block" 2
+activate "$PX" ready
+run_hook guard-edit "$PX" "$(j_write "$PX" "$OUTD/og-image.png" "png")"
+assert_rc "1.2 design first does not reach outside the project either" 0
+printf '#!/bin/bash\ntouch "$(dirname "$0")/formatted-$(basename "$1")"\n' > "$WORK/fmt.sh"; chmod +x "$WORK/fmt.sh"
+PF2=$(fresh_git); set_cfg "$PF2" commands.format "\"$WORK/fmt.sh\""
+printf 'x\n' > "$OUTD/out.js"; printf 'x\n' > "$PF2/in.js"; rm -f "$WORK"/formatted-*
+run_hook post-edit "$PF2" "$(j_postedit "$PF2" "$OUTD/out.js")"
+assert_true "1.2 post-edit: no formatter run for a file outside the project" "$([ ! -f "$WORK/formatted-out.js" ] && echo true || echo false)" "$(ls "$WORK" | head -5)"
+run_hook post-edit "$PF2" "$(j_postedit "$PF2" "$PF2/in.js")"
+assert_true "1.2 post-edit: …but one inside is formatted" "$([ -f "$WORK/formatted-in.js" ] && echo true || echo false)" "$(ls "$WORK" | head -5)"
+set_cfg "$PF2" commands.lint_file "\"$WORK/fmt.sh\""; rm -f "$WORK"/formatted-*; set_cfg "$PF2" commands.format '""'
+run_hook post-edit "$PF2" "$(j_postedit "$PF2" "$OUTD/out.js")"
+assert_true "1.2 post-edit: no linter run for a file outside the project" "$([ ! -f "$WORK/formatted-out.js" ] && echo true || echo false)" "$(ls "$WORK" | head -5)"
+
+echo "-- 1.2 session-start: one line for macOS"
+PS=$(fresh); UN="$WORK/uname-bin"; mkdir -p "$UN"
+printf '#!/bin/bash\necho Darwin\n' > "$UN/uname"; chmod +x "$UN/uname"
+run_hook session-start "$PS" "$(j_session "$PS" SessionStart)" PATH="$UN:$PATH"
+assert_has "1.2 session-start on Darwin: the zsh and BSD tools line" "$OUT" "BSD sed/wc/cat"
+assert_has "1.2 …names pipefail and PIPESTATUS" "$OUT" "PIPESTATUS is bash-only"
+assert_has "1.2 …names wc -l padding and sed -i ''" "$OUT" "sed -i ''"
+assert_true "1.2 …and the context stays within 12 lines" "$([ "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" -le 12 ] && echo true || echo false)" "$OUT"
+printf '#!/bin/bash\necho Linux\n' > "$UN/uname"
+run_hook session-start "$PS" "$(j_session "$PS" SessionStart)" PATH="$UN:$PATH"
+assert_lacks "1.2 session-start on Linux: no such line" "$OUT" "BSD sed"
+
+# ======================================================================
 echo "-- hooks.json and defaults that must not drift"
 HJ="$PLUGIN/hooks/hooks.json"
 assert_true "hooks.json parses" "$([ -n "$(json_file_get "$HJ" .description)" ] && echo true || echo false)" "$(head -c 200 "$HJ")"
@@ -2095,7 +2650,13 @@ hand = ["tests/x_test.py", "src/test/Foo.java", "foo.spec.ts", "lib/__tests__/a.
         "Test.java", "Tests.kt", "FooTESTS.swift", "work/tests/a.py", "work/x_test.py", "tasks/tests/a.py", "tasks/x_test.py", "sub/work/tests/a.py",
         "worktests/a.py", "tests", "a/tests", "test", "spec", "a/spec", "Test/a.py", "TESTS/a.py", "a b/c_test.go", u"테스트/foo_test.py",
         "x.test.", "x.spec.", "x.test.js.test.js", "x.test.x1", "a.test.Js", u"ünï/test/ä.py", "foo_test.go.bak", "_test.go", ".test.js",
-        "x/.spec.rb", "Footest.java", "FooTest.JAVA", "x.test.js/y.txt", "x.test.js/y_test.py"]
+        "x/.spec.rb", "Footest.java", "FooTest.JAVA", "x.test.js/y.txt", "x.test.js/y_test.py",
+        "conftest.py", "pkg/conftest.py", "a/b/conftest.py", "pytest.ini", "sub/pytest.ini", "jest.config.js", "jest.config.ts", "web/jest.config.mjs",
+        "vitest.config.ts", "vitest.config.mts", "vitest.workspace.ts", "vitest.workspace.json", "karma.conf.js", ".mocharc", ".mocharc.json",
+        ".mocharc.yml", "playwright.config.ts", "cypress.config.js", "packages/web/cypress.config.ts", "phpunit.xml", "phpunit.xml.dist",
+        "app/phpunit.xml.dist", "notjest.config.js", "jest.config", "jest.config.", "jest.config/readme.md", ".mocharc.", "mocharc.json",
+        "src/my.mocharc.json", "conftest.pyc", "phpunit.xml.bak", "sub/vitest.config", "x/conftest.py/y.txt", "xconftest.py", "Conftest.py",
+        "work/conftest.py", "tasks/conftest.py", "pytest.ini.bak", "karma.conf", "cypress.config"]
 paths, seen = [], set()
 def add(p):
     if p and p not in seen:
@@ -2279,6 +2840,25 @@ for gl_loc in C en_US.UTF-8 C.UTF-8 C.utf8; do
     glob_match '*.txt' $'dir/\xb0\xa1.txt' && glob_match '**/*.txt' $'a/\xb0\xa1/b.txt' && glob_match 'a/*' $'a/\xb0\xa1' \
       && ! glob_match 'a/*' $'a/\xb0\xa1/c' && ! glob_match 'b/*' $'a/\xb0\xa1' ) 2>/dev/null && gl_bytes=$((gl_bytes + 1))
 done
+# 1.2: a leading / or ./ roots the pattern, a pattern of slashes matches nothing, dir/ takes globs before the slash, no trailing-newline match
+GL_NEW=('/qa/*|qa/a.sh|1' '/qa/*|x/qa/a.sh|0' './qa/*|qa/a.sh|1' './qa/*|x/qa/a.sh|0' '/*.tf|main.tf|1' '/*.tf|deep/x/main.tf|0' '*.tf|deep/x/main.tf|1'
+  '/infra/**|infra/a/b.tf|1' '/infra/**|x/infra/a.tf|0' '//qa/|qa/a.sh|1' '/|a|0' '//|a|0' '///|a/b|0' '/|/|0' './|a|0' './/|a|0'
+  '**/migrations/|db/migrations/0001.sql|1' '**/migrations/|migrations/0001.sql|1' '**/migrations/|db/migrations|1' '**/migrations/|db/migrationsx/a|0'
+  'src/*/secrets/|src/app/secrets/k.pem|1' 'src/*/secrets/|src/app/x/secrets/k.pem|0' 'src/*/secrets/|src/secrets/k.pem|0' 'src/g?n/|src/gen/a.py|1'
+  './src/**/gen/|src/d/gen/a|1' '/src/gen/|src/gen/a.py|1' '/src/gen/|x/src/gen/a.py|0' 'qa/|./qa/a.sh|1' 'smoke.sh|qa/deep/smoke.sh|1' '/smoke.sh|qa/smoke.sh|0')
+gl_ok=true; gl_why=""
+for t in "${GL_NEW[@]}"; do
+  IFS='|' read -r gl_pat gl_path gl_want <<< "$t"
+  gl_new=0; glob_match "$gl_pat" "$gl_path" && gl_new=1
+  [ "$gl_new" = "$gl_want" ] || { gl_ok=false; gl_why="$gl_why [$gl_pat] $gl_path want=$gl_want got=$gl_new;"; }
+done
+assert_true "glob: rooted patterns (/ and ./), slash-only patterns, dir/ with globs before the slash — ${#GL_NEW[@]} verdicts, as in the gate" "$gl_ok" "$gl_why"
+gl_nl=""                                                              # the newline is a character of the name: only a pattern that ends before it fails
+glob_match 'qa/a.sh' $'qa/a.sh\n' && gl_nl="$gl_nl qa/a.sh-matched"
+glob_match '*.sh' $'qa/a.sh\n' && gl_nl="$gl_nl *.sh-matched"
+glob_match 'qa/*' $'qa/a.sh\n' || gl_nl="$gl_nl qa/*-missed"
+glob_match 'qa/' $'qa/a.sh\n' || gl_nl="$gl_nl qa/-missed"
+assert_eq "glob: a path with a trailing newline no longer matches a pattern that ends before it (qa/a.sh, *.sh); qa/* and qa/ take it as a name" "$gl_nl" ""
 assert_true "glob: file names with bytes that are no valid UTF-8 match like any other, in every locale ($gl_bytes of 4 locales)" "$([ "$gl_bytes" = 4 ] && echo true || echo false)" "$gl_bytes"
 
 # ======================================================================

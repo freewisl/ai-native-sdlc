@@ -11,20 +11,22 @@ has_cmd() { command -v "$1" >/dev/null 2>&1; }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # json_get <json-string> <path>   path like .tool_input.command  (jq syntax; python fallback supports .a.b.c and .a[0])
+# The python fallback reads the JSON from its standard input: an environment variable is capped (about 1 MB in all on macOS, 128 KiB per
+# string on Linux — E2BIG), and a hook payload that carries a whole file is bigger than that.
 json_get() {
   local json="$1" path="$2"
   if has_cmd jq; then
     printf '%s' "$json" | jq -r "$path | if . == null then empty else . end" 2>/dev/null
   else
-    SDLC_JSON="$json" python3 - "$path" <<'PY' 2>/dev/null
-import json,os,sys
+    printf '%s' "$json" | python3 -c '
+import json,sys
 path=sys.argv[1]
 try:
-    data=json.loads(os.environ.get('SDLC_JSON') or 'null')
+    data=json.loads(sys.stdin.read() or "null")
 except Exception:
-    sys.exit(0)
+    sys.exit(3)
 cur=data
-for part in [p for p in path.strip('.').replace('[','.').replace(']','').split('.') if p]:
+for part in [p for p in path.strip(".").replace("[",".").replace("]","").split(".") if p]:
     if isinstance(cur,list):
         try: cur=cur[int(part)]
         except Exception: sys.exit(0)
@@ -36,11 +38,21 @@ for part in [p for p in path.strip('.').replace('[','.').replace(']','').split('
 if isinstance(cur,(dict,list)):
     print(json.dumps(cur))
 elif isinstance(cur,bool):
-    print('true' if cur else 'false')
+    print("true" if cur else "false")
 else:
     print(cur)
-PY
+' "$path" 2>/dev/null
   fi
+}
+
+# json_ok <json-string> → 0 when it is one JSON object (what a hook gets on stdin); 1 when it is not; 2 when there is neither jq nor python3
+# to tell. The guards (guard-edit, guard-bash) use it to fail closed: a payload they cannot read is a blocked call, not a passed one.
+json_ok() {
+  if has_cmd jq; then printf '%s' "$1" | jq -e 'type == "object"' >/dev/null 2>&1; return $?; fi
+  if has_cmd python3; then
+    printf '%s' "$1" | python3 -c 'import json,sys; sys.exit(0 if isinstance(json.loads(sys.stdin.read()), dict) else 1)' >/dev/null 2>&1; return $?
+  fi
+  return 2
 }
 
 # json_file_get <file> <path>
@@ -95,23 +107,29 @@ rel_path() {
 
 # glob_match <pattern> <path> → 0 when the path matches. The glob rules of every list in the config (frozen paths, generated paths,
 # test paths), the same as glob_match() in scripts/sdlclib/util.py, which the merge gate uses; tests/hooks.sh compares the two.
-# The pattern is trimmed (an empty one matches nothing), a leading ./ of the path is dropped. `dir/` is a prefix: the directory
-# itself or anything below it. Any other pattern must match the whole path: `*` is any run of characters but /, `?` one character
-# but /, `**/` any number of directories (also none), `**` anything, / included; every other character stands for itself (also
-# [ ] { }). A pattern without / also matches the file name alone. Bytes, not characters: one `?` is one byte of a multi-byte one.
+# The pattern is trimmed (an empty one matches nothing), a leading ./ of the path is dropped. A leading / or ./ of the pattern says
+# "from the repository root": it is dropped, and such a pattern is never matched against the file name alone. `dir/` is a
+# directory: the directory itself or anything below it; what comes before the slash is a glob like any other (`**/migrations/`,
+# `src/*/secrets/`). Any other pattern must match the whole path: `*` is any run of characters but /, `?` one character but /,
+# `**/` any number of directories (also none), `**` anything, / included; every other character stands for itself (also [ ] { }).
+# A pattern without / (and without a leading / or ./) also matches the file name alone. A pattern that is nothing but slashes
+# matches nothing. Bytes, not characters: one `?` is one byte of a multi-byte one.
 # A pattern is translated into an anchored extended regular expression, and the first 16 of a process are kept (SDLC_GLOB_KEY →
 # SDLC_GLOB_ERE): a command that names many paths asks about the same few patterns again and again.
 SDLC_GLOB_KEY=(); SDLC_GLOB_ERE=()
 glob_match() {
-  local LC_ALL=C pat="$1" p="$2" re="" k=0 nk=0 i=0 len=0 c=""
+  local LC_ALL=C pat="$1" p="$2" re="" k=0 nk=0 i=0 len=0 c="" rooted=0 dir=0 key=""
   pat="${pat#"${pat%%[![:space:]]*}"}"; pat="${pat%"${pat##*[![:space:]]}"}"
   [ -n "$pat" ] || return 1
   case "$p" in ./*) p="${p#./}";; esac
-  case "$pat" in
-    */) [[ "$p" == "${pat%/}" ]] && return 0; case "$p" in "$pat"*) return 0;; esac; return 1 ;;
-  esac
+  while :; do
+    case "$pat" in ./*) pat="${pat#./}"; rooted=1;; /*) pat="${pat#/}"; rooted=1;; *) break;; esac
+  done
+  [ -n "${pat//\//}" ] || return 1
+  case "$pat" in */) dir=1; while [ "${pat%/}" != "$pat" ]; do pat="${pat%/}"; done ;; esac
+  key="$dir:$pat"
   nk=${#SDLC_GLOB_KEY[@]}
-  while [ "$k" -lt "$nk" ]; do [[ "${SDLC_GLOB_KEY[$k]}" == "$pat" ]] && break; k=$((k + 1)); done
+  while [ "$k" -lt "$nk" ]; do [[ "${SDLC_GLOB_KEY[$k]}" == "$key" ]] && break; k=$((k + 1)); done
   if [ "$k" -lt "$nk" ]; then re="${SDLC_GLOB_ERE[$k]}"
   else
     len=${#pat}
@@ -127,10 +145,11 @@ glob_match() {
         *) re="$re$c" ;;
       esac
     done
-    re="^$re\$"
-    if [ "$nk" -lt 16 ]; then SDLC_GLOB_KEY[$nk]="$pat"; SDLC_GLOB_ERE[$nk]="$re"; fi
+    if [ "$dir" = 1 ]; then re="^$re(/.*)?\$"; else re="^$re\$"; fi
+    if [ "$nk" -lt 16 ]; then SDLC_GLOB_KEY[$nk]="$key"; SDLC_GLOB_ERE[$nk]="$re"; fi
   fi
   [[ "$p" =~ $re ]] && return 0
+  [ "$dir" = 1 ] || [ "$rooted" = 1 ] && return 1
   case "$pat" in */*) return 1;; esac
   [[ "${p##*/}" =~ $re ]]
 }

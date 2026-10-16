@@ -3,7 +3,8 @@
 # only, i.e. while an active work doc applies: an existing test file — one already on the default branch — is locked, one
 # this change adds is free; outside sdlc work no test is locked), (3) design first (only while an active work doc applies and
 # is ready or proposed: then just the work dir and .sdlc/ can be edited), (4) secret scan of the new text. Uninitialized
-# project → (4) only.
+# project → (4) only. (1)-(3) are rules about the project: a file outside the project root (~/Desktop/og-image.png) is not generated,
+# frozen or a test of it — only (4), the secret scan, follows the text wherever it is written.
 # Reads: protect.frozen_paths_file, protect.generated_paths, protect.protect_tests, protect.test_paths, paths.work,
 #        secrets.scan_edits, secrets.extra_patterns (via secret-scan.sh), .sdlc/state/active-work (see lib/common.sh),
 #        SDLC_ALLOW_TEST_EDIT (environment)
@@ -13,6 +14,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../lib/hooks-extra.sh"
 
 input=$(cat)
+guard_require_json "$input"                  # empty stdin: nothing to guard; not JSON / no jq or python3: blocked (fail closed)
 root=$(project_root "$input")
 SDLC_SESSION_ID=$(json_get "$input" .session_id); export SDLC_SESSION_ID
 tool=$(json_get "$input" .tool_name)
@@ -20,6 +22,7 @@ path=$(json_get "$input" .tool_input.file_path)
 [ -z "$path" ] && path=$(json_get "$input" .tool_input.notebook_path)
 [ -z "$path" ] && exit 0
 rel=$(rel_path "$root" "$path")
+outside=false; case "$rel" in /*|..|../*) outside=true;; esac
 
 deny() { # deny <rule> <message>  — audit log + exit 2
   log_event "$root" hook.guard deny "$1" "{\"tool\":$(json_escape "$tool"),\"path\":$(json_escape "$rel")}"
@@ -28,7 +31,7 @@ deny() { # deny <rule> <message>  — audit log + exit 2
 
 initialized=false; sdlc_initialized "$root" && initialized=true
 
-if [ "$initialized" = true ]; then
+if [ "$initialized" = true ] && [ "$outside" = false ]; then
   # (1) frozen paths file + generated paths (globs are read as the gate reads them: glob_match in lib/common.sh)
   frozen_cfg=$(cfg "$root" .protect.frozen_paths_file ".sdlc/frozen-paths.txt")
   frozen_file="$frozen_cfg"; case "$frozen_file" in /*) ;; *) frozen_file="$root/$frozen_file";; esac
@@ -47,13 +50,11 @@ if [ "$initialized" = true ]; then
     fi
   done <<< "$(cfg_lines "$root" .protect.generated_paths)"
 
-  # (2) test-file lock, during sdlc work — a test file that does not exist yet is always allowed; paths outside the project are not its tests
-  case "$rel" in /*) ;; *)
-    if test_file_locked "$root" "$rel" "$path"; then
-      doc_hint="$(work_dir "$root")/$(active_work_slug "$root").md"
-      deny test_lock "test file '$rel' is locked while $doc_hint is the active work doc. Why: existing tests (those already on the default branch) change only when the design says so — fix the code, not the test (protect.protect_tests); test files this change adds stay free to edit. To proceed, only if the test itself is wrong or the new behavior needs it changed: that is a design decision — set 'test_changes: allowed' in $doc_hint when designing the change; a build session asks a person instead of flipping it itself. As a last resort the user runs the session with SDLC_ALLOW_TEST_EDIT=1."
-    fi ;;
-  esac
+  # (2) test-file lock, during sdlc work — a test file that does not exist yet is always allowed
+  if test_file_locked "$root" "$rel" "$path"; then
+    doc_hint="$(work_dir "$root")/$(active_work_slug "$root").md"
+    deny test_lock "test file '$rel' is locked while $doc_hint is the active work doc. Why: existing tests (those already on the default branch) change only when the design says so — fix the code, not the test (protect.protect_tests); test files this change adds stay free to edit. To proceed, only if the test itself is wrong or the new behavior needs it changed: that is a design decision — set 'test_changes: allowed' in $doc_hint when designing the change; a build session asks a person instead of flipping it itself. As a last resort the user runs the session with SDLC_ALLOW_TEST_EDIT=1."
+  fi
 
   # (3) design first — a change is built after its design is on record: work/<slug>.md says planned
   doc=$(active_work_file "$root")
@@ -61,7 +62,7 @@ if [ "$initialized" = true ]; then
     status=$(frontmatter_get "$root/$doc" status)
     case "$status" in ready|proposed)
       wdir=$(work_dir "$root")
-      case "$rel" in /*|"$wdir"/*|.sdlc/*) ;; *)
+      case "$rel" in "$wdir"/*|.sdlc/*) ;; *)
         deny design_first "design first — fill Plan and Proof, then set status planned. '$rel' cannot be edited while $doc has status '$status'. Why: a change is built only after its design is on record. To proceed: write Plan and Proof in $doc and set its status to planned (the work doc, everything under $wdir/ and .sdlc/ stay editable)." ;;
       esac ;;
     esac
@@ -75,7 +76,14 @@ if [ "$scan" = "true" ]; then
   if [ -n "$text" ]; then
     hits=$(printf '%s\n' "$text" | bash "$here/../secret-scan.sh" --text "$root" 2>/dev/null)
     if [ -n "$hits" ]; then
-      deny secret "possible secret in the new content for '$rel' ($(one_line "$hits")). Why: credentials never enter the codebase (secrets.scan_edits). To proceed: read it from the environment or a secret manager and reference it by name; a placeholder must be obvious (contain 'example' or 'REPLACE_ME')."
+      # where: the line(s) of the new text, per pattern. A hit that sits inside a long base64-like run (every hit does) is most likely data.
+      descr=$(printf '%s\n' "$hits" | awk -F'\t' '{ printf "%s%s %s: %s", (NR > 1 ? "; " : ""), $1, $2, $3 }')
+      real=$(printf '%s\n' "$hits" | awk -F'\t' '$4 != "encoded"' | head -c 1)
+      if [ -n "$real" ]; then
+        deny secret "possible secret in the new content for '$rel' ($descr). Why: credentials never enter the codebase (secrets.scan_edits). To proceed: take the value from the environment or a secret manager and reference it by name; a placeholder must be obvious (contain 'example' or 'REPLACE_ME')."
+      else
+        deny secret "the new content for '$rel' matches a secret pattern ($descr), but only inside a long run of base64-like characters — it looks like encoded data (an image, font or blob), not a credential. Why: a token pattern can occur by chance in such data, and an edit cannot tell the two apart. To proceed: keep the data in a file of its own (copy it with cp/curl, or load it at run time) instead of pasting it into code; a real credential belongs in the environment, referenced by name."
+      fi
     fi
   fi
 fi

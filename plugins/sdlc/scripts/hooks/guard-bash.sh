@@ -7,12 +7,17 @@
 # on `git commit`: the staged diff, or — with a `git add` earlier in the command line or -a/--all — what the commit could take.
 # Uninitialized project → only (1), with the built-in patterns.
 # (1) matches the patterns against each simple command, not the whole text: its words with quotes resolved, heredoc bodies and
-# comments left out. A quoted argument counts (bash -c "deploy prod", ssh host 'release production'); text tools (echo, cat, grep …),
-# git commands that only read or record (commit, log, diff …) and the body of a heredoc whose command is not a shell are text, not
-# checked — a text tool or git only while nothing on the line makes it run a program (rg --pre, sort --compress-program, git -c,
-# --exec, an env prefix …). A command line it cannot split is matched as plain text, as before.
+# comments left out. A quoted argument counts where it is a command (bash -c "deploy prod", ssh host 'release production', eval,
+# xargs, watch …); for any other program an argument that contains white space is prose (a --body, a commit message, a -k filter) and
+# is left out, and so are the words of what only reads: text and read-only tools (echo, cat, grep, ls, find without -exec, sed without
+# -i, awk without system() …), `gh pr|issue|run list|api` reads, a GET-only curl, kubectl/helm/terraform read verbs, test runners,
+# git commands that only read or record, and the body of a heredoc that no shell reads — a tool only while nothing on the line makes
+# it run a program (rg --pre, git -c, find -exec, an env prefix …). A shell is given its raw text only when it reads its script from
+# standard input (`… | bash`). A command line it cannot split is matched as plain text, as before.
 # (3) and (4) are best effort: the hook reads the command line, it does not run it — a program that writes on its own (python -c,
 # patch, git apply, make, a package manager, curl -o …) or a path built from a variable or brace expansion is not seen.
+# (2) also holds while an sdlc item is active (the work doc branch is checked out): then a session never merges — `gh pr merge` and any
+# push to the default branch are refused whatever protect.block_direct_push says: the merge belongs to the shell gate.
 # Reads: protect.{deploy_patterns,deploy_approval_env,block_direct_push,default_branch,protect_tests,test_paths}, paths.work,
 #        secrets.scan_commits, .sdlc/state/active-work (lib/common.sh), SDLC_ALLOW_TEST_EDIT (environment); a version-1 config's
 #        environments.production.{patterns,approval_env}
@@ -22,6 +27,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/../lib/hooks-extra.sh"
 
 input=$(cat)
+guard_require_json "$input"                  # empty stdin: nothing to guard; not JSON / no jq or python3: blocked (fail closed)
 root=$(project_root "$input")
 SDLC_SESSION_ID=$(json_get "$input" .session_id); export SDLC_SESSION_ID
 cmd=$(json_get "$input" .tool_input.command)
@@ -29,270 +35,35 @@ cmd=$(json_get "$input" .tool_input.command)
 cmd_short=$(trunc "$(one_line "$cmd")" 100)
 initialized=false; sdlc_initialized "$root" && initialized=true
 
-# The command line as simple commands — (1) and (3) both read it through one tokenizer (awk) that turns it into records: W<word>
-# (quotes and escapes resolved), O<path> (the target of an output redirection) and C (end of a simple command: ; & | && || newline
-# ( ) `) — heredoc bodies and comments skipped. Only (1) asks for more (awk -v bodies=1 -v cap=<n>): P (the command's output is
-# piped on), R<file> (its input is a here-string — no file — or the file), N<kind> followed by one record of text, newlines as
-# \001 — kind X: a command substitution inside double quotes or inside an unquoted heredoc body (a command of its own), kind B<n>:
-# the body of a heredoc whose command, simple command number n, names a shell — and ! (more than <n> records: stopped there).
-# Plain text, white space and quoted text are read a chunk at a time: substr in macOS awk measures the whole command line on every
-# call, so a character-by-character scan is quadratic in its length. awk runs as LC_ALL=C — it reads bytes, whatever the locale: in a
-# UTF-8 locale macOS awk stops dead on a regular expression over half a character (a chunk that ends inside one, the text after a
-# backslash that escapes its first byte), and everything after that point is never seen.
-TL_AWK='
-BEGIN {
-  RS = "\001"; SQ = "\047"; DQ = "\042"; BQ = "\140"; DOL = "\044"; cl = 0
-  PLAINRE = "^[^ \t\r\n;|&()<>" BQ DQ SQ "\\\\]+"                 # a run of characters that need no attention (not stop, quote or backslash)
-  DQRE = bodies ? "[\"\\\\$`]" : "[\"\\\\]"
-  if (bodies) { m = split(shells, a, " "); for (k = 1; k <= m; k++) SH[a[k]] = 1 }
-}
-function stop(c) {
-  return c == " " || c == "\t" || c == "\r" || c == "\n" || c == ";" || c == "|" || c == "&" || c == "(" || c == ")" || c == "<" || c == ">" || c == "`"
-}
-function tick() { if (cap && ++nrec > cap) { print "!"; exit } }                  # (bodies only) too many records: the caller matches the text instead
-function cend() { tick(); print "C"; cl++ }
-function nest(kind, x) { tick(); gsub(/\n/, "\001", x); print "N" kind; print x }
-function pclose(t, p,   nt, dep, rest, j, c) {              # the ) that closes a $( — p is just past the $(
-  nt = length(t); dep = 1
-  while (p <= nt) {
-    rest = substr(t, p, 256)
-    j = match(rest, /[()\\]/)
-    if (j == 0) { p += length(rest); continue }
-    p += j - 1
-    c = substr(t, p, 1)
-    if (c == "\\") { p += 2; continue }
-    if (c == "(") dep++
-    else if (--dep == 0) return p
-    p++
-  }
-  return nt + 1
-}
-function bclose(t, p,   nt, rest, j) {                       # the backtick that closes one — p is just past the opening one
-  nt = length(t)
-  while (p <= nt) {
-    rest = substr(t, p, 256)
-    j = match(rest, /[`\\]/)
-    if (j == 0) { p += length(rest); continue }
-    p += j - 1
-    if (substr(t, p, 1) == "\\") { p += 2; continue }
-    return p
-  }
-  return nt + 1
-}
-function substs(t,   p, nt, rest, j, c, q) {                 # the command substitutions an unquoted heredoc body expands
-  if (index(t, "$(") == 0 && index(t, BQ) == 0) return
-  nt = length(t); p = 1
-  while (p <= nt) {
-    rest = substr(t, p, 256)
-    j = match(rest, /[\\$`]/)
-    if (j == 0) { p += length(rest); continue }
-    p += j - 1
-    c = substr(t, p, 1)
-    if (c == "\\") { p += 2; continue }
-    if (c == DOL) {
-      if (substr(t, p + 1, 1) != "(") { p++; continue }
-      q = pclose(t, p + 2); nest("X", substr(t, p + 2, q - p - 2)); p = q + 1
-    } else {
-      q = bclose(t, p + 1); nest("X", substr(t, p + 1, q - p - 1)); p = q + 1
-    }
-  }
-}
-function readword(   w, c, d, e, rest, j, q, k0) {
-  w = ""
-  while (i <= n) {
-    rest = substr(s, i, 256)
-    if (match(rest, PLAINRE)) { w = w substr(rest, 1, RLENGTH); i += RLENGTH; continue }
-    c = substr(rest, 1, 1)
-    if (stop(c)) break
-    if (c == "\\") {
-      d = substr(s, i + 1, 1)
-      if (d == "\n") { i += 2; continue }
-      w = w d; i += 2; continue
-    }
-    if (c == SQ) {
-      i++
-      rest = substr(s, i); j = index(rest, SQ)
-      if (j == 0) { w = w rest; i = n + 1 } else { w = w substr(rest, 1, j - 1); i += j }
-      continue
-    }
-    if (c == DQ) {
-      i++
-      while (i <= n) {
-        rest = substr(s, i, 256)                        # plain text is taken a chunk at a time
-        j = match(rest, DQRE)
-        if (j == 0) { w = w rest; i += length(rest); continue }
-        w = w substr(rest, 1, j - 1); i += j - 1
-        d = substr(s, i, 1)
-        if (d == DQ) break
-        if (d == DOL || d == BQ) {                      # (bodies only) a command substitution inside the quotes is a command of its own
-          if (d == BQ) { k0 = i + 1; q = bclose(s, k0) }
-          else if (substr(s, i + 1, 1) == "(") { k0 = i + 2; q = pclose(s, k0) }
-          else { w = w d; i++; continue }
-          nest("X", substr(s, k0, q - k0))
-          w = w substr(s, i, q - i + 1); i = q + 1; continue
-        }
-        e = substr(s, i + 1, 1)
-        if (e == "\n") { i += 2; continue }
-        if (e == "$" || e == "`" || e == DQ || e == "\\") { w = w e; i += 2; continue }
-        w = w d; i++
-      }
-      i++; continue
-    }
-    w = w c; i++
-  }
-  gsub(/\n/, " ", w)
-  return w
-}
-function skipws(   rest) {                                  # a run of white space, a chunk at a time
-  while (i <= n) {
-    rest = substr(s, i, 256)
-    if (!match(rest, /^[ \t\r]+/)) return
-    i += RLENGTH
-  }
-}
-function emit(k, b) {                                       # (bodies only) a heredoc body: a script when its command is a shell, plus the $( ) of an unquoted one
-  if (!bodies) return
-  if (shw[hown[k]]) nest("B" hown[k], b)
-  if (!hq[k]) substs(b)
-}
-function skipbodies(   k, d, wrapped, j, b, from, rs, rl) {
-  for (k = 1; k <= nh; k++) {
-    if (i > n) break
-    d = hd[k]; from = i
-    wrapped = "\n" substr(s, i) "\n"
-    if (!hdash[k]) {
-      j = index(wrapped, "\n" d "\n")
-      if (j > 0) { emit(k, substr(s, from, j - 1)); i = i + j + length(d); continue }
-    } else if (d ~ /^[A-Za-z0-9_]+$/) {
-      if (match(wrapped, "\n\t*" d "\n")) { rs = RSTART; rl = RLENGTH; emit(k, substr(s, from, rs - 1)); i = i + rs + rl - 2; continue }
-    } else {
-      b = ""
-      while (i <= n) {
-        j = index(substr(s, i), "\n")
-        if (j == 0) { wrapped = substr(s, i); i = n + 1 } else { wrapped = substr(s, i, j - 1); i += j }
-        sub(/^\t+/, "", wrapped)
-        if (wrapped == d) break
-        b = b wrapped "\n"
-      }
-      emit(k, b)
-      continue
-    }
-    emit(k, substr(s, from)); i = n + 1
-  }
-  nh = 0
-}
-{
-  s = $0; n = length(s); i = 1; nh = 0
-  while (i <= n) {
-    rest = substr(s, i, 256)
-    if (match(rest, /^[ \t\r]+/)) { i += RLENGTH; continue }
-    c = substr(rest, 1, 1)
-    if (c == "\n") { i++; cend(); if (nh > 0) skipbodies(); continue }
-    if (c == "#") { j = index(substr(s, i), "\n"); if (j == 0) i = n + 1; else i += j - 1; continue }
-    if (c == ";" || c == "(" || c == ")" || c == "`") { i++; cend(); continue }
-    if (c == "|") {
-      i++; d = substr(s, i, 1)
-      if (d == "|") i++
-      else { if (d == "&") i++; if (bodies) print "P" }
-      cend(); continue
-    }
-    if (c == "&") {
-      d = substr(s, i + 1, 1)
-      if (d == ">") {
-        i += 2; if (substr(s, i, 1) == ">") i++
-        skipws(); t = readword(); print "O" t; continue
-      }
-      i++; if (d == "&") i++
-      cend(); continue
-    }
-    if (c == ">") {
-      i++; d = substr(s, i, 1)
-      if (d == ">" || d == "|") i++
-      else if (d == "&") {
-        e = substr(s, i + 1, 1)
-        if (e ~ /[0-9-]/) { i++; while (i <= n && substr(s, i, 1) ~ /[0-9-]/) i++; continue }
-        i++
-      }
-      else if (d == "(") continue
-      skipws(); t = readword(); print "O" t; continue
-    }
-    if (c == "<") {
-      i++; d = substr(s, i, 1)
-      if (d == "<") {
-        i++
-        if (substr(s, i, 1) == "<") { i++; skipws(); t = readword(); if (bodies) print "R"; continue }
-        dash = 0; if (substr(s, i, 1) == "-") { dash = 1; i++ }
-        skipws(); hp = i; t = readword()
-        nh++; hd[nh] = t; hdash[nh] = dash; hown[nh] = cl
-        q = substr(s, hp, i - hp); hq[nh] = (index(q, DQ) > 0 || index(q, SQ) > 0 || index(q, "\\") > 0)
-        continue
-      }
-      if (d == "(") continue
-      if (d == "&") i++
-      skipws(); t = readword(); if (bodies && d != "&") print "R" t; continue
-    }
-    p = i
-    w = readword()
-    if (i == p) { i++; continue }
-    d = substr(s, i, 1)
-    if (w ~ /^[0-9]+$/ && (d == ">" || d == "<")) continue
-    if (bodies) { b = w; sub(/^.*\//, "", b); if (b in SH) shw[cl] = 1 }
-    tick(); print "W" w
-  }
-}
-'
-# What can deploy. A text tool only prints or searches its arguments, so words that look like a deploy there are text — unless an option
-# makes it run a program (deploy_text_runs); less and more are not on the list, they run what a ! line or LESSOPEN says. Of git, the
-# commands in SDLC_GIT_LOCAL only read or record — and only while nothing on the line makes git run a program (deploy_git_reads);
-# push, anything else (`git deploy`, an alias) and the commands that run what they are given (rebase --exec, bisect run, submodule
-# foreach, difftool, mergetool, config alias.x '!cmd') are checked like any command. What git may be given without that is listed in
-# SDLC_GIT_C_INERT (the settings of a -c: they name the committer) and SDLC_ENV_INERT (the VAR=value in front of git: language, time
-# zone, terminal and colour settings, who the author and committer are, a pager that is cat or empty — git starts none) — patterns,
-# matched against the whole word.
-# A shell runs what it is given: the words of its command line, the body of a heredoc, and — where the tokenizer cannot follow
-# it — whatever a pipe, a here-string or a file feeds it.
-SDLC_TEXT_TOOLS="echo printf cat grep egrep fgrep rg ag ack head tail wc sort uniq cut tr diff jq"
+# What can deploy. A text tool only prints, searches or lists its arguments, so words that look like a deploy there are text — unless an
+# option makes it run a program (deploy_text_runs); less and more are not on the list, they run what a ! line or LESSOPEN says. find,
+# sed and awk are text tools too until they run something (find -exec, sed -i or an e command, awk system() or a pipe); gh, curl,
+# kubectl, helm and terraform are while they only read (deploy_gh_reads, deploy_curl_reads, deploy_infra_reads) and a test runner is
+# (deploy_test_runs). Of git, the commands in SDLC_GIT_LOCAL only read or record — and only while nothing on the line makes git run a
+# program (deploy_git_reads); push, anything else (`git deploy`, an alias) and the commands that run what they are given (rebase --exec,
+# bisect run, submodule foreach, difftool, mergetool, config alias.x '!cmd') are checked like any command. What git may be given without
+# that is listed in SDLC_GIT_C_INERT (the settings of a -c: they name the committer) and SDLC_ENV_INERT (the VAR=value in front of git:
+# language, time zone, terminal and colour settings, who the author and committer are, a pager that is cat or empty, an editor that is
+# true or : — git starts none) — patterns, matched against the whole word.
+# Any other program is checked by its words, but a word with white space in it is prose, not a command, and is left out
+# (deploy_prose_text) — except where the program takes a command: a shell, ssh, eval, xargs, watch … (SDLC_RUNNERS) keep every word;
+# so does the word after -c/--command/--exec …; an interpreter (python -c, node -e, perl -e, psql -c) keeps its code word only when
+# the code can start a program (deploy_launches).
+# A shell runs what it is given: the words of its command line and the body of a heredoc — and, when it reads its script from standard
+# input (shell_reads_stdin), whatever a pipe, a here-string or a file feeds it.
+SDLC_TEXT_TOOLS="echo printf cat grep egrep fgrep rg ag ack head tail wc sort uniq cut tr diff jq ls stat file du df tree pwd readlink realpath basename dirname which whereis type test [ [[ cd pushd popd true false : date uname hostname id whoami yq xq column nl od xxd hexdump strings md5sum sha1sum sha256sum shasum cksum cmp comm join paste fold fmt rev tac seq sleep"
 SDLC_SHELLS="sh bash zsh dash ksh ssh"
+SDLC_RUNNERS="sh bash zsh dash ksh ssh eval watch su xargs parallel script flock"
 SDLC_GIT_LOCAL="commit log show diff grep checkout switch branch tag status add rm mv merge fetch pull stash remote cherry-pick restore reset revert blame clean describe ls-files rev-parse rev-list shortlog worktree apply am archive bundle clone init notes reflog format-patch cat-file show-ref name-rev for-each-ref diff-tree range-diff cherry show-branch gc fsck prune maintenance sparse-checkout"
 SDLC_GIT_C_INERT="user.name=* user.email=*"
-SDLC_ENV_INERT="LANG=* LC_*=* TZ=* TERM=* NO_COLOR=* COLUMNS=* GIT_PAGER=cat GIT_PAGER= PAGER=cat PAGER= GIT_AUTHOR_NAME=* GIT_AUTHOR_EMAIL=* GIT_AUTHOR_DATE=* GIT_COMMITTER_NAME=* GIT_COMMITTER_EMAIL=* GIT_COMMITTER_DATE=*"
+SDLC_ENV_INERT="LANG=* LC_*=* TZ=* TERM=* NO_COLOR=* COLUMNS=* GIT_PAGER=cat GIT_PAGER= PAGER=cat PAGER= GIT_EDITOR=true GIT_EDITOR=: GIT_SEQUENCE_EDITOR=true GIT_SEQUENCE_EDITOR=: GIT_AUTHOR_NAME=* GIT_AUTHOR_EMAIL=* GIT_AUTHOR_DATE=* GIT_COMMITTER_NAME=* GIT_COMMITTER_EMAIL=* GIT_COMMITTER_DATE=*"
+SDLC_GH_TEXT="pr issue search status browse gist label repo auth config alias extension completion help version codespace ruleset cache secret variable org project"
 DEPLOY_MAX_REC=4000                                        # records the tokenizer prints before it stops (a word, a simple command's end, a substitution each count one)
 DEPLOY_MAX_OUT=40000                                       # more tokenizer output than this is matched as plain text instead
 DEPLOY_WORK_MAX=1000                                       # simple commands looked at per command line — what is left is matched as plain text
 DEPLOY_NESTED_MAX=16                                       # command substitutions and shell heredoc bodies looked into per command line (one awk each)
-DEPLOY_WORK=0; DEPLOY_NESTED=0; DEPLOY_CAND=""; TL_K=0; SDLC_DEPLOY_PATTERN=""; SDLC_DEPLOY_PART=""
+DEPLOY_WORK=0; DEPLOY_NESTED=0; DEPLOY_CAND=""; DEPLOY_TEXT=""; TL_K=0; SDLC_DEPLOY_PATTERN=""; SDLC_DEPLOY_PART=""
 
-# tl_cmdword → TL_K: the index in W[] of the command word — past VAR=value prefixes, shell keywords and wrappers (sudo, env, time,
-# nice … — also with a path) and their options; ${#W[@]} when the simple command has none
-tl_cmdword() {
-  local nw=${#W[@]} w b wrap=0 tool=""
-  TL_K=0
-  while [ "$TL_K" -lt "$nw" ]; do
-    w="${W[$TL_K]}"
-    case "$w" in
-      -*) [ "$wrap" -ge 1 ] || break
-          case "$tool" in                        # an option that takes the next word as its argument (-u root, -n 5 …)
-            sudo) case "$w" in -[ughpCrtTUDR]|--user|--group|--host|--prompt|--close-from|--role|--type|--command-timeout|--other-user|--chdir|--chroot) TL_K=$((TL_K + 1));; esac;;
-            doas) case "$w" in -[uC]) TL_K=$((TL_K + 1));; esac;;
-            env) case "$w" in -[uCS]|--unset|--chdir|--split-string) TL_K=$((TL_K + 1));; esac;;
-            nice) case "$w" in -n|--adjustment) TL_K=$((TL_K + 1));; esac;;
-            stdbuf) case "$w" in -[ioe]|--input|--output|--error) TL_K=$((TL_K + 1));; esac;;
-            timeout) case "$w" in -[sk]|--signal|--kill-after) TL_K=$((TL_K + 1));; esac;;
-            time) case "$w" in -[fo]|--format|--output) TL_K=$((TL_K + 1));; esac;;
-            exec) case "$w" in -a) TL_K=$((TL_K + 1));; esac;;
-          esac;;
-      *=*) valid_ident "${w%%=*}" || break;;
-      '!'|'{'|'}'|if|then|else|elif|fi|do|done|while|until) wrap=0;;
-      *) b="${w##*/}"
-         case "$b" in
-           time|command|builtin|exec|nohup|sudo|doas|env|nice|setsid|stdbuf) wrap=1; tool="$b";;
-           timeout) wrap=2; tool="$b";;
-           *) if [ "$wrap" = 2 ]; then wrap=1; else break; fi;;
-         esac;;
-    esac
-    TL_K=$((TL_K + 1))
-  done
-}
 # deploy_cand_add <text> → one more line for DEPLOY_CAND, the text the deploy patterns are matched against
 deploy_cand_add() { [ -z "$1" ] || DEPLOY_CAND="$DEPLOY_CAND$1"$'\n'; }
 # in_globs <patterns, separated by spaces> <text> → 0 when the whole of <text> matches one of the patterns (* is any text)
@@ -351,25 +122,215 @@ deploy_git_reads() {
   done
   return 0
 }
+# deploy_find_runs → 0 when find (W[], name at TL_K) runs a program: -exec -execdir -ok -okdir
+deploy_find_runs() {
+  local k=$((TL_K + 1)) nw=${#W[@]}
+  while [ "$k" -lt "$nw" ]; do
+    case "${W[$k]}" in -exec|-execdir|-ok|-okdir) return 0;; esac
+    k=$((k + 1))
+  done
+  return 1
+}
+# deploy_awk_runs → 0 when the awk program can start a program or a pipe: a word that is not an option and holds system, getline or |
+deploy_awk_runs() {
+  local k=$((TL_K + 1)) nw=${#W[@]} a
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in -*) ;; *system*|*getline*|*'|'*) return 0;; esac
+  done
+  return 1
+}
+# deploy_sed_runs → 0 when sed edits in place (-i, -i.bak, -ni, --in-place) or its script runs a command (an e command, the e flag of s)
+deploy_sed_runs() {
+  local k=$((TL_K + 1)) nw=${#W[@]} a e_cmd='(^|[;{])[[:space:]]*[0-9,$]*e([[:space:]]|$)' e_flag='(^|[;{[:space:]])s/.*/[gpimIM0-9]*e[gpimIMe0-9]*$'
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      --in-place|--in-place=*) return 0;;
+      --*) ;;
+      -*i*) return 0;;
+      -*) ;;
+      *) if [[ "$a" =~ $e_cmd ]] || [[ "$a" =~ $e_flag ]]; then return 0; fi;;
+    esac
+  done
+  return 1
+}
+# deploy_gh_reads → 0 when the gh command in W[] only reads: pr/issue/repo … (text), run list|view|watch|download, workflow list|view,
+# release list|view|download, and `api` without a method other than GET and without fields or input (those make it a POST)
+deploy_gh_reads() {
+  local k=$((TL_K + 1)) nw=${#W[@]} a sub="" sub2="" v
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      -R|--repo|--hostname) k=$((k + 1));;
+      -*) ;;
+      *) if [ -z "$sub" ]; then sub="$a"; else sub2="$a"; break; fi;;
+    esac
+  done
+  case "$sub" in
+    api)
+      k=$((TL_K + 1))
+      while [ "$k" -lt "$nw" ]; do
+        a="${W[$k]}"; k=$((k + 1))
+        case "$a" in
+          -X|--method) v="${W[$k]:-}"; k=$((k + 1)); case "$v" in GET|get) ;; *) return 1;; esac;;
+          -X?*) case "${a#-X}" in GET|get) ;; *) return 1;; esac;;
+          --method=*) case "${a#--method=}" in GET|get) ;; *) return 1;; esac;;
+          -f|-F|--field|--raw-field|--input|-f?*|-F?*|--field=*|--raw-field=*|--input=*) return 1;;
+        esac
+      done
+      return 0;;
+    run) case "$sub2" in list|view|watch|download) return 0;; esac; return 1;;
+    workflow) case "$sub2" in list|view) return 0;; esac; return 1;;
+    release) case "$sub2" in list|view|download) return 0;; esac; return 1;;
+  esac
+  case " $SDLC_GH_TEXT " in *" $sub "*) return 0;; esac
+  return 1
+}
+# deploy_curl_reads → 0 when curl or wget (W[], name at TL_K) only fetches: no method but GET/HEAD, no body, form or upload
+deploy_curl_reads() {
+  local k=$((TL_K + 1)) nw=${#W[@]} a v
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      -X|--request) v="${W[$k]:-}"; k=$((k + 1)); case "$v" in GET|get|HEAD|head) ;; *) return 1;; esac;;
+      --request=*) case "${a#--request=}" in GET|get|HEAD|head) ;; *) return 1;; esac;;
+      -X?*) case "${a#-X}" in GET|get|HEAD|head) ;; *) return 1;; esac;;
+      --data|--data-*|--json|--form|--form-*|--upload-file|--post-*|--body-*|--method|--method=*) return 1;;
+      --*) ;;
+      -?*) case "$a" in *[dFTX]*) return 1;; esac;;
+    esac
+  done
+  return 0
+}
+# deploy_infra_reads <kubectl|helm|terraform|tofu> → 0 when the command in W[] only reads: kubectl get/describe/logs/… and rollout
+# status/history, helm list/status/template/…, terraform plan/show/validate/…
+deploy_infra_reads() {
+  local k=$((TL_K + 1)) nw=${#W[@]} a sub="" sub2=""
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      -n|--namespace|--context|--cluster|--user|--kubeconfig|-s|--server|--as|--token|--kube-context|--kube-as-user) k=$((k + 1));;
+      -*) ;;
+      *) if [ -z "$sub" ]; then sub="$a"; else sub2="$a"; break; fi;;
+    esac
+  done
+  case "$1" in
+    kubectl) case "$sub" in
+               rollout) case "$sub2" in status|history) return 0;; esac;;
+               *) case " get describe logs top explain api-resources api-versions version cluster-info config auth events " in *" $sub "*) return 0;; esac;;
+             esac;;
+    helm) case " list ls status get history show search repo env version template lint help completion plugin dependency " in *" $sub "*) return 0;; esac;;
+    terraform|tofu) case " plan show output validate fmt version providers graph console init " in *" $sub "*) return 0;; esac;;
+  esac
+  return 1
+}
+# deploy_test_runs → 0 when the command in W[] is a test runner: pytest, jest, vitest … (also behind npx), node --test, python -m pytest,
+# `go|cargo|mvn|gradle|dotnet|deno test`, `npm|yarn|pnpm|bun [run] test[:x]`
+deploy_test_runs() {
+  local base="${W[$TL_K]##*/}" k=$((TL_K + 1)) nw=${#W[@]} a sub="" sub2="" prev=""
+  case "$base" in pytest|py.test|jest|vitest|mocha|ava|tap|phpunit|rspec) return 0;; esac
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$base" in
+      node|nodejs) case "$a" in --test|--test=*|--test-*) return 0;; esac;;
+      python|python[0-9]*) if [ "$prev" = -m ]; then case "$a" in pytest|unittest|doctest|nose2) return 0;; esac; fi;;
+    esac
+    case "$a" in -*) ;; *) if [ -z "$sub" ]; then sub="$a"; elif [ -z "$sub2" ]; then sub2="$a"; fi;; esac
+    prev="$a"
+  done
+  case "$base" in
+    npx|bunx|pnpx) case "$sub" in pytest|jest|vitest|mocha|ava|tap|phpunit|rspec) return 0;; esac;;
+    go|cargo|mvn|gradle|gradlew|dotnet|deno|swift|mix|dart|flutter) [ "$sub" = test ] && return 0;;
+    npm|yarn|pnpm|bun)
+      case "$sub" in test|t|tst|test:*) return 0;; run|run-script) case "$sub2" in test|test:*) return 0;; esac;; esac;;
+  esac
+  return 1
+}
+# deploy_runner_word → 0 when a word of the simple command in W[] makes the words after it a command: a shell, ssh, eval, xargs, watch …
+deploy_runner_word() {
+  local k=$TL_K nw=${#W[@]} b
+  while [ "$k" -lt "$nw" ]; do
+    b="${W[$k]##*/}"
+    case " $SDLC_RUNNERS " in *" $b "*) return 0;; esac
+    k=$((k + 1))
+  done
+  return 1
+}
+# deploy_launches <code> → 0 when the code of an interpreter's -c/-e argument can start a program (system, exec, popen, spawn,
+# subprocess, child_process, a backtick, %x, a shell escape \! or COPY … PROGRAM …)
+deploy_launches() {
+  case "$1" in
+    *system*|*exec*|*popen*|*spawn*|*subprocess*|*child_process*|*Popen*|*'`'*|*'%x'*|*check_output*|*check_call*|*shell*|*passthru*|*proc_open*|*Deno.Command*|*Deno.run*|*'Bun.'*|*PROGRAM*|*'\!'*|*'$('*) return 0;;
+  esac
+  return 1
+}
+# deploy_prose_text → DEPLOY_TEXT: the words of W[] without the prose — a word with white space in it, unless it is the command word,
+# follows -c/--command/--cmd/--exec/-a/--args/--run/--eval (or carries it as --command=…), or is an interpreter's code that can start
+# a program (deploy_launches)
+deploy_prose_text() {
+  local k=0 nw=${#W[@]} w prev="" interp=0 keep out=""
+  if [ "$TL_K" -lt "$nw" ]; then
+    case "${W[$TL_K]##*/}" in python|python[0-9]*|node|nodejs|ruby|perl|php|lua|deno|bun|psql|mysql|sqlite3|mongosh|mongo|redis-cli|osascript|Rscript) interp=1;; esac
+  fi
+  while [ "$k" -lt "$nw" ]; do
+    w="${W[$k]}"; keep=1
+    case "$w" in *[[:space:]]*)
+      if [ "$k" -lt "$TL_K" ] && [ "$TL_K" -lt "$nw" ]; then
+        # in front of a command: a VAR=value that runs something (LESSOPEN='|./deploy.sh %s' less x) is looked at; the inert ones are not
+        valid_ident "${w%%=*}" && ! in_globs "$SDLC_ENV_INERT" "$w" || keep=0
+      elif [ "$k" -ne "$TL_K" ]; then
+        keep=0
+        if [ "$interp" = 1 ]; then
+          if deploy_launches "$w"; then keep=1; fi
+        else
+          case "$prev" in -c|--command|--cmd|--exec|-a|--args|--run|--eval) keep=1;; esac
+          case "$w" in --command=*|--cmd=*|--exec=*|--args=*|--run=*|--eval=*) keep=1;; esac
+        fi
+      fi;;
+    esac
+    if [ "$keep" = 1 ]; then out="$out$w "; fi
+    prev="$w"; k=$((k + 1))
+  done
+  DEPLOY_TEXT="${out% }"
+}
 # deploy_clause — the simple command in W[]: its words, joined by single spaces (and "< file" for the file its input is read from),
-# join DEPLOY_CAND unless its command is a text tool or a git command that only reads or records and runs no program (deploy_text_runs,
-# deploy_git_reads) (reads cl, PIN, RIN, RF, SHELL_SER and raw of deploy_collect, which calls it)
+# join DEPLOY_CAND unless its command only reads or prints (see above); prose words are left out unless the command takes a command
+# (reads cl, PIN, RIN, RF, SHELL_SER and raw of deploy_collect, which calls it)
 deploy_clause() {
-  local nw=${#W[@]} base="" skip=0 shell=0 text IFS=' '
+  local nw=${#W[@]} base="" skip=0 shell=0 mode=prose text IFS=' '
   [ "$nw" -gt 0 ] || return 0
   DEPLOY_WORK=$((DEPLOY_WORK + 1))
   tl_cmdword
   if [ "$TL_K" -lt "$nw" ]; then
     base="${W[$TL_K]##*/}"
-    case " $SDLC_TEXT_TOOLS " in *" $base "*) deploy_text_runs || skip=1;; esac
-    case " $SDLC_SHELLS " in *" $base "*) shell=1;; esac
-    if [ "$base" = git ] && deploy_git_reads; then skip=1; fi
+    case " $SDLC_SHELLS " in *" $base "*) shell=1; mode=whole;; esac
+    if [ "$shell" = 0 ]; then
+      case " $SDLC_TEXT_TOOLS " in
+        *" $base "*) if deploy_text_runs; then mode=whole; else skip=1; fi;;
+        *) case "$base" in
+             git) if deploy_git_reads; then skip=1; else mode=whole; fi;;
+             find) deploy_find_runs || skip=1;;
+             awk|gawk|mawk|nawk) if deploy_awk_runs; then mode=whole; else skip=1; fi;;
+             sed|gsed) deploy_sed_runs || skip=1;;
+             gh) deploy_gh_reads && skip=1;;
+             curl|wget) deploy_curl_reads && skip=1;;
+             kubectl|helm|terraform|tofu) deploy_infra_reads "$base" && skip=1;;
+             *) deploy_test_runs && skip=1;;
+           esac;;
+      esac
+      if [ "$skip" = 0 ] && [ "$mode" = prose ] && deploy_runner_word; then mode=whole; fi
+    fi
   fi
-  if [ "$shell" = 1 ]; then
-    SHELL_SER="$SHELL_SER$cl "
+  if [ "$shell" = 1 ] && shell_reads_stdin; then
+    SHELL_SER="$SHELL_SER$cl "                                                  # a heredoc body that follows is its script
     if [ "$PIN" = 1 ] || [ "$RIN" = 1 ]; then deploy_cand_add "$raw"; fi      # what the shell reads is not in the words
   fi
-  if [ "$skip" = 0 ]; then text="${W[*]}"; [ -z "$RF" ] || text="$text <$RF"; deploy_cand_add "$text"; fi
+  if [ "$skip" = 0 ]; then
+    if [ "$mode" = prose ]; then deploy_prose_text; text="$DEPLOY_TEXT"; else text="${W[*]}"; fi
+    [ -z "$RF" ] || text="$text <$RF"
+    deploy_cand_add "$text"
+  fi
   return 0
 }
 # deploy_collect <text> — adds the simple commands of <text> that could deploy to DEPLOY_CAND: through the tokenizer, and into
@@ -431,13 +392,16 @@ if deploy_hit "$cmd"; then
   else
     log_event "$root" hook.gate deny "production: no $approval_env" "$detail"
     where=""; [ "$part_short" = "$cmd_short" ] || where=", in '$part_short'"
-    block "'$cmd_short' matches a production deploy pattern ('$matched'$where). Why: production deploys need a release authorization (protect.deploy_patterns). To proceed: set $approval_env=<ticket> (release manager) and retry. If this is not a deploy, the words only look like one — they are checked in every command except text tools (echo, cat, grep …), git commands that only read or record (commit, log, diff …) and heredoc text — and a text tool or git is checked too when it runs a program (--pre, --pager, git -c, --exec, an env prefix …): rephrase it, or narrow protect.deploy_patterns in .sdlc/config.json."
+    cfg_hint=""; [ "$initialized" = true ] && cfg_hint=", or narrow protect.deploy_patterns in .sdlc/config.json"
+    block "'$cmd_short' matches a production deploy pattern ('$matched'$where). Why: production deploys need a release authorization. To proceed: the person who releases starts Claude Code with $approval_env=<ticket> in its environment (a prefix on the command, $approval_env=<ticket> cmd, does not count) and the command is retried. If it is not a deploy — words are checked in every command except text and read-only tools, test runners and git commands that only read or record, and a program's prose arguments are skipped — rephrase it$cfg_hint."
   fi
 fi
 
 # (2) no direct path to the default branch — branch protection in a hook, for repositories where GitHub rulesets are unavailable.
-#     Parses each `git push` clause (split on && ; | ||): refspecs (+, refs/heads/, src:dst), --all/--mirror, --delete <default>,
-#     bare `git push` while on the default branch, `git -C <dir> push`. Feature-branch pushes and PR creation are allowed.
+#     Parses each `git push` clause (split on && ; | ||): refspecs (+, refs/heads/, src:dst, HEAD and @ = the current branch),
+#     --all/--mirror, --delete <default>, bare `git push` while on the default branch, `git -C <dir> push`. Feature-branch pushes and
+#     PR creation are allowed. While an sdlc item is active the merge is the shell gate's: `gh pr merge` and every push to the default
+#     branch are refused whatever protect.block_direct_push says (push_clause, read from the tokenized command line, nested bodies too).
 push_hits_default() { # push_hits_default <clause> <default-branch> <current-branch> → prints a reason and returns 0 when the clause pushes to the default branch
   local def="$2" cur="$3" tok seen_git=0 seen_push=0 skipnext=0 remote="" refspecs="" all=0 delete=0 r dst
   # shellcheck disable=SC2086
@@ -463,6 +427,7 @@ push_hits_default() { # push_hits_default <clause> <default-branch> <current-bra
   for r in $refspecs; do
     r="${r#+}"; case "$r" in *:*) dst="${r#*:}";; *) dst="$r";; esac
     dst="${dst#refs/heads/}"
+    case "$dst" in HEAD|@) dst="$cur";; esac                 # `git push origin HEAD` pushes the branch that is checked out
     if [ "$dst" = "$def" ]; then
       if [ $delete = 1 ]; then printf 'deletes the default branch %s' "$def"; else printf 'refspec targets %s' "$def"; fi; return 0
     fi
@@ -470,29 +435,73 @@ push_hits_default() { # push_hits_default <clause> <default-branch> <current-bra
   if [ -z "$refspecs" ] && [ $delete = 0 ] && [ "$cur" = "$def" ]; then printf 'bare push while on %s' "$def"; return 0; fi
   return 1
 }
-if [ "$initialized" = true ] && [ "$(cfg_bool "$root" .protect.block_direct_push true)" = "true" ]; then
-  case "$cmd" in *git*push*|*push*)
+# push_clause — walk_scan callback: the simple command in W[] is a push to the default branch (PUSH_DEF, with PUSH_CUR checked out) or a
+# merge of a pull request → PUSH_REASON, 0
+PUSH_DEF=""; PUSH_CUR=""; PUSH_REASON=""
+push_clause() {
+  local nw=${#W[@]} k base a sub="" sub2="" r
+  tl_cmdword; k=$TL_K
+  [ "$k" -lt "$nw" ] || return 1
+  base="${W[$k]##*/}"
+  case "$base" in
+    git) if r=$(push_hits_default "${W[*]:$k}" "$PUSH_DEF" "$PUSH_CUR"); then PUSH_REASON="$r"; return 0; fi;;
+    gh) k=$((k + 1))
+        while [ "$k" -lt "$nw" ]; do
+          a="${W[$k]}"; k=$((k + 1))
+          case "$a" in
+            -R|--repo|--hostname) k=$((k + 1));;
+            -*) ;;
+            *) if [ -z "$sub" ]; then sub="$a"; else sub2="$a"; break; fi;;
+          esac
+        done
+        if [ "$sub" = pr ] && [ "$sub2" = merge ]; then PUSH_REASON="gh pr merge"; return 0; fi
+        if [ "$sub" = api ]; then
+          for a in "${W[@]}"; do
+            case "$a" in *pulls/*/merge*|*mergePullRequest*|*enablePullRequestAutoMerge*) PUSH_REASON="a pull request merged through the API"; return 0;; esac
+          done
+        fi;;
+  esac
+  return 1
+}
+push_guard=false; work_active=false
+if [ "$initialized" = true ]; then
+  [ "$(cfg_bool "$root" .protect.block_direct_push true)" = "true" ] && push_guard=true
+  sdlc_work_active "$root" && work_active=true
+fi
+case "$cmd" in *push*|*merge*)
+  if [ "$push_guard" = true ] || [ "$work_active" = true ]; then
     def=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'); [ -z "$def" ] && def=$(cfg "$root" .protect.default_branch main)
     cur=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    reason=""; old_ifs="$IFS"; IFS=$'\n'
-    for clause in $(printf '%s\n' "$cmd" | sed -E 's/&&|\|\||;|\|/\n/g'); do
+    reason=""; merge_gate=false
+    if [ "$work_active" = true ]; then
+      PUSH_DEF="$def"; PUSH_CUR="$cur"; PUSH_REASON=""
+      if walk_scan "$cmd" 0 push_clause; then reason="$PUSH_REASON"; merge_gate=true; fi
+    fi
+    if [ -z "$reason" ] && [ "$push_guard" = true ]; then
+      old_ifs="$IFS"; IFS=$'\n'
+      for clause in $(printf '%s\n' "$cmd" | sed -E 's/&&|\|\||;|\|/\n/g'); do
+        IFS="$old_ifs"
+        if r=$(push_hits_default "$clause" "$def" "$cur"); then reason="$r"; break; fi
+        IFS=$'\n'
+      done
       IFS="$old_ifs"
-      if r=$(push_hits_default "$clause" "$def" "$cur"); then reason="$r"; break; fi
-      IFS=$'\n'
-    done
-    IFS="$old_ifs"
+    fi
     if [ -n "$reason" ]; then
       log_event "$root" hook.guard deny direct_push "{\"cmd\":$(json_escape "$cmd_short"),\"branch\":\"$def\",\"reason\":$(json_escape "$reason")}"
+      if [ "$merge_gate" = true ]; then
+        block "'$cmd_short' ($reason): the merge is the shell gate's (\`sdlc.py ship\`); a session never merges. Why: while an sdlc item is active ($(active_work_slug "$root")) its change reaches '$def' only through the gate, which checks it first — this holds whatever protect.block_direct_push says. To proceed: commit on the sdlc branch and stop there — \`sdlc.py ship <slug>\` (interactive) or the loop pushes, opens the PR and merges after the gate."
+      fi
       block "pushing to the default branch '$def' ($reason: '$cmd_short'). Why: anything the agent writes arrives as a pull request through branch protection — there is no direct path to the default branch (protect.block_direct_push). To proceed: push a feature branch and open a PR (git push -u origin <branch> && gh pr create) — /sdlc:go and /sdlc:run do this and merge through the gate; to allow direct pushes in this repository set protect.block_direct_push: false."
-    fi ;;
-  esac
-fi
+    fi
+  fi ;;
+esac
 
 # (3) what the command writes — the same two rules as guard-edit (lib/hooks-extra.sh): during sdlc work existing test files
 #     (already on the default branch) stay untouched while they are locked, a test this change adds is free; and while the
 #     active work doc is ready or proposed, a path inside the project but outside the work dir and .sdlc/ is off limits (design
 #     first). The environment the hook runs in decides SDLC_ALLOW_TEST_EDIT, never an assignment inside the command line.
-#     The tokenizer above splits the command line into simple commands.
+#     The tokenizer (lib/hooks-extra.sh, walk_scan) splits the command line into simple commands and walks into what runs inside it:
+#     a command substitution in double quotes, the body of a heredoc a shell reads (`bash <<EOF`, `bash -s <<EOF`), `bash -c`, eval.
 #     Each simple command is then read for its write targets: redirections, tee, the destination of cp/mv/ln/install, the
 #     sources of mv, sed -i / perl -i, truncate, rm, dd of=, git rm/mv, git checkout -- <file>, git restore. Best effort, not a
 #     shell: no variables (a target with $VAR or a backtick is skipped), no brace expansion, no `find -exec`/`xargs`, nothing
@@ -502,6 +511,8 @@ TL_BASE=""; TL_ROOT=""; TL_ROOT_PHYS=""; TL_READY=""; TL_ON=0; TL_ACTION=""; TL_
 TL_DESIGN=0; TL_NODESIGN=0; TL_WDIR=""; TL_KIND=""      # design first: on while the active work doc is ready/proposed; TL_KIND = tests|design, what refused the command
 TL_MAX_GLOB_WORDS=20; TL_MAX_GLOB_FAST=2000; TL_MAX_GLOB_SLOW=300     # bounds: a command line costs the same whatever a glob expands to
 TL_MAX_NEW_CHECKS=30                                                    # test files looked up in git per command line (one git call each)
+TL_MAX_LOADS=8                                                          # listings of the base per command line: past that one listing of the whole tree
+TL_TESTS=$'\n'; TL_LOADED=$'\n'; TL_LOADS=0; TL_HINT=""; TL_FOUND=""; TL_SKIP_ROOT=0   # the base's test files, by listing (see tl_tests_load)
 
 # tl_interesting <command> → cheap pre-check: could this command line change a file at all?
 tl_interesting() {
@@ -538,34 +549,84 @@ tl_rel() {
     *) return 1;;
   esac
 }
-# tl_prepare → once per command, at the first path that could be a test file: the lock state and the test paths
+# tl_prepare → once per command, at the first path that could be a test file: the lock state, the test paths and — resolved here, in
+# the main shell, not inside a substitution, so it stays cached — the base the existing tests are measured against
 tl_prepare() {
   TL_READY=1; TL_ON=0
   test_lock_on "$root" || return 0
   test_paths_load "$root"
+  test_base_rev "$root"
   TL_ON=1
 }
-# tl_dir_test <rel dir> → prints one existing test file under the directory and returns 0. Only files git knows count — the
-# ones in the base (tracked ones without a base): build output and dependency folders are not tests, and a test this change adds is free.
-tl_dir_test() {
-  local f listing
-  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-  test_base_rev "$root"
+# tl_tests_load <rel dir> → TL_TESTS holds the test files of the base (the tracked ones when there is no base) under <rel dir> ('.' =
+# the whole tree), one per line, and TL_LOADED which directories were listed: ONE git call per directory, however many entries a glob
+# over it expands to (rm -rf node_modules/* is one call, not one per package) — and no call at all for a directory a listing covers.
+# The tests are the built-in set (one grep) or the configured paths (is_test_path, at most 30000 files). Past TL_MAX_LOADS listings
+# the next one is the whole tree.
+tl_tests_load() {
+  local p="$1" q listing f tests="" w wre n=0
+  [ "$p" = "." ] && p=""
+  case "$TL_LOADED" in *$'\n'"/"$'\n'*) return 0;; esac               # the whole tree is loaded
+  q="$p"
+  while :; do
+    case "$TL_LOADED" in *$'\n'"/$q"$'\n'*) return 0;; esac
+    [ -n "$q" ] || break
+    case "$q" in */*) q="${q%/*}";; *) q="";; esac
+  done
+  TL_LOADS=$((TL_LOADS + 1)); [ "$TL_LOADS" -le "$TL_MAX_LOADS" ] || p=""
+  TL_LOADED="$TL_LOADED/$p"$'\n'
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   if [ "$SDLC_TEST_BASE" != "-" ]; then
-    listing=$(git -C "$root" -c core.quotepath=off ls-tree -r --name-only "$SDLC_TEST_BASE" -- "$1" 2>/dev/null | head -n 3000)
+    listing=$(git --literal-pathspecs -C "$root" -c core.quotepath=off ls-tree -r --name-only "$SDLC_TEST_BASE" ${p:+-- "$p"} 2>/dev/null | head -n 200000)
   else
-    listing=$(git -C "$root" -c core.quotepath=off ls-files -- "$1" 2>/dev/null | head -n 3000)
+    listing=$(git --literal-pathspecs -C "$root" -c core.quotepath=off ls-files ${p:+-- "$p"} 2>/dev/null | head -n 200000)
   fi
+  [ -n "$listing" ] || return 0
+  if [ "${#SDLC_TEST_PATH_ARR[@]}" = 1 ] && [ "${SDLC_TEST_PATH_ARR[0]}" = auto ]; then
+    tests=$(printf '%s\n' "$listing" | LC_ALL=C grep -E -e "$SDLC_TEST_DIR_RE" -e "$SDLC_TEST_FILE_RE" -e "$SDLC_TEST_CONFIG_RE" -e "$SDLC_TEST_SPEC_RE")
+    w="$SDLC_TEST_WORK_DIR"
+    if [ -n "$w" ] && [ -n "$tests" ]; then                         # nothing under the work dir is a test
+      wre=$(printf '%s' "$w" | sed 's/[][\.*^$/]/\\&/g')
+      tests=$(printf '%s\n' "$tests" | LC_ALL=C grep -v -e "^$wre/")
+    fi
+  else
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      n=$((n + 1)); [ "$n" -le 30000 ] || break
+      if is_test_path "$f"; then tests="$tests$f"$'\n'; fi
+    done <<< "$listing"
+    tests="${tests%$'\n'}"
+  fi
+  if [ -n "$tests" ]; then TL_TESTS="$TL_TESTS$tests"$'\n'; fi
+  return 0
+}
+# tl_tests_under <rel dir> → 0 when the base has a test file under the directory ('.' = anywhere); loads the listing it needs
+tl_tests_under() {
+  tl_tests_load "$1"
+  if [ "$1" = "." ] || [ -z "$1" ]; then [ "$TL_TESTS" != $'\n' ]; return; fi
+  case "$TL_TESTS" in *$'\n'"$1"/*) return 0;; esac
+  return 1
+}
+# tl_dir_test <rel dir> → TL_FOUND = one existing test file under the directory, and returns 0. Only files git knows count — the
+# ones in the base (tracked ones without a base): build output and dependency folders are not tests, and a test this change adds is free.
+# TL_HINT = a directory above this one (the part of a glob before its wildcard) that is listed instead, once for all its entries.
+tl_dir_test() {
+  local rel="$1" hint="$1" f hits
+  if [ -n "$TL_HINT" ]; then case "$rel" in "$TL_HINT"|"$TL_HINT"/*) hint="$TL_HINT";; esac; fi
+  tl_tests_load "$hint"
+  tl_tests_under "$rel" || return 1
+  if [ "$rel" = "." ]; then hits="$TL_TESTS"; else hits=$(printf '%s' "$TL_TESTS" | grep -F -e "$rel/" | head -n 2000); fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    if is_test_path "$f" && [ -e "$root/$f" ]; then printf '%s' "$f"; return 0; fi
-  done <<< "$listing"
+    case "$rel" in .) ;; *) case "$f" in "$rel"/*) ;; *) continue;; esac;; esac
+    if [ -e "$root/$f" ]; then TL_FOUND="$f"; return 0; fi
+  done <<< "$hits"
   return 1
 }
 # tl_test_at <action> <abs> <rel> <dir-aware 0|1> → 0 (and TL_ACTION/TL_REL) when <abs>, which lies at <rel> inside the
 # project, is an existing locked test file (dir-aware: …or a directory holding one — for commands that delete or move whole trees)
 tl_test_at() {
-  local action="$1" abs="$2" rel="$3" dirs="$4" f
+  local action="$1" abs="$2" rel="$3" dirs="$4"
   if [ -f "$abs" ] || [ -L "$abs" ]; then
     [ -n "$TL_READY" ] || tl_prepare
     [ "$TL_ON" = 1 ] || return 1
@@ -579,9 +640,9 @@ tl_test_at() {
   if [ "$dirs" = 1 ] && [ -d "$abs" ]; then
     [ -n "$TL_READY" ] || tl_prepare
     [ "$TL_ON" = 1 ] || return 1
-    test_base_rev "$root"                                        # resolved here, not inside the substitution below, so it stays cached
-    f=$(tl_dir_test "$rel") || return 1
-    TL_ACTION="$action, the directory holds it"; TL_REL="$f"; return 0
+    if [ "$TL_SKIP_ROOT" = 1 ] && [ "$rel" = "." ]; then return 1; fi    # git restore . / git checkout . : back to what the index has, not another ref
+    tl_dir_test "$rel" || return 1
+    TL_ACTION="$action, the directory holds it"; TL_REL="$TL_FOUND"; return 0
   fi
   return 1
 }
@@ -604,13 +665,24 @@ tl_hit1() {
   tl_hit_at "$1" "$ABS" "$REL" "$3" "${4:-0}"
 }
 # tl_hit <action> <path word> <dir-aware 0|1> [creates 0|1] — tl_hit1 after glob expansion (pathname expansion only; the word is
-# never evaluated). Expansions are capped: a glob that matches thousands of files is not read to the end.
+# never evaluated). Expansions are capped: a glob that matches thousands of files is not read to the end. The directory a glob starts
+# under is looked up in the base once (TL_HINT): when it holds no test, none of the entries can be an existing one — rm -rf
+# node_modules/* with 800 packages costs one git call and no loop (while design first is on, every entry still counts).
 tl_hit() {
-  local action="$1" word="$2" dirs="$3" creates="${4:-0}" c exp brel max fast=0
+  local action="$1" word="$2" dirs="$3" creates="${4:-0}" c exp brel max fast=0 pre hint rc
   [ -n "$word" ] || return 1
   case "$word" in
     *[*?[]*)
       TL_GLOBS=$((TL_GLOBS + 1)); [ "$TL_GLOBS" -le "$TL_MAX_GLOB_WORDS" ] || return 1
+      pre="${word%%[*?[]*}"
+      case "$pre" in */*) pre="${pre%/*}"; [ -n "$pre" ] || pre="/";; *) pre="";; esac
+      tl_abs "$pre"; tl_rel "$ABS" || return 1                       # a glob that starts outside the project matches nothing inside it
+      hint="$REL"
+      if [ "$TL_DESIGN" = 0 ]; then
+        [ -n "$TL_READY" ] || tl_prepare
+        [ "$TL_ON" = 1 ] || return 1
+        if [ "$SDLC_TEST_BASE" != "-" ]; then tl_tests_under "$hint" || return 1; fi
+      fi
       case "$word" in
         /*|'~'*|.|..|./*|../*|*/.|*/..|*/./*|*/../*|*//*) max=$TL_MAX_GLOB_SLOW; brel="";;      # needs path arithmetic per entry
         *) max=$TL_MAX_GLOB_FAST; fast=1                                                      # plain relative names: one prefix for all
@@ -625,11 +697,13 @@ tl_hit() {
               printf '%s\n' "$c"; n=$((n + 1)); [ "$n" -lt "$max" ] || break
             done)
       [ -n "$exp" ] || exp="$word"
+      TL_HINT="$hint"; rc=1
       while IFS= read -r c; do
-        if [ "$fast" = 1 ]; then tl_hit_at "$action" "$TL_BASE/$c" "$brel$c" "$dirs" "$creates" && return 0
-        else tl_hit1 "$action" "$c" "$dirs" "$creates" && return 0; fi
+        if [ "$fast" = 1 ]; then if tl_hit_at "$action" "$TL_BASE/$c" "$brel$c" "$dirs" "$creates"; then rc=0; break; fi
+        else if tl_hit1 "$action" "$c" "$dirs" "$creates"; then rc=0; break; fi; fi
       done <<< "$exp"
-      return 1;;
+      TL_HINT=""
+      return "$rc";;
   esac
   tl_hit1 "$action" "$word" "$dirs" "$creates"
 }
@@ -712,7 +786,7 @@ tl_cpmv() {
 }
 # tl_git <index after "git"> → 0 when the git command changes an existing locked test file (git rm/mv, checkout/restore of a file)
 tl_git() {
-  local k="$1" nw=${#W[@]} a sub="" saved="$TL_BASE" i staged=0 worktree=0 rc=1
+  local k="$1" nw=${#W[@]} a sub="" saved="$TL_BASE" i staged=0 worktree=0 source=0 dashes=0 ref=0 rc=1
   while [ "$k" -lt "$nw" ]; do
     a="${W[$k]}"; k=$((k + 1))
     case "$a" in
@@ -727,19 +801,29 @@ tl_git() {
     checkout|restore)
       i=$k
       while [ "$i" -lt "$nw" ]; do
-        case "${W[$i]}" in --staged|-S) staged=1;; --worktree|-W) worktree=1;; --) break;; esac
+        case "${W[$i]}" in --staged|-S) staged=1;; --worktree|-W) worktree=1;; --source|--source=*|-s) source=1;; --) dashes=1; break;; esac
         i=$((i + 1))
       done
       # `git restore --staged <file>` only touches the index, never the file
       if [ "$sub" = restore ] && [ "$staged" = 1 ] && [ "$worktree" = 0 ]; then :
-      else tl_ops_hit "git $sub" "$k" 0 0 "$([ "$sub" = checkout ] && echo 1 || echo 0)" && rc=0; fi;;
+      else
+        # a directory operand counts: git checkout <ref> -- tests and git restore tests replace every file under it. Without a ref
+        # (--source, or the tree-ish before the --) the project root itself is not refused: `git restore .` goes back to the index.
+        tl_ops "$k"
+        if [ "$sub" = restore ]; then [ "$source" = 1 ] && ref=1
+        elif [ "$dashes" = 1 ]; then [ "$OPS_DD" -gt 0 ] && ref=1
+        else [ "${#OPS[@]}" -ge 2 ] && ref=1; fi
+        TL_SKIP_ROOT=$((1 - ref))
+        tl_ops_hit "git $sub" "$k" 1 0 "$([ "$sub" = checkout ] && echo 1 || echo 0)" && rc=0
+        TL_SKIP_ROOT=0
+      fi;;
   esac
   TL_BASE="$saved"
   return "$rc"
 }
 # tl_clause <depth> — one simple command (words W[], redirection targets R[]); 0 = it changes an existing locked test file
 tl_clause() {
-  local depth="$1" nw=${#W[@]} k r=0 base i str
+  local depth="$1" nw=${#W[@]} k r=0 base i
   while [ "$r" -lt "${#R[@]}" ]; do
     if tl_hit "output redirection" "${R[$r]}" 0 1; then return 0; fi
     r=$((r + 1))
@@ -758,40 +842,22 @@ tl_clause() {
           case "${W[$i]}" in of=*) tl_hit "overwrite (dd)" "${W[$i]#of=}" 0 1 && return 0;; esac
           i=$((i + 1))
         done;;
-    cd) tl_ops "$k"
-        if [ "${#OPS[@]}" -eq 0 ]; then TL_BASE="$HOME"
-        elif [ "${OPS[0]}" != "-" ]; then tl_abs "${OPS[0]}"; [ -d "$ABS" ] && TL_BASE="$ABS"; fi;;
+    cd|pushd) tl_ops "$k"
+        if [ "${#OPS[@]}" -eq 0 ]; then [ "$base" = pushd ] || TL_BASE="$HOME"
+        elif [ "${OPS[0]}" != "-" ]; then
+          tl_abs "${OPS[0]}"
+          if [ -d "$ABS" ]; then
+            [ "$base" = pushd ] && TL_STACK="$TL_BASE"$'\n'"$TL_STACK"
+            TL_BASE="$ABS"
+          fi
+        fi;;
+    popd) if [ -n "$TL_STACK" ]; then TL_BASE="${TL_STACK%%$'\n'*}"; TL_STACK="${TL_STACK#*$'\n'}"; fi;;
     git) tl_git "$k" && return 0;;
-    bash|sh|zsh|dash|ksh)                        # bash -c '<commands>' is read like the command line itself
-      i=$k
-      while [ "$i" -lt "$nw" ]; do
-        case "${W[$i]}" in
-          -c|-[a-z]c|-[a-z][a-z]c)
-            i=$((i + 1))
-            if [ "$i" -lt "$nw" ] && [ "$depth" -lt 3 ]; then tl_scan "${W[$i]}" $((depth + 1)) && return 0; fi
-            break;;
-        esac
-        i=$((i + 1))
-      done;;
-    eval) str=""; i=$k
-          while [ "$i" -lt "$nw" ]; do str="$str ${W[$i]}"; i=$((i + 1)); done
-          if [ "$depth" -lt 3 ] && [ -n "$str" ]; then tl_scan "$str" $((depth + 1)) && return 0; fi;;
   esac
   return 1
 }
-# tl_scan <command> <depth> → 0 when one of its simple commands changes an existing locked test file
-tl_scan() {
-  local depth="$2" rec
-  local -a W=() R=()
-  while IFS= read -r rec; do
-    case "$rec" in
-      W*) W[${#W[@]}]="${rec#W}";;
-      O*) R[${#R[@]}]="${rec#O}";;
-      C) if tl_clause "$depth"; then return 0; fi; W=(); R=();;
-    esac
-  done <<< "$(printf '%s' "$1" | LC_ALL=C awk "$TL_AWK" 2>/dev/null)"
-  tl_clause "$depth"
-}
+# tl_scan <command> <depth> → 0 when one of its simple commands (walk_scan: nested bodies too) changes an existing locked test file
+tl_scan() { walk_scan "$1" "$2" tl_clause; }
 
 if [ "$initialized" = true ] && tl_interesting "$cmd"; then
   cwd=$(json_get "$input" .cwd)
@@ -815,18 +881,53 @@ if [ "$initialized" = true ] && tl_interesting "$cmd"; then
 fi
 
 # (4) secrets in the changes being committed. The hook runs before the command, so what a `git add` earlier in the same command
-#     line stages is not in the index yet: with one, and with -a/--all, the scan covers what the commit could take (secret-scan.sh
-#     --all, plus --untracked for the add); a plain `git commit` scans the staged diff only. `git -C <dir> add|commit` adds the
+#     line stages is not in the index yet: with one, and with -a/--all of the `git commit` itself (not of another command on the line:
+#     `git commit -m x && ls -la`), the scan covers what the commit could take (secret-scan.sh --all, plus --untracked for the add); a
+#     plain `git commit` scans the staged diff only. `git -C <dir> add|commit` adds the
 #     repository named there to the scan. Best effort: a pathspec commit (`git commit <file>`) and `git add -f` of an ignored
 #     file are not widened.
+# commit_all_clause — walk_scan callback: the simple command in W[] is a `git commit` with -a/--all (also in a bundle: -am). The value
+# of -m -F -C -c -t and of --message --file … is skipped: `-m -a` is a message, not a flag.
+commit_all_clause() {
+  local nw=${#W[@]} k a sub="" i ch
+  tl_cmdword; k=$TL_K
+  [ "$k" -lt "$nw" ] && [ "${W[$k]##*/}" = git ] || return 1
+  k=$((k + 1))
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env) k=$((k + 1));;
+      -*) ;;
+      *) sub="$a"; break;;
+    esac
+  done
+  [ "$sub" = commit ] || return 1
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    case "$a" in
+      --) break;;
+      --all|--al) return 0;;
+      --message|--file|--author|--date|--reuse-message|--reedit-message|--template|--cleanup|--fixup|--squash|--trailer|--pathspec-from-file) k=$((k + 1));;
+      --*) ;;
+      -?*) i=1
+           while [ "$i" -lt "${#a}" ]; do
+             ch="${a:$i:1}"
+             case "$ch" in
+               a) return 0;;
+               m|F|C|c|t) [ $((i + 1)) -lt "${#a}" ] || k=$((k + 1)); break;;         # the rest of the word, or the next word, is its value
+             esac
+             i=$((i + 1))
+           done;;
+    esac
+  done
+  return 1
+}
 if [ "$initialized" = true ] && [ "$(cfg_bool "$root" .secrets.scan_commits true)" = "true" ]; then
   GARG='((\\.|"[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]\\"'"'"'])+)'      # one shell word: pieces that are \-escaped, "quoted", 'quoted' or plain
   GIT_CMD='(^|[^[:alnum:]_./-])git([[:space:]]+(-[Cc][[:space:]]+'"$GARG"'|--(git-dir|work-tree|namespace)[[:space:]]+'"$GARG"'|-[^[:space:]]+))*[[:space:]]+'
   if printf '%s\n' "$cmd" | grep -E -q -e "${GIT_CMD}commit([[:space:]]|\$)"; then
     scope=staged; scan_flags=""
-    if printf '%s\n' "$cmd" | grep -E -q -e '(^|[[:space:]])--all([[:space:]]|$)' -e '(^|[[:space:]])-[A-Za-z]*a[A-Za-z]*([[:space:]]|$)'; then
-      scope=all; scan_flags="--all"
-    fi
+    if walk_scan "$cmd" 0 commit_all_clause; then scope=all; scan_flags="--all"; fi
     if printf '%s' "$cmd" | tr '\n' ' ' | grep -E -q -e "${GIT_CMD}add([[:space:]]|\$).*${GIT_CMD}commit([[:space:]]|\$)"; then
       scope=all+untracked; scan_flags="--all --untracked"
     fi
@@ -858,7 +959,13 @@ if [ "$initialized" = true ] && [ "$(cfg_bool "$root" .secrets.scan_commits true
       scope_note=""; where=""
       [ "$scope" = "all+untracked" ] && scope_note=" The command stages before it commits, so the scan covered everything git add could take: tracked changes and untracked files that are not ignored (git status lists them)."
       [ "$hit_dir" = "$scan_root" ] || where=" in $hit_dir"
-      block "possible secret in the changes being committed$where ($(one_line "$hits")). Why: credentials never enter version control (secrets.scan_commits). To proceed: take the value out of the diff (git restore --staged <file>, then edit it to read from the environment or a secret manager) and commit again.$scope_note"
+      # file:line of every hit, and whether any of them is more than a pattern inside long encoded (base64-like) data
+      descr=$(printf '%s\n' "$hits" | awk -F'\t' '{ printf "%s%s %s: %s", (NR > 1 ? "; " : ""), $1, $2, $3 }')
+      real=$(printf '%s\n' "$hits" | awk -F'\t' '$4 != "encoded"' | head -c 1)
+      if [ -n "$real" ]; then
+        block "possible secret in the changes being committed$where ($descr). Why: credentials never enter version control (secrets.scan_commits). To proceed: take the value out of the diff (git restore --staged <file>, then edit it to read from the environment or a secret manager) and commit again; if it is not a credential (test data), set secrets.scan_commits: false in .sdlc/config.json.$scope_note"
+      fi
+      block "the changes being committed$where match a secret pattern ($descr), but only inside long runs of base64-like characters — it looks like encoded data, not a credential. Why: a token pattern can occur by chance in such data (secrets.scan_commits). To proceed: keep the data out of the diff (a file that is copied or fetched at build time), or set secrets.scan_commits: false in .sdlc/config.json.$scope_note"
     fi
   fi
 fi

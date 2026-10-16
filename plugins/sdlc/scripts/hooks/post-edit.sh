@@ -18,6 +18,9 @@ case "$path" in ''|/*) ;; *) path="$root/$path";; esac
 
 state_set_many "$root" last_edit_ts "$(now_iso)" last_edit_epoch "$(epoch_now)" edited true
 
+# a file outside the project is nobody's formatter or linter business here (~/Desktop/og-image.png, /tmp/x.py)
+case "$(rel_path "$root" "$path")" in /*|..|../*) exit 0;; esac
+
 # --- formatter
 [ "$(cfg_bool "$root" .hooks.format_on_edit true)" = "true" ] || exit 0
 [ -n "$path" ] && [ -f "$path" ] || exit 0

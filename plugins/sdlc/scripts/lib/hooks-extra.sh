@@ -32,10 +32,10 @@ json_lines() {
   if has_cmd jq; then
     printf '%s' "$json" | jq -r "$path // empty | if type == \"array\" then .[] else . end | if type == \"string\" then . else tojson end" 2>/dev/null
   else
-    SDLC_JSON="$json" python3 - "$path" <<'PY' 2>/dev/null
-import json,os,sys
+    printf '%s' "$json" | python3 -c '
+import json,sys
 def walk(cur,path):
-    for part in [p for p in path.strip('.').replace('[','.').replace(']','').split('.') if p]:
+    for part in [p for p in path.strip(".").replace("[",".").replace("]","").split(".") if p]:
         if isinstance(cur,list):
             try: cur=cur[int(part)]
             except Exception: return None
@@ -43,12 +43,12 @@ def walk(cur,path):
         else: return None
         if cur is None: return None
     return cur
-try: cur=walk(json.loads(os.environ.get('SDLC_JSON') or 'null'),sys.argv[1])
+try: cur=walk(json.loads(sys.stdin.read() or "null"),sys.argv[1])
 except Exception: cur=None
 items=cur if isinstance(cur,list) else ([] if cur is None else [cur])
 for x in items:
     print(x if isinstance(x,str) else json.dumps(x))
-PY
+' "$path" 2>/dev/null
   fi
 }
 
@@ -104,11 +104,15 @@ verify_commands_human() {
 SDLC_TEST_PATH_ARR=(auto); SDLC_TEST_WORK_DIR="work"; SDLC_TEST_BASE=""
 
 # The built-in test-path set ("auto") is ONE definition with the merge gate. The first two patterns are the gate's own, character
-# for character (TEST_DIR_RE and TEST_FILE_RE in scripts/sdlclib/gate.py); the third is its inline spec/ rule. tests/hooks.sh
-# compares the patterns with the gate's, then compares the verdicts over a corpus of paths. Change the gate and these together.
+# for character (TEST_DIR_RE and TEST_FILE_RE in scripts/sdlclib/gate.py); the third is its inline spec/ rule; the fourth is
+# TEST_CONFIG_GLOBS of the gate written as a regular expression. tests/hooks.sh compares the first two with the gate's, then compares
+# the verdicts over a corpus of paths. Change the gate and these together.
+# A test runner's configuration file counts as a test file: conftest.py (any depth), pytest.ini, jest/vitest/playwright/cypress.config.*,
+# vitest.workspace.*, karma.conf.*, .mocharc[.*], phpunit.xml[.dist] — changing one changes what the tests check.
 # The gate never counts anything under the work dir (SDLC_TEST_WORK_DIR).
 SDLC_TEST_DIR_RE='(^|/)(test|tests|__tests__|androidTest|testFixtures)/'
 SDLC_TEST_FILE_RE='(_test\.go|\.test\.[A-Za-z]+|\.spec\.[A-Za-z]+|(^|/)test_[^/]*\.py|_test\.py|Tests?\.(java|kt|swift)|Spec\.(scala|kt)|_spec\.rb)$'
+SDLC_TEST_CONFIG_RE='(^|/)(conftest\.py|pytest\.ini|(jest|vitest|playwright|cypress)\.config\.[^/]+|vitest\.workspace\.[^/]+|karma\.conf\.[^/]+|\.mocharc(\.[^/]+)?|phpunit\.xml(\.dist)?)$'
 SDLC_TEST_SPEC_RE='(^|/)spec/'
 
 # auto_test_path <rel> → 0 when <rel> is a test path of the built-in set; mirrors is_test_path() in gate.py for the "auto" entry
@@ -117,6 +121,7 @@ auto_test_path() {
   if [ -n "$SDLC_TEST_WORK_DIR" ]; then case "$rel" in "$SDLC_TEST_WORK_DIR"/*) return 1;; esac; fi
   [[ "$rel" =~ $SDLC_TEST_DIR_RE ]] && return 0
   [[ "$rel" =~ $SDLC_TEST_FILE_RE ]] && return 0
+  [[ "$rel" =~ $SDLC_TEST_CONFIG_RE ]] && return 0
   [[ "$rel" =~ $SDLC_TEST_SPEC_RE ]] && return 0
   return 1
 }
@@ -207,16 +212,26 @@ SDLC_DEFAULT_DEPLOY_PATTERNS='(deploy|release|rollout|promote)[^|;&]*(prod|produ
 kubectl [^|;&]*(apply|rollout|set image)[^|;&]*(prod|production)
 helm (upgrade|install)[^|;&]*(prod|production)
 terraform apply[^|;&]*(prod|production)'
-SDLC_DEPLOY_PATTERNS="$SDLC_DEFAULT_DEPLOY_PATTERNS"; SDLC_DEPLOY_ENV=RELEASE_APPROVAL
+# What the gate matches while the patterns are the defaults: the same five, with prod, production and live as whole words (`kubectl get deploy
+# -n delivery` has no `live` in it, `release the products` no `prod`) — a digit, a dash, a slash or a colon around them still counts, and so does
+# the trigger word directly in front of them (`deployProd`) — plus the one deploy that carries neither word, `vercel ... --prod`.
+SDLC_WORD_DEPLOY_PATTERNS='(deploy|release|rollout|promote)([^|;&]*[^[:alpha:]])?(prod|production|live)([^[:alpha:]]|$)
+(^|[^[:alpha:]])(prod|production|live)([^[:alpha:]][^|;&]*)?(deploy|release|rollout|promote)
+kubectl [^|;&]*(apply|rollout|set image)[^|;&]*[^[:alpha:]](prod|production)([^[:alpha:]]|$)
+helm (upgrade|install)[^|;&]*[^[:alpha:]](prod|production)([^[:alpha:]]|$)
+terraform apply[^|;&]*[^[:alpha:]](prod|production)([^[:alpha:]]|$)
+vercel[^|;&]*--prod(uction)?([^[:alpha:]]|$)'
+SDLC_DEPLOY_PATTERNS="$SDLC_WORD_DEPLOY_PATTERNS"; SDLC_DEPLOY_ENV=RELEASE_APPROVAL
 
 # valid_ident <name> → 0 when it is usable as a shell variable name (indirect expansion of anything else is an error)
 valid_ident() { case "$1" in ''|[0-9]*|*[!A-Za-z0-9_]*) return 1;; esac; return 0; }
 
 # deploy_gate_config <root> → SDLC_DEPLOY_PATTERNS (one per line) and SDLC_DEPLOY_ENV. Source order: protect.deploy_patterns,
-# a version-1 config's environments.production.patterns, the default list; an explicit empty list switches the gate off.
+# a version-1 config's environments.production.patterns, the default list; an explicit empty list switches the gate off. The default list is
+# matched as SDLC_WORD_DEPLOY_PATTERNS; a list the config names is matched as written.
 deploy_gate_config() {
   local cj raw name
-  SDLC_DEPLOY_PATTERNS="$SDLC_DEFAULT_DEPLOY_PATTERNS"; SDLC_DEPLOY_ENV=RELEASE_APPROVAL
+  SDLC_DEPLOY_PATTERNS="$SDLC_WORD_DEPLOY_PATTERNS"; SDLC_DEPLOY_ENV=RELEASE_APPROVAL
   sdlc_initialized "$1" || return 0
   cj=$(_cfg_json "$1")
   case "$cj" in *deploy_patterns*|*deploy_approval_env*|*production*) ;; *) return 0;; esac   # nothing to read: the defaults stand
@@ -227,6 +242,7 @@ deploy_gate_config() {
     raw=$(json_get_raw "$cj" .environments.production.patterns)
     if [ -n "$raw" ]; then SDLC_DEPLOY_PATTERNS=$(json_lines "$cj" .environments.production.patterns); fi
   fi
+  [ "$SDLC_DEPLOY_PATTERNS" != "$SDLC_DEFAULT_DEPLOY_PATTERNS" ] || SDLC_DEPLOY_PATTERNS="$SDLC_WORD_DEPLOY_PATTERNS"   # the defaults, written out by hand
   name=$(json_get "$cj" .protect.deploy_approval_env)
   [ -z "$name" ] && name=$(json_get "$cj" .environments.production.approval_env)
   if valid_ident "$name"; then SDLC_DEPLOY_ENV="$name"; fi
@@ -251,24 +267,386 @@ deploy_match() {
   return 1
 }
 
+# ---------- the command line as simple commands (guard-bash, post-bash) ----------
+# The command line as simple commands — (1) and (3) both read it through one tokenizer (awk) that turns it into records: W<word>
+# (quotes and escapes resolved), O<path> (the target of an output redirection) and C (end of a simple command: ; & | && || newline
+# ( ) `) — heredoc bodies and comments skipped. Only (1) asks for more (awk -v bodies=1 -v cap=<n>): P (the command's output is
+# piped on), R<file> (its input is a here-string — no file — or the file), N<kind> followed by one record of text, newlines as
+# \001 — kind X: a command substitution inside double quotes or inside an unquoted heredoc body (a command of its own), kind B<n>:
+# the body of a heredoc whose command, simple command number n, names a shell — and ! (more than <n> records: stopped there).
+# Plain text, white space and quoted text are read a chunk at a time: substr in macOS awk measures the whole command line on every
+# call, so a character-by-character scan is quadratic in its length. awk runs as LC_ALL=C — it reads bytes, whatever the locale: in a
+# UTF-8 locale macOS awk stops dead on a regular expression over half a character (a chunk that ends inside one, the text after a
+# backslash that escapes its first byte), and everything after that point is never seen.
+TL_AWK='
+BEGIN {
+  RS = "\001"; SQ = "\047"; DQ = "\042"; BQ = "\140"; DOL = "\044"; cl = 0
+  PLAINRE = "^[^ \t\r\n;|&()<>" BQ DQ SQ "\\\\]+"                 # a run of characters that need no attention (not stop, quote or backslash)
+  DQRE = bodies ? "[\"\\\\$`]" : "[\"\\\\]"
+  if (bodies) { m = split(shells, a, " "); for (k = 1; k <= m; k++) SH[a[k]] = 1 }
+}
+function stop(c) {
+  return c == " " || c == "\t" || c == "\r" || c == "\n" || c == ";" || c == "|" || c == "&" || c == "(" || c == ")" || c == "<" || c == ">" || c == "`"
+}
+function tick() { if (cap && ++nrec > cap) { print "!"; exit } }                  # (bodies only) too many records: the caller matches the text instead
+function cend() { tick(); print "C"; cl++ }
+function nest(kind, x) { tick(); gsub(/\n/, "\001", x); print "N" kind; print x }
+function pclose(t, p,   nt, dep, rest, j, c) {              # the ) that closes a $( — p is just past the $(
+  nt = length(t); dep = 1
+  while (p <= nt) {
+    rest = substr(t, p, 256)
+    j = match(rest, /[()\\]/)
+    if (j == 0) { p += length(rest); continue }
+    p += j - 1
+    c = substr(t, p, 1)
+    if (c == "\\") { p += 2; continue }
+    if (c == "(") dep++
+    else if (--dep == 0) return p
+    p++
+  }
+  return nt + 1
+}
+function bclose(t, p,   nt, rest, j) {                       # the backtick that closes one — p is just past the opening one
+  nt = length(t)
+  while (p <= nt) {
+    rest = substr(t, p, 256)
+    j = match(rest, /[`\\]/)
+    if (j == 0) { p += length(rest); continue }
+    p += j - 1
+    if (substr(t, p, 1) == "\\") { p += 2; continue }
+    return p
+  }
+  return nt + 1
+}
+function substs(t,   p, nt, rest, j, c, q) {                 # the command substitutions an unquoted heredoc body expands
+  if (index(t, "$(") == 0 && index(t, BQ) == 0) return
+  nt = length(t); p = 1
+  while (p <= nt) {
+    rest = substr(t, p, 256)
+    j = match(rest, /[\\$`]/)
+    if (j == 0) { p += length(rest); continue }
+    p += j - 1
+    c = substr(t, p, 1)
+    if (c == "\\") { p += 2; continue }
+    if (c == DOL) {
+      if (substr(t, p + 1, 1) != "(") { p++; continue }
+      q = pclose(t, p + 2); nest("X", substr(t, p + 2, q - p - 2)); p = q + 1
+    } else {
+      q = bclose(t, p + 1); nest("X", substr(t, p + 1, q - p - 1)); p = q + 1
+    }
+  }
+}
+function readword(   w, c, d, e, rest, j, q, k0) {
+  w = ""
+  while (i <= n) {
+    rest = substr(s, i, 256)
+    if (match(rest, PLAINRE)) { w = w substr(rest, 1, RLENGTH); i += RLENGTH; continue }
+    c = substr(rest, 1, 1)
+    if (stop(c)) break
+    if (c == "\\") {
+      d = substr(s, i + 1, 1)
+      if (d == "\n") { i += 2; continue }
+      w = w d; i += 2; continue
+    }
+    if (c == SQ) {
+      i++
+      rest = substr(s, i); j = index(rest, SQ)
+      if (j == 0) { w = w rest; i = n + 1 } else { w = w substr(rest, 1, j - 1); i += j }
+      continue
+    }
+    if (c == DQ) {
+      i++
+      while (i <= n) {
+        rest = substr(s, i, 256)                        # plain text is taken a chunk at a time
+        j = match(rest, DQRE)
+        if (j == 0) { w = w rest; i += length(rest); continue }
+        w = w substr(rest, 1, j - 1); i += j - 1
+        d = substr(s, i, 1)
+        if (d == DQ) break
+        if (d == DOL || d == BQ) {                      # (bodies only) a command substitution inside the quotes is a command of its own
+          if (d == BQ) { k0 = i + 1; q = bclose(s, k0) }
+          else if (substr(s, i + 1, 1) == "(") { k0 = i + 2; q = pclose(s, k0) }
+          else { w = w d; i++; continue }
+          nest("X", substr(s, k0, q - k0))
+          w = w substr(s, i, q - i + 1); i = q + 1; continue
+        }
+        e = substr(s, i + 1, 1)
+        if (e == "\n") { i += 2; continue }
+        if (e == "$" || e == "`" || e == DQ || e == "\\") { w = w e; i += 2; continue }
+        w = w d; i++
+      }
+      i++; continue
+    }
+    w = w c; i++
+  }
+  gsub(/\n/, " ", w)
+  return w
+}
+function skipws(   rest) {                                  # a run of white space, a chunk at a time
+  while (i <= n) {
+    rest = substr(s, i, 256)
+    if (!match(rest, /^[ \t\r]+/)) return
+    i += RLENGTH
+  }
+}
+function emit(k, b) {                                       # (bodies only) a heredoc body: a script when its command is a shell, plus the $( ) of an unquoted one
+  if (!bodies) return
+  if (shw[hown[k]]) nest("B" hown[k], b)
+  if (!hq[k]) substs(b)
+}
+function skipbodies(   k, d, wrapped, j, b, from, rs, rl) {
+  for (k = 1; k <= nh; k++) {
+    if (i > n) break
+    d = hd[k]; from = i
+    wrapped = "\n" substr(s, i) "\n"
+    if (!hdash[k]) {
+      j = index(wrapped, "\n" d "\n")
+      if (j > 0) { emit(k, substr(s, from, j - 1)); i = i + j + length(d); continue }
+    } else if (d ~ /^[A-Za-z0-9_]+$/) {
+      if (match(wrapped, "\n\t*" d "\n")) { rs = RSTART; rl = RLENGTH; emit(k, substr(s, from, rs - 1)); i = i + rs + rl - 2; continue }
+    } else {
+      b = ""
+      while (i <= n) {
+        j = index(substr(s, i), "\n")
+        if (j == 0) { wrapped = substr(s, i); i = n + 1 } else { wrapped = substr(s, i, j - 1); i += j }
+        sub(/^\t+/, "", wrapped)
+        if (wrapped == d) break
+        b = b wrapped "\n"
+      }
+      emit(k, b)
+      continue
+    }
+    emit(k, substr(s, from)); i = n + 1
+  }
+  nh = 0
+}
+{
+  s = $0; n = length(s); i = 1; nh = 0
+  while (i <= n) {
+    rest = substr(s, i, 256)
+    if (match(rest, /^[ \t\r]+/)) { i += RLENGTH; continue }
+    c = substr(rest, 1, 1)
+    if (c == "\n") { i++; cend(); if (nh > 0) skipbodies(); continue }
+    if (c == "#") { j = index(substr(s, i), "\n"); if (j == 0) i = n + 1; else i += j - 1; continue }
+    if (c == ";" || c == "(" || c == ")" || c == "`") { i++; cend(); continue }
+    if (c == "|") {
+      i++; d = substr(s, i, 1)
+      if (d == "|") i++
+      else { if (d == "&") i++; if (bodies) print "P" }
+      cend(); continue
+    }
+    if (c == "&") {
+      d = substr(s, i + 1, 1)
+      if (d == ">") {
+        i += 2; if (substr(s, i, 1) == ">") i++
+        skipws(); t = readword(); print "O" t; continue
+      }
+      i++; if (d == "&") i++
+      cend(); continue
+    }
+    if (c == ">") {
+      i++; d = substr(s, i, 1)
+      if (d == ">" || d == "|") i++
+      else if (d == "&") {
+        e = substr(s, i + 1, 1)
+        if (e ~ /[0-9-]/) { i++; while (i <= n && substr(s, i, 1) ~ /[0-9-]/) i++; continue }
+        i++
+      }
+      else if (d == "(") continue
+      skipws(); t = readword(); print "O" t; continue
+    }
+    if (c == "<") {
+      i++; d = substr(s, i, 1)
+      if (d == "<") {
+        i++
+        if (substr(s, i, 1) == "<") { i++; skipws(); t = readword(); if (bodies) print "R"; continue }
+        dash = 0; if (substr(s, i, 1) == "-") { dash = 1; i++ }
+        skipws(); hp = i; t = readword()
+        nh++; hd[nh] = t; hdash[nh] = dash; hown[nh] = cl
+        q = substr(s, hp, i - hp); hq[nh] = (index(q, DQ) > 0 || index(q, SQ) > 0 || index(q, "\\") > 0)
+        continue
+      }
+      if (d == "(") continue
+      if (d == "&") i++
+      skipws(); t = readword(); if (bodies && d != "&") print "R" t; continue
+    }
+    p = i
+    w = readword()
+    if (i == p) { i++; continue }
+    d = substr(s, i, 1)
+    if (w ~ /^[0-9]+$/ && (d == ">" || d == "<")) continue
+    if (bodies) { b = w; sub(/^.*\//, "", b); if (b in SH) shw[cl] = 1 }
+    tick(); print "W" w
+  }
+}
+'
+
+# tl_cmdword → TL_K: the index in W[] of the command word — past VAR=value prefixes, shell keywords and wrappers (sudo, env, time,
+# nice … — also with a path) and their options; ${#W[@]} when the simple command has none
+tl_cmdword() {
+  local nw=${#W[@]} w b wrap=0 tool=""
+  TL_K=0
+  while [ "$TL_K" -lt "$nw" ]; do
+    w="${W[$TL_K]}"
+    case "$w" in
+      -*) [ "$wrap" -ge 1 ] || break
+          case "$tool" in                        # an option that takes the next word as its argument (-u root, -n 5 …)
+            sudo) case "$w" in -[ughpCrtTUDR]|--user|--group|--host|--prompt|--close-from|--role|--type|--command-timeout|--other-user|--chdir|--chroot) TL_K=$((TL_K + 1));; esac;;
+            doas) case "$w" in -[uC]) TL_K=$((TL_K + 1));; esac;;
+            env) case "$w" in -[uCS]|--unset|--chdir|--split-string) TL_K=$((TL_K + 1));; esac;;
+            nice) case "$w" in -n|--adjustment) TL_K=$((TL_K + 1));; esac;;
+            stdbuf) case "$w" in -[ioe]|--input|--output|--error) TL_K=$((TL_K + 1));; esac;;
+            timeout) case "$w" in -[sk]|--signal|--kill-after) TL_K=$((TL_K + 1));; esac;;
+            time) case "$w" in -[fo]|--format|--output) TL_K=$((TL_K + 1));; esac;;
+            exec) case "$w" in -a) TL_K=$((TL_K + 1));; esac;;
+          esac;;
+      *=*) valid_ident "${w%%=*}" || break;;
+      '!'|'{'|'}'|if|then|else|elif|fi|do|done|while|until) wrap=0;;
+      *) b="${w##*/}"
+         case "$b" in
+           time|command|builtin|exec|nohup|sudo|doas|env|nice|setsid|stdbuf) wrap=1; tool="$b";;
+           timeout) wrap=2; tool="$b";;
+           *) if [ "$wrap" = 2 ]; then wrap=1; else break; fi;;
+         esac;;
+    esac
+    TL_K=$((TL_K + 1))
+  done
+}
+
+# shell_reads_stdin → 0 when the shell in W[] (its name at TL_K: sh bash zsh dash ksh, or ssh) takes its commands from standard
+# input: no script operand and no -c (`… | bash`), -s, or - as an operand; for ssh a host and no remote command. `bash script.sh`,
+# `bash -c 'cmd'` read the script or the command they were given — what is piped in is that program's input, not a command.
+shell_reads_stdin() {
+  local k=$((TL_K + 1)) nw=${#W[@]} a ops=0 sflag=0 cflag=0 ssh=0
+  case "${W[$TL_K]##*/}" in ssh) ssh=1;; esac
+  while [ "$k" -lt "$nw" ]; do
+    a="${W[$k]}"; k=$((k + 1))
+    if [ "$ssh" = 1 ]; then
+      case "$a" in
+        -[pilofFJLRDbcEeImOSWwBQ]) k=$((k + 1));;
+        -*) ;;
+        *) ops=$((ops + 1));;
+      esac
+      continue
+    fi
+    case "$a" in
+      --) ops=$((ops + nw - k)); break;;
+      -) sflag=1;;
+      -o|+o|-O|+O|--rcfile|--init-file) k=$((k + 1));;
+      --*) ;;
+      -*|+*) case "$a" in *c*) cflag=1;; esac; case "$a" in *s*) sflag=1;; esac;;
+      *) ops=$((ops + 1));;
+    esac
+  done
+  if [ "$ssh" = 1 ]; then [ "$ops" -le 1 ]; return; fi
+  [ "$cflag" = 1 ] && return 1
+  [ "$sflag" = 1 ] && return 0
+  [ "$ops" = 0 ]
+}
+
+# ---------- walking a command line (guard-bash, post-bash) ----------
+# walk_scan <command line> <depth> <callback> → 0 as soon as <callback> returns 0 for a simple command of the line, 1 when none does.
+# The callback is called as `<callback> <depth>` with the simple command's words in W[] and its output-redirection targets in R[]
+# (the variables of walk_scan, seen through bash's dynamic scope). What runs inside the command line is walked too: a command
+# substitution inside double quotes, the body of a heredoc that a shell reads (`bash <<EOF`, `bash -s <<EOF`), `bash -c '<cmd>'` and
+# `eval <words>` — to a depth of 3 and 16 bodies a command line (one awk each). A nested body that changes the working directory
+# (TL_BASE, TL_STACK) leaves it as it was.
+WALK_NESTED=0; WALK_MAX_NESTED=16; TL_BASE=""; TL_STACK=""
+walk_scan() {
+  local text="$1" depth="$2" cb="$3" out rec kind="" cl=0 SHELL_SER=" "
+  local -a W=() R=()
+  out=$(printf '%s' "$text" | LC_ALL=C awk -v bodies=1 -v shells="sh bash zsh dash ksh" "$TL_AWK" 2>/dev/null)
+  while IFS= read -r rec; do
+    if [ -n "$kind" ]; then                              # the text record after an N header
+      case "$kind" in B*) case "$SHELL_SER" in *" ${kind#B} "*) ;; *) kind=""; continue;; esac;; esac
+      kind=""
+      walk_nested "$rec" "$depth" "$cb" && return 0
+      continue
+    fi
+    case "$rec" in
+      W*) W[${#W[@]}]="${rec#W}";;
+      O*) R[${#R[@]}]="${rec#O}";;
+      N*) kind="${rec#N}";;
+      C) walk_clause "$depth" "$cb" && return 0; W=(); R=(); cl=$((cl + 1));;
+    esac
+  done <<< "$out"
+  walk_clause "$depth" "$cb"
+}
+# walk_nested <text, newlines as \001> <depth> <callback> — walk_scan of a body, one level deeper
+walk_nested() {
+  local body="$1" depth="$2" cb="$3" saved="$TL_BASE" saved_stack="$TL_STACK" rc=1
+  [ "$depth" -lt 3 ] && [ "$WALK_NESTED" -lt "$WALK_MAX_NESTED" ] || return 1
+  WALK_NESTED=$((WALK_NESTED + 1))
+  case "$body" in *$'\001'*) body=$(printf '%s' "$body" | tr '\001' '\n');; esac
+  if walk_scan "$body" $((depth + 1)) "$cb"; then rc=0; fi
+  TL_BASE="$saved"; TL_STACK="$saved_stack"
+  return "$rc"
+}
+# walk_clause <depth> <callback> — the simple command in W[]/R[]: the callback, then what the command runs (a shell's -c argument, eval)
+walk_clause() {
+  local depth="$1" cb="$2" nw=${#W[@]} k i base str
+  [ "$nw" -gt 0 ] || [ "${#R[@]}" -gt 0 ] || return 1
+  "$cb" "$depth" && return 0
+  [ "$nw" -gt 0 ] || return 1
+  tl_cmdword; k=$TL_K
+  [ "$k" -lt "$nw" ] || return 1
+  base="${W[$k]##*/}"; k=$((k + 1))
+  case "$base" in
+    bash|sh|zsh|dash|ksh)
+      if shell_reads_stdin; then SHELL_SER="$SHELL_SER$cl "; fi       # a heredoc body that follows is its script
+      i=$k
+      while [ "$i" -lt "$nw" ]; do
+        case "${W[$i]}" in
+          -c|-[a-z]c|-[a-z][a-z]c)
+            i=$((i + 1))
+            if [ "$i" -lt "$nw" ]; then walk_nested "${W[$i]}" "$depth" "$cb" && return 0; fi
+            break;;
+        esac
+        i=$((i + 1))
+      done;;
+    eval) str=""; i=$k
+          while [ "$i" -lt "$nw" ]; do str="$str ${W[$i]}"; i=$((i + 1)); done
+          if [ -n "$str" ]; then walk_nested "$str" "$depth" "$cb" && return 0; fi;;
+  esac
+  return 1
+}
+
+# ---------- the guards read their input or block ----------
+# guard_require_json <payload> — guard-edit and guard-bash: nothing on stdin is nothing to guard (exit 0); a payload that is not one JSON
+# object, or no jq or python3 to read it with, is a blocked call — a guard that cannot read what it guards must not wave it through.
+guard_require_json() {
+  local rc
+  [ -n "$(printf '%s' "$1" | head -c 400 | tr -d '[:space:]')" ] || exit 0
+  json_ok "$1"; rc=$?
+  case "$rc" in
+    0) return 0;;
+    2) block "the hook payload cannot be read: neither jq nor python3 is installed. Why: the guards fail closed — a call they cannot read is not let through. To proceed: install jq (or python3), or disable the sdlc plugin.";;
+    *) block "the hook payload is not valid JSON (the tool call is not checked). Why: the guards fail closed — a call they cannot read is not let through. To proceed: retry the call; if it keeps happening, check that 'jq --version' or 'python3 --version' runs, or disable the sdlc plugin.";;
+  esac
+}
+# sdlc_work_active <root> → 0 while an sdlc item is active: .sdlc/state/active-work names a slug and the branch is sdlc/<slug> (the condition
+# of the test lock and of design first). The merge then belongs to the shell gate — a session never merges or pushes to the default branch.
+sdlc_work_active() { [ -n "$(active_work_slug "$1")" ]; }
+
 # ---------- tool payload ----------
-# edit_new_text <hook-json> → the text an Edit/Write/MultiEdit/NotebookEdit call would put into the file
+# edit_new_text <hook-json> → the text an Edit/Write/MultiEdit/NotebookEdit call would put into the file (the payload goes through stdin:
+# a Write of a big file is far past what an environment variable can carry)
 edit_new_text() {
   local json="$1"
   if has_cmd jq; then
     printf '%s' "$json" | jq -r '[.tool_input.new_string?, .tool_input.content?, .tool_input.new_source?] + [(.tool_input.edits // [])[]? | .new_string?] | map(select(type == "string")) | .[]' 2>/dev/null
   else
-    SDLC_JSON="$json" python3 - <<'PY' 2>/dev/null
-import json,os
-try: d=json.loads(os.environ.get('SDLC_JSON') or 'null')
+    printf '%s' "$json" | python3 -c '
+import json,sys
+try: d=json.loads(sys.stdin.read() or "null")
 except Exception: d=None
-ti=((d or {}).get('tool_input') or {}) if isinstance(d,dict) else {}
-out=[ti.get(k) for k in ('new_string','content','new_source')]
-for e in (ti.get('edits') or []):
-    if isinstance(e,dict): out.append(e.get('new_string'))
+ti=((d or {}).get("tool_input") or {}) if isinstance(d,dict) else {}
+out=[ti.get(k) for k in ("new_string","content","new_source")]
+for e in (ti.get("edits") or []):
+    if isinstance(e,dict): out.append(e.get("new_string"))
 for s in out:
     if isinstance(s,str): print(s)
-PY
+' 2>/dev/null
   fi
 }
 

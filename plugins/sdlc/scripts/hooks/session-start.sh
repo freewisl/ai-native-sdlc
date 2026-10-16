@@ -78,4 +78,5 @@ printf '%s\n' "Guards: $guards"
 printf '%s\n' "Rules:"
 printf '%s\n' "- One work doc per change ($wdir/<slug>.md): design first (Plan and Proof, status planned), then build"
 printf '%s\n' "- Verify before reporting done (run the Commands in CLAUDE.md and paste output); fix the code, not the test"
+[ "$(uname 2>/dev/null)" = "Darwin" ] && printf '%s\n' "- macOS: the shell may be zsh with BSD sed/wc/cat — quote globs, use set -o pipefail (PIPESTATUS is bash-only), wc -l pads with spaces, sed -i ''"
 exit 0
