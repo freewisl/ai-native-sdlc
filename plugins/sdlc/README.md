@@ -31,7 +31,7 @@ claude plugin update sdlc@ai-native-sdlc      # 열려 있는 세션은 /reload-
 |---|---|
 | `/sdlc:init` · "sdlc 붙여줘" · "점검해줘" | 저장소마다 한 번. 스택과 build·test·lint 명령을 감지해 `.sdlc/config.json`·`work/`·`REVIEW.md`·CLAUDE.md 절·`.claude/settings.json` 권한을 만들고(있는 파일은 덮어쓰지 않고 빠진 것만 보탬) 0.x 배치를 옮긴 뒤 `sdlc: adopt` 로 커밋합니다(GitHub 원격이면 PR). 룰셋·auto-merge 설정과 너무 긴 CLAUDE.md 줄이기는 제안만 하고 승인하면 적용하며, `--check` 는 상태 점검입니다 |
 | `/sdlc:go "…"` · "X 해줘" | 변경 하나를 이 세션에서: 작업 문서 → 구현 → 셸 게이트 → PR → 머지 (팀 저장소는 사람이 머지) |
-| `/sdlc:run "목표"` · "X 만들어, 알아서 채우고 돌려" | 목표를 PR 하나 크기의 작업 항목으로 나눠 큐에 넣고 백그라운드 루프를 시작합니다. "큐에 넣어"는 큐에만 넣고, "멈춰"·"이어서 돌려"는 루프를 멈췄다 잇습니다 |
+| `/sdlc:run "목표"` · "X 만들어, 알아서 채우고 돌려" | 목표를 PR 하나 크기의 작업 항목으로 나눠 큐에 넣고 백그라운드 루프를 시작합니다. "큐에 넣어"는 큐에만 넣고, "루프 멈춰"·"이어서 돌려"는 루프를 멈췄다 잇습니다 |
 | `/sdlc:status` · "어디까지 됐어?" | 진행 상황, 내가 할 일, 비용. 질문에 답하고 "다시 해봐"·"그건 빼"로 항목을 다루는 것도 여기서 합니다 |
 
 ## 예시 — 앱 하나 만들기
@@ -43,13 +43,13 @@ claude plugin update sdlc@ai-native-sdlc      # 열려 있는 세션은 /reload-
 > /sdlc:run "가계부 웹앱: 수입·지출 입력/수정/삭제, 월별 합계, CSV 내보내기"
 > 어디까지 됐어?
 > 인코딩은 UTF-8 BOM 으로 해            ← 루프가 남긴 질문에 대한 답
-> 멈춰   (나중에) 이어서 돌려
+> 루프 멈춰   (나중에) 이어서 돌려
 > /sdlc:go "월별 합계에 카테고리 필터를 넣어줘"     ← 루프가 끝난 뒤, 변경 하나
 ```
 
 1. **init** — 원격이 없으니 solo 모드이고 머지는 이 컴퓨터에서 합니다. 빈 저장소라 테스트 명령이 아직 없다는 안내가 나오는데, 첫 작업 항목이 채웁니다.
 2. **run** — 목표가 사용자만 정할 수 있는 결정(예: 스택)에 달려 있으면 객관식으로 먼저 묻습니다. 그다음 `project-skeleton` → `entry-crud` → `monthly-totals` → `csv-export` 처럼 작업 문서로 나눠(필요한 순서만 `depends_on`) 목록을 보여 주고 큐에 올린 뒤 루프를 시작합니다. 첫 항목이 뼈대와 테스트 하나를 만들고 build·test·lint 명령을 `commands.*` 와 CLAUDE.md 에 기록합니다. 비어 있던 명령을 채우는 것이므로 게이트가 사람에게 넘기지 않습니다.
-3. **status 와 질문** — status 는 루프가 어느 항목의 어느 단계인지, 큐 현황, 내가 할 일, 비용을 요약합니다. 세션이 혼자 정할 수 없는 것을 만나면 `## Questions` 에 객관식(추천 답이 맨 앞)을 남기고 그 항목만 보류한 채 다음으로 가며, 말로 답하면 그 항목을 이어 갑니다. "멈춰"는 돌던 세션을 기록하고 멈추고, "이어서 돌려"가 이어 갑니다.
+3. **status 와 질문** — status 는 루프가 어느 항목의 어느 단계인지, 큐 현황, 내가 할 일, 비용을 요약합니다. 세션이 혼자 정할 수 없는 것을 만나면 `## Questions` 에 객관식(추천 답이 맨 앞)을 남기고 그 항목만 보류한 채 다음으로 가며, 말로 답하면 그 항목을 이어 갑니다. "루프 멈춰"는 돌던 세션을 기록하고 멈추고, "이어서 돌려"가 이어 갑니다.
 
 ## 한 건이 머지되기까지 — `/sdlc:go`
 
@@ -58,7 +58,7 @@ claude plugin update sdlc@ai-native-sdlc      # 열려 있는 세션은 /reload-
 1. **작업 문서** — 요청과 저장소에서 알 수 있는 것으로 `work/<slug>.md` 를 씁니다(Goal, 인수 조건 `R1. WHEN … THE SYSTEM SHALL …` — 문서의 절 이름은 `## Acceptance criteria`). 범위나 성공 기준이 정말 모호할 때만 추천 답을 앞세운 질문을 최대 두 개 합니다.
 2. **설계** — 브랜치 `sdlc/<slug>` 에서 Plan(번호 붙은 단계와 각 단계의 확인 방법, 바뀌는 파일, 위험)과 Proof(인수 조건마다 증명하는 테스트나 명령)를 채워 `planned` 로 커밋합니다. 이때부터 인수 조건과 `test_changes`(기존 테스트를 고쳐도 되는지)는 고정입니다. `allowed` 로 풀 때는 Proof 에 `test_changes:` 로 시작하는 한 줄로 어느 테스트를 왜 고치는지 적습니다. 팀 저장소는 여기서 계획을 보여 주고 사용자의 OK 를 받습니다.
 3. **구현** — `sdlc-builder`(sonnet)가 Plan 순서대로 코드와 테스트를 쓰고 커밋합니다. 작업 중에는 기존 테스트 파일이 잠겨 있어 새 테스트 파일만 만들 수 있고, 기존 테스트를 고치려면 설계가 `test_changes: allowed` 로 풀어야 합니다. 구현 세션이 `test_changes` 를 스스로 바꾸면 게이트가 사람에게 넘깁니다.
-4. **리뷰** — `sdlc-reviewer`(opus)가 `REVIEW.md` 의 세 패스(버그·보안·정합성)를 돌립니다. Important 지적은 새 컨텍스트에서 반박을 시도해 살아남은 것만 세고, 확정된 것은 고칩니다. 결과를 `## Review` 의 집계 줄에 적고 `built` 로 커밋합니다.
+4. **리뷰** — `sdlc-reviewer`(opus)가 `REVIEW.md` 의 세 패스(버그·보안·정합성)를 돌립니다. Important 지적은 새 컨텍스트에서 반박을 시도해 살아남은 것만 세고, 확정된 것은 고칩니다. 결과를 `## Review` 의 집계 줄에 적고 `built` 로 커밋합니다. 리뷰는 반드시 리뷰어 에이전트가 새 컨텍스트에서 합니다 — 루프의 구현 세션이 리뷰어를 한 번도 부르지 않았으면 게이트가 수정 세션을 보내 리뷰부터 하게 합니다(세션 로그에서 확인합니다).
 5. **셸 게이트와 머지** — `sdlc.py ship <slug>` 가 루프와 같은 게이트를 돌립니다([아래](#머지-게이트)). 통과하면 엔진이 `done` 을 커밋하고 push 해 PR 을 열고, GitHub 이면 PR 의 체크가 끝나기를 최대 30분(`loop.checks_wait_minutes`) 기다린 뒤 squash 머지합니다(원격이 없으면 이 컴퓨터에서 바로 squash 머지, 팀 저장소는 기다리지 않고 PR 을 ready 로 두어 사람이 머지). 고칠 수 있는 실패는 — 체크가 실패한 것도 — 고쳐 최대 세 번 다시 돌리고, 사람 몫은 이유와 함께 멈춥니다.
 
 작업 문서의 `status` 는 `ready`(큐에 있음) → `planned`(설계됨) → `built`(구현·리뷰 끝, 게이트 차례) → `done`(게이트 통과)로 갑니다. 옆길이 셋입니다: `proposed`(사람이 받아들여야 하는 제안), `needs-input`(답을 기다림), `dropped`(하지 않기로 함 — 이유는 `## Departures` 첫 줄이고, 어느 경로로 접든 기본 브랜치에 기록됩니다). `difficulty`(`easy`·`normal`·`hard`)는 변경의 난이도로, 루프가 세션의 effort 를 고르는 데 씁니다([모델과 비용](#모델과-비용)). `easy` 는 계획이 고칠 곳을 모두 짚고 틀릴 로직이 없는 기계적인 변경(설정, 이름 바꾸기, 문구, 연결, 이미 있는 패턴 베끼기)이고, `hard` 는 동시성, 보안·인증, 데이터 이전이나 저장 형식, 돈이나 정밀도, 알고리즘, 모듈 사이의 계약, 판단이 필요했던 요구사항 중 하나가 걸린 변경이며, 나머지는 `normal` 입니다. `/sdlc:run` 이 목표를 나눌 때 어림해 적고 설계가 계획을 보고 고칩니다. 대소문자는 가리지 않고, 비어 있거나 다른 값이면 `normal` 입니다. 구현이 끝난 문서는 이렇게 생겼습니다. 엔진이 읽는 것은 frontmatter, `## ` 제목으로 나뉜 절, 리뷰 집계 줄이고 나머지는 사람을 위한 글입니다.
@@ -101,10 +101,17 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 - **항목마다 새 세션** — 설계 세션 → 구현 세션 → 셸 게이트 → 머지. 세션은 항목마다 새로 열려 앞 항목의 맥락을 끌고 가지 않습니다. 팀 저장소는 설계 뒤에 초안 PR 을 열고, 다른 사람의 승인 리뷰나 `sdlc:approved` 라벨이 있어야 구현을 시작합니다.
 - **PR 체크** — GitHub 이면 게이트를 통과한 뒤 머지 전에 PR 의 체크(CI)가 끝나기를 기다립니다(`loop.checks_wait_minutes`, 기본 30분). 모두 통과하면 머지하고, 실패하면 실패한 체크의 로그를 들려 수정 세션을 돌리고, 시간 안에 끝나지 않으면 사람 몫으로 둡니다([아래](#머지-게이트)).
 - **막혔을 때** — 게이트의 고칠 수 있는 실패는 수정 세션(`loop.fix_rounds`, 2회)이 고칩니다. 사람 몫이면 항목을 `needs a person` 으로 두고 다음 항목으로 갑니다. GitHub 이면 PR 에 코멘트와 `sdlc:needs-human` 라벨을 남깁니다. 원격이 없으면 PR 이 없으므로, status 가 받아들이는 명령 `git merge sdlc/<slug>` 를 보여 주고 머지된 브랜치는 루프가 지웁니다. 질문은 보류하고 갑니다.
-- **자기 점검** — 솔로 모드에서 이번 실행(또는 직전 자기 점검) 뒤에 직접 머지한 항목이 `loop.self_check_min_items`(기본 2)개 이상이고 더 돌릴 것이 없으면 머지된 diff 를 한 번 더 리뷰합니다(`--items` 로 고른 실행은 제외, 한 실행에 최대 두 번). 항목 하나는 그 항목의 리뷰가 이미 같은 diff 를 봤으므로 건너뛰고 로그에 `CHECK   skipped` 를 남깁니다. 팀 모드는 사람이 머지하고 리뷰하므로 돌지 않습니다. 검증된 Important 중 이번에 바뀐 줄에 닿는 것만 `ready` 항목(최대 3개)이 되고, 원래 있던 문제는 `proposed` 가 됩니다.
-- **멈추는 때** — 큐가 비었을 때, 사람 몫만 남았을 때(질문·게이트 사유·막힌 항목), "멈춰", 연속 3회 실패, 기다릴 수 없는 사용량 한도, `--max-items`·`--max-minutes`. 이유를 말하고 멈춥니다. 팀 저장소에서 승인·머지만 기다릴 때는 10분마다 확인하다가 12시간이 지나면 멈춥니다.
+- **자기 점검** — 솔로 모드에서 이번 실행(또는 직전 자기 점검) 뒤에 직접 머지한 항목이 `loop.self_check_min_items`(기본 2)개 이상이고 더 돌릴 것이 없으면 머지된 diff 를 한 번 더 리뷰합니다(`--items` 로 고른 실행은 제외, 한 실행에 최대 두 번). 항목 하나는 그 항목의 리뷰가 이미 같은 diff 를 봤으므로 건너뛰고 로그에 `CHECK   skipped` 를 남깁니다. 팀 모드는 사람이 머지하고 리뷰하므로 돌지 않습니다. 검증된 Important 중 이번에 바뀐 줄에 닿는 것만 `ready` 항목(최대 3개)이 되고, 원래 있던 문제는 `proposed` 가 됩니다. 자기 점검 세션이 남길 수 있는 것은 새 `work/*.md` 뿐이라, 그 밖의 변경(기존 작업 문서·`.sdlc/config.json` 편집, 새 디렉터리)은 엔진이 모두 되돌립니다. 한도·시간 상한 등으로 끝까지 돌지 못한 점검은 세지 않고 쓴 문서도 버리며, 다음 점검이 같은 범위를 다시 봅니다.
+- **멈추는 때** — 큐가 비었을 때, 사람 몫만 남았을 때(질문·게이트 사유·막힌 항목), "루프 멈춰", 연속 3회 실패, 기다릴 수 없는 사용량 한도, `--max-items`·`--max-minutes`. 이유를 말하고 멈춥니다. 팀 저장소에서 승인·머지만 기다릴 때는 10분마다 확인하다가 12시간이 지나면 멈춥니다. 마지막 줄의 이유는 지금 사실인 것만 적습니다:
+  - `queue empty` — 큐에 남은 것이 없음.
+  - `selected items finished` — `--items` 로 고른 항목이 모두 머지됐거나 사람의 머지를 기다리거나 빠짐. 고르지 않은 항목이 남았으면 ` · N other item(s) not selected` 가 붙습니다. 없는 이름을 고르면 시작하지 않습니다(`no work doc named x`).
+  - `nothing runnable — ` 뒤에 해당하는 것만 `; ` 로 이어서: `N wait for you (…)`(질문·사람 몫·제안·막힘·승인이나 머지 대기), `N wait on other items (…)`(의존), `N failed this run (…) — the next run retries them`, `N held by another loop (…)`(다른 클론·워크트리가 잡고 있음).
+- **클론과 워크트리** — 같은 항목을 두 루프가 잡지 않습니다. 같은 저장소의 워크트리끼리는 `.sdlc/state` 의 claim 파일로, GitHub 이면 다른 클론끼리도 origin 의 ref `refs/sdlc/claims/<slug>` 로 막습니다(먼저 만든 쪽이 가짐). 그 ref 에는 git 사용자 이름, 체크아웃 폴더 이름, 시각만 들어가고, `2 × loop.session_max_minutes` 동안 갱신이 없으면 버려진 것으로 보고 넘겨받습니다. 남이 잡은 항목은 `SKIP    <slug> — held by <사용자> in <폴더> since <시각>` 으로 이번 회차에서 건너뜁니다. 항목 브랜치가 다른 워크트리에 체크아웃돼 있어도 실행을 멈추지 않고 그 항목만 건너뜁니다. origin 에 닿지 못하면 경고 한 줄을 남기고 claim 없이 갑니다.
+- **브랜치를 덮어쓰지 않음** — 사람이 사람 몫 PR 에 커밋을 올렸거나 팀 설계 PR 에 리뷰어가 커밋했으면, 루프는 작업 전에 origin 의 `sdlc/<slug>` 를 받아옵니다(fast-forward). 양쪽이 서로 모르는 커밋을 가졌으면 손으로 합치라는 이유와 함께 사람 몫입니다. push 는 루프가 마지막으로 본 커밋에만 lease 를 걸어, 그사이 누가 올린 커밋을 지우지 않습니다(`remote branch changed: …`). 머지는 엔진이 push 한 커밋과 PR 의 head 가 같을 때만 합니다.
+- **오래된 브랜치** — 설계·구현 세션 전에 기본 브랜치보다 뒤처진 항목 브랜치는 기본 브랜치를 합쳐 둡니다. 충돌하면 합치기를 취소하고, 무엇이 충돌하는지를 세션 프롬프트에 넣어 세션이 먼저 해결하게 합니다. 작업 문서보다 먼저 만들어진 브랜치(0.x 의 것, 같은 이름의 옛 작업)는 `ready` 항목이면 `sdlc-old/<slug>` 로 보관하고 기본 브랜치에서 새로 시작하며, 설계 세션에 옛 작업을 참고하라고 알려 줍니다.
+- **네트워크** — fetch 가 실패하면 `WARN    fetch failed: …; going on with what is here` 를 한 번 남기고 가진 것으로 계속합니다. 멈추는 것은 기본 브랜치가 origin 과 갈라졌을 때뿐입니다.
 - **답하는 법** — 말로 합니다. 질문에는 답(`sdlc.py answer`), "다시 해봐"는 실패·대기와 PR 체크 수정 횟수를 지우고 다시 맡기고(`retry`), "그건 빼"는 항목을 접습니다(`drop` — `accept` 와 같은 경로로 기본 브랜치의 작업 문서에 `status: dropped` 와 이유(`## Departures`)를 기록하고, 그 항목의 열린 PR 을 닫습니다. 팀 저장소의 기록은 사람이 머지하는 PR 로 갑니다. 세션이 스스로 불필요하다고 판정해 접은 항목도 같은 경로로 기록됩니다). 자동 머지된 변경에는 "좋아"·"고쳐야 해, <무엇을>"·"별로, <이유>"로 평가하고(`rate`), 뒤의 둘은 메모가 있으면 후속 항목(각각 `ready`·`proposed`)을 만듭니다.
-- **체크아웃** — 루프는 이 체크아웃에서 브랜치를 바꾸므로 도는 동안은 같은 체크아웃에서 `go` 가 거절됩니다. 루프를 멈추거나 다른 `git worktree` 에서 작업하십시오.
+- **체크아웃** — 루프는 이 체크아웃에서 브랜치를 바꾸므로 도는 동안은 같은 체크아웃에서 `go` 가 거절됩니다. 루프를 멈추거나 다른 `git worktree` 에서 작업하십시오. 항목 상태(`.sdlc/state/items.json`)는 체크아웃마다 따로라서, 다른 워크트리의 루프가 남긴 실패 횟수·대기는 이 체크아웃의 status 에 나오지 않습니다.
 - **권한** — 루프 세션은 `--permission-mode acceptEdits` 와 `loop.allowed_tools`(기본 `Read,Edit,Write,MultiEdit,Grep,Glob,Task,Bash`)로 돌기 때문에 Bash 가 통째로 허용됩니다. 위험한 명령은 훅과 셸 게이트가 막습니다: 기본 브랜치 직접 push, 기존 테스트 편집·삭제, `RELEASE_APPROVAL` 없는 운영 배포, 비밀 커밋. 대화형 세션은 사용자의 Claude Code 권한 설정을 따르며, init 이 `.claude/settings.json` 에 보태는 허용 목록(git 과 프로젝트 명령)은 사용자가 신뢰한 작업 공간에서만 적용됩니다.
 
 ## 사람이 하는 일
@@ -127,12 +134,14 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 | # | 검사 | 실패하면 |
 |---|---|---|
 | 1 | `gate.commands`(기본 build·test·lint)가 통과하고 기본 브랜치와 충돌이 없음 | 수정 세션 |
-| 2 | `## Review` 의 집계 줄이 `important=0` | 수정 세션 |
-| 3 | 테스트 무결성 — `test_changes: none`(기본)이면 기존 테스트 파일이 한 줄도 바뀌지 않음(제자리에서 `assert x == 1` 을 `assert True` 로 약하게 고친 것은 개수로 잡을 수 없어서). `allowed` 면 기존 테스트의 삭제·케이스 수 감소가 없음. 어느 쪽이든 새 skip/only/xfail/`@Disabled` 가 없음 | 사람 |
-| 4 | 인수 조건과 `test_changes` 가 설계 커밋 이후 그대로 — 바뀌었으면 `## Departures` 에 이유를 적어도 사람에게 감(구현·수정 세션이 스스로 테스트 잠금을 풀 수 없게) | 사람 |
-| 5 | 매니페스트에 새 의존성이 없음 (`gate.new_dependencies: allow` 로 끔) | 사람 |
-| 6 | 위험 경로·가드 파일 — 바뀐 파일이 `risk.human` 글롭에 걸리지 않고, 가드 파일(`.sdlc/config.json`, 동결 목록 파일, `.claude/settings.json`, `.claude/settings.local.json`, `checks/` 디렉터리)이 바뀌지 않음. 가드 파일은 `risk.human` 과 무관하게 사람에게 가고 끌 수 없음 — 세션이 자기 가드레일을 풀고 무인으로 머지하지 못하게. 예외는 하나뿐: `.sdlc/config.json` 에서 비어 있던 `commands.*` 를 채우기만 한 변경(새 앱의 뼈대 항목 — 검사가 늘어나는 쪽). 그 항목의 게이트부터 채운 명령으로 돌고, 이미 있던 명령을 바꾸거나 지우면 사람에게 감 | 사람 |
+| 2 | `## Review` 의 마지막 집계 줄이 `important=0`. 루프에서는 구현(또는 수정) 세션이 리뷰어 에이전트를 실제로 불렀는지도 봅니다 | 수정 세션 |
+| 3 | 테스트 무결성 — `test_changes: none`(기본)이면 기존 테스트 파일이 한 줄도 바뀌지 않음(제자리에서 `assert x == 1` 을 `assert True` 로 약하게 고친 것은 개수로 잡을 수 없어서). `allowed` 면 기존 테스트의 삭제·케이스 수 감소가 없음. 어느 쪽이든 단언(assertion) 수가 줄지 않고, 새 skip/only/xfail/`@Disabled`(Python·JS·Go·Rust·Ruby·PHP·Java/Kotlin·C#·Swift 표기)가 없음. 테스트 실행기 설정(`conftest.py`·`pytest.ini`·`jest`/`vitest`/`playwright`/`cypress` 설정·`karma.conf.*`·`.mocharc*`·`phpunit.xml*`)을 고치거나 `package.json` 의 `scripts.test`, `pyproject.toml` 의 pytest 설정을 바꿔도 사람 — `allowed` 여도 | 사람 |
+| 4 | 인수 조건과 `test_changes` 가 설계 그대로 — 바뀌었으면 `## Departures` 에 이유를 적어도 사람에게 감(구현·수정 세션이 스스로 테스트 잠금을 풀 수 없게). 기준은 루프가 기록한 설계 커밋(브랜치에 그대로 있을 때), 없으면 문서가 처음 `planned` 인 커밋, 그것도 없으면 큐에 들어간 그대로의 문서입니다. 브랜치 이력을 다시 써도 풀리지 않습니다 | 사람 |
+| 5 | 매니페스트에 새 의존성이 없음 — `pyproject.toml`(PEP 621·Poetry·그룹)·`requirements*.txt`·`setup.py`·`Pipfile`·`package.json`·`Cargo.toml`·`go.mod`·Gradle 과 버전 카탈로그·`pubspec.yaml`·`pom.xml`·`Package.swift`·`Podfile`·`Gemfile` (`gate.new_dependencies: allow` 로 끔) | 사람 |
+| 6 | 위험 경로·보호 경로·가드 파일 — 바뀐 파일이 `risk.human` 글롭, 동결 목록(`.sdlc/frozen-paths.txt`), `protect.generated_paths` 에 걸리지 않고, 가드 파일(`.sdlc/config.json`, 동결 목록 파일, `.claude/settings.json`, `.claude/settings.local.json`, `checks/` 디렉터리)이 바뀌지 않음. 가드 파일은 `risk.human` 과 무관하게 사람에게 가고 끌 수 없음 — 세션이 자기 가드레일을 풀고 무인으로 머지하지 못하게. 예외는 하나뿐: `.sdlc/config.json` 에서 비어 있던 `commands.*` 를 채우기만 한 변경(새 앱의 뼈대 항목 — 검사가 늘어나는 쪽). 그 항목의 게이트부터 채운 명령으로 돌고, 이미 있던 명령을 바꾸거나 지우면 사람에게 감 | 사람 |
 | 7 | `checks/` 의 실행 파일(프로젝트가 직접 둔 점검 스크립트)이 모두 통과 | 수정 세션 |
+
+게이트는 실패하는 쪽으로 닫혀 있습니다. diff 를 계산하지 못하거나 검사 하나가 돌다 오류가 나면 통과가 아니라 사람 몫이고, 경로는 NUL 구분(`-z`)으로 읽어 한글·공백이 든 파일 이름도 빠짐없이 봅니다. 끝나면 어떻게 끝났든(명령의 시간 초과 포함) 작업 트리를 시작한 그대로 돌려놓습니다: 합치기 취소, 추적 파일 원상 복구, 게이트가 만든 추적 안 된 파일 삭제.
 
 테스트 파일의 정의는 훅과 같습니다([아래](#훅)). `test_changes: allowed` 로 머지되면 PR 본문 맨 위와 로컬 squash 커밋 메시지에 `Existing tests were allowed to change in this item (test_changes: allowed) — <사유>` 한 줄이 들어가 사람이 알아볼 수 있습니다. 사유는 Plan → Departures → Proof 순으로 `test_changes` 나 기존 테스트를 말하는 첫 줄에서 가져오므로, 설계는 Proof 에 `test_changes:` 로 시작하는 한 줄을 씁니다. `allowed` 에서 제자리에서 약하게 고친 단언은 게이트가 못 잡으므로 리뷰의 정합성 패스가 봅니다.
 
@@ -165,7 +174,7 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 - 바꿀 때는 `.sdlc/config.json` 에 달라지는 단계만 적습니다: `{"loop": {"models": {"build": "opus"}, "efforts": {"fix": "high"}, "escalate_model": ""}}`. 문자열 하나(`"models": "sonnet"`)는 모든 단계에 적용되고, 0.x 의 `loop.model`·`loop.fix_model`·`loop.effort` 도 읽습니다.
 - 서브에이전트의 모델은 `agents/*.md` 의 `model:` 에 있고 config 로 바꾸지 않습니다: reviewer opus, builder·verifier·simplifier sonnet, researcher haiku. `/sdlc:go` 는 메인 세션이 설계를 맡고 구현은 builder 에, 리뷰는 reviewer 에 넘기며(머지는 엔진의 `ship`), 루프에서는 구현 세션 자신이 구현 모델이라 builder 를 다시 부르지 않습니다.
 - **사용량 한도** — 모델 계열 한도(Opus·Sonnet 등)는 설정된 다른 계열 모델로 바꿔 이어 가고, 세션·주간 한도는 알려 주는 리셋 시각까지 잠들었다가(시각을 모르면 30분 뒤 다시) 이어 갑니다. `loop.limit_wait_hours`(6) 안에 풀리지 않으면 이유를 말하고 멈추고, 리셋 뒤 "이어서 돌려"로 재개합니다. 지출 한도는 바로 멈춥니다.
-- **세션 상한** — 세션 하나는 120분(`loop.session_max_minutes`)이나 500턴(`loop.max_turns`)에서 멈추고, `loop.budget_usd_per_session` 을 정했으면 그 금액에서도 멈춥니다(기본 0 = 비용 상한 없음). 턴과 비용 상한은 이어 간 세션마다 처음부터 다시 셉니다. 그래서 한 단계가 쓸 수 있는 최대 금액은 그 금액의 (1 + `max_continuations`)배입니다. 상한에 걸려도 하던 일은 버리지 않습니다. 같은 세션을 바로 `--resume` 으로 이어 가며, 한 단계에서 `loop.max_continuations`(3)번까지 잇습니다. 실패로 세는 것은 직전 멈춤 이후 바뀐 것이 없을 때와, 다 잇고도 끝나지 않았을 때뿐입니다. 로그와 실패 사유에는 걸린 상한이 적힙니다(`turn cap` · `time cap (120 min)` · `budget cap ($금액)`). "멈춰"나 사용량 한도로 멈춘 뒤 55분(`loop.cold_resume_minutes`)이 지나서 재개하면 프롬프트 캐시가 식어 `--resume` 이 더 비쌉니다. 그때는 새 "이어 하기" 세션으로 시작합니다.
+- **세션 상한** — 세션 하나는 120분(`loop.session_max_minutes`)이나 500턴(`loop.max_turns`)에서 멈추고, `loop.budget_usd_per_session` 을 정했으면 그 금액에서도 멈춥니다(기본 0 = 비용 상한 없음). 턴과 비용 상한은 이어 간 세션마다 처음부터 다시 셉니다. 그래서 한 단계가 쓸 수 있는 최대 금액은 그 금액의 (1 + `max_continuations`)배입니다. 상한에 걸려도 하던 일은 버리지 않습니다. 같은 세션을 바로 `--resume` 으로 이어 가며, 한 단계에서 `loop.max_continuations`(3)번까지 잇습니다. 실패로 세는 것은 직전 멈춤 이후 바뀐 것이 없을 때와, 다 잇고도 끝나지 않았을 때뿐입니다. 로그와 실패 사유에는 걸린 상한이 적힙니다(`turn cap` · `time cap (120 min)` · `budget cap ($금액)`). "루프 멈춰"나 사용량 한도로 멈춘 뒤 55분(`loop.cold_resume_minutes`)이 지나서 재개하면 프롬프트 캐시가 식어 `--resume` 이 더 비쌉니다. 그때는 새 "이어 하기" 세션으로 시작합니다.
 - **비용** — 세션마다 기록되어 status 에 오늘·7일·머지한 항목당 중앙값이 나오고, 루프가 도는 중에는 이번 실행 합계도 나옵니다. 엔진이 띄운 세션(루프의 설계·구현·수정과 자기 점검)만 세며, 대화형 `/sdlc:go` 는 들어가지 않습니다.
 - **세션 시작 비용과 격리(선택)** — 세션 하나는 일을 시작하기 전에 이미 프롬프트 약 25k 토큰(시스템 프롬프트·도구·스킬·플러그인·CLAUDE.md)을 안고 시작합니다. 측정(claude 2.1.296, haiku, 1턴)에서 사용자의 다른 플러그인과 MCP 서버가 그중 약 4.8k(약 19%)였고, MCP 서버만으로는 약 300 이었습니다. `loop.isolate_sessions: true` 면 루프 세션이 이 프로젝트의 설정(`project`·`local`)과 sdlc 플러그인만 불러와 그만큼을 줄입니다. MCP 서버는 프로젝트의 `.mcp.json` 것까지 하나도 불러오지 않습니다. 루프 세션은 원래 `loop.allowed_tools` 의 도구만 쓰므로 보통은 잃는 것이 없지만, 프로젝트 설정의 허용 목록으로 MCP 도구를 쓰게 해 두었다면 켜지 마십시오. 기본이 꺼짐인 이유는 사용자 설정도 함께 읽히지 않기 때문입니다. 권한은 엔진이 따로 넘기고 모델도 단계마다 넘기므로 괜찮지만, 사용자 설정에 둔 인증·환경(`apiKeyHelper`, `env` 의 프록시나 베이스 URL)은 루프 세션에서 사라집니다. 다른 플러그인과 MCP 서버를 많이 쓰고 그런 설정이 루프에 필요 없을 때만 켜십시오. `--setting-sources` 를 모르는 claude 에서는 아무것도 바꾸지 않습니다. CLAUDE.md 는 프로젝트의 몫이라 길수록 모든 세션이 그만큼 더 냅니다([문제 해결](#문제-해결)).
 
@@ -178,19 +187,19 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 | 훅 | 시점 | 하는 일 |
 |---|---|---|
 | `guard-edit` | 파일 편집 직전 | ① frozen·generated 경로 편집 금지 ② 기존 테스트 파일 잠금(sdlc 작업 중에만 — 아래) ③ 설계 먼저 — 활성 작업 문서가 `ready`·`proposed` 인 동안은 `work/`·`.sdlc/` 만 편집 ④ 새 내용의 비밀값 스캔 |
-| `guard-bash` | Bash 직전 | 운영 배포 명령은 `RELEASE_APPROVAL` 없이 차단. 명령줄 전체가 아니라 단순 명령 하나씩 따옴표를 풀어 대조하고, heredoc 본문과 주석은 뺍니다. `echo`·`cat`·`grep` 같은 텍스트 도구와 `git commit`·`log`·`diff` 같은 기록·조회용 git 명령은 글자로 봅니다. 단, 다른 프로그램을 실행시킬 수 있는 형태는 검사합니다(`git -c …`·`--exec`·`GIT_SSH_COMMAND=` 같은 앞 변수, `rg --pre` 등). `bash -c "…"`·`ssh`·`sudo`·명령 치환·셸로 넘기는 heredoc 은 검사합니다 · 기본 브랜치로의 직접 push 차단 · 파일을 쓰는 셸 명령(`rm`·`mv`·`cp`·`sed -i`·`tee`·리다이렉션·`dd`·`truncate`·`git rm`/`mv`/`checkout -- <파일>`/`restore`)에도 테스트 잠금과 설계 먼저 적용 · `git commit` 이 가져갈 변경의 비밀 스캔 |
-| `post-edit` · `post-bash` | 편집·Bash 직후 | 포매터 실행(`hooks.format_on_edit`, `commands.format`)과 있으면 파일 린터(`commands.lint_file`), 검증 명령(`commands.test` 등)의 결과 기록 |
+| `guard-bash` | Bash 직전 | 운영 배포 명령은 `RELEASE_APPROVAL` 없이 차단. 명령줄 전체가 아니라 단순 명령 하나씩 따옴표를 풀어 대조하고, heredoc 본문과 주석은 뺍니다. `echo`·`cat`·`grep` 같은 텍스트 도구와 `git commit`·`log`·`diff` 같은 기록·조회용 git 명령은 글자로 봅니다. 단, 다른 프로그램을 실행시킬 수 있는 형태는 검사합니다(`git -c …`·`--exec`·`GIT_SSH_COMMAND=` 같은 앞 변수, `rg --pre` 등). `bash -c "…"`·`ssh`·`sudo`·명령 치환·셸로 넘기는 heredoc·셸로 넘기는 파이프(`… | bash`)는 검사합니다. 읽기만 하는 명령(`gh api`·`gh pr view`·`curl` 조회·`ls`·`find`·테스트 실행기)과 인자 속 산문은 배포로 보지 않습니다 · 기본 브랜치로의 직접 push 차단(`HEAD`·`@` 도 풀어서 봄) · sdlc 작업 중에는 `gh pr merge` 와 기본 브랜치로의 push 를 `block_direct_push` 와 상관없이 차단(머지는 게이트의 몫) · 파일을 쓰는 셸 명령(`rm`·`mv`·`cp`·`sed -i`·`tee`·리다이렉션·`dd`·`truncate`·`git rm`/`mv`/`checkout -- <파일>`/`restore`)에도 테스트 잠금과 설계 먼저 적용 · `git commit` 이 가져갈 변경의 비밀 스캔 |
+| `post-edit` · `post-bash` | 편집·Bash 직후 | 포매터 실행(`hooks.format_on_edit`, `commands.format`, 프로젝트 안의 파일만)과 있으면 파일 린터(`commands.lint_file`), 검증 명령(`commands.test` 등)의 결과 기록 — 단순 명령이 그 명령으로 시작할 때만 검증으로 치고, 실패한 Bash(`PostToolUseFailure`)도 기록 |
 | `stop-verify` | 응답을 끝내기 전 | `verify.required_before_stop` 이 true 일 때, 편집 뒤 검증이 없거나 실패했으면 한 번 막고 돌릴 명령을 알려 줌 |
-| `session-start` · `session-end` | 세션 시작·끝 | 규칙 요약을 컨텍스트에 넣고(`hooks.session_context`) 기록(`hooks.log_events`) |
+| `session-start` · `session-end` | 세션 시작·끝 | 규칙 요약을 컨텍스트에 넣고(`hooks.session_context`, macOS 면 zsh·BSD 도구 주의 한 줄) 기록(`hooks.log_events`) |
 
 - **테스트 잠금은 sdlc 작업 중에만 겁니다** — 활성 작업 문서가 있을 때, 곧 `.sdlc/state/active-work` 의 slug 가 브랜치 `sdlc/<slug>` 와 맞을 때입니다(설계 먼저와 같은 조건). 작업 밖에는 받쳐 줄 게이트가 없고 에이전트가 설정으로 꺼 버릴 수도 있어서 걸지 않습니다. "기존 테스트"는 `merge-base` 에 이미 있던 테스트 파일이고(게이트도 같은 기준), 이 변경이 추가한 새 테스트는 자유입니다. 푸는 길은 둘뿐입니다: 작업 문서의 `test_changes: allowed`(설계가 정함), 사람이 Claude Code 를 띄울 때 환경에 둔 `SDLC_ALLOW_TEST_EDIT=1`.
-- **테스트 파일** — 훅과 게이트가 같은 정의를 씁니다. 디렉터리 `test/`·`tests/`·`__tests__/`·`androidTest/`·`testFixtures/`·`spec/` 아래와 파일 `*_test.go`·`*.test.*`·`*.spec.*`·`test_*.py`·`*_test.py`·`*Test(s).java|kt|swift`·`*Spec.scala|kt`·`*_spec.rb` 입니다(작업 문서 디렉터리는 제외). `protect.test_paths` 의 기본값 `["auto"]` 가 이 집합이고, 글롭을 더하거나(`["auto", "e2e/**"]`) `auto` 를 빼고 직접 적어 바꿀 수 있습니다([설정](#설정)).
-- **커밋 비밀 스캔** — 기본은 스테이지된 diff 입니다. 같은 명령줄에서 `git add` 가 앞서거나 `-a`/`--all` 이면 커밋이 가져갈 수 있는 전부(추적 파일의 변경과, 무시되지 않는 추적 안 된 텍스트 파일 — 개수 상한 있음)를 보고, `git -C <dir>` 로 다른 저장소에 커밋하면 그 저장소도 봅니다.
-- **한계** — `guard-bash` 는 명령줄을 읽을 뿐 실행하지 않는 최선 노력이라, 스스로 파일을 쓰는 프로그램(`python -c`·`patch`·`git apply`·`make`·패키지 매니저·`curl -o`)과 변수·중괄호 확장으로 만든 경로는 보지 못합니다. 배포 판정은 텍스트 도구의 출력이 명령이 되는 경우(`$(echo …)`)와 두 명령에 나뉜 배포(`cd prod && make deploy`)를 보지 못합니다. 훅 잠금은 조기 경고라서 에이전트가 `active-work` 를 지우거나 브랜치를 떠나면 꺼집니다. 강제하는 것은 게이트(검사 3·4·6)입니다.
+- **테스트 파일** — 훅과 게이트가 같은 정의를 씁니다. 디렉터리 `test/`·`tests/`·`__tests__/`·`androidTest/`·`testFixtures/`·`spec/` 아래와 파일 `*_test.go`·`*.test.*`·`*.spec.*`·`test_*.py`·`*_test.py`·`*Test(s).java|kt|swift`·`*Spec.scala|kt`·`*_spec.rb` 이고, 테스트 실행기 설정 파일(`conftest.py`·`pytest.ini`·`jest.config.*`·`vitest.config.*`·`vitest.workspace.*`·`karma.conf.*`·`.mocharc*`·`playwright.config.*`·`cypress.config.*`·`phpunit.xml*`)도 기존 테스트처럼 잠깁니다(작업 문서 디렉터리는 제외). `protect.test_paths` 의 기본값 `["auto"]` 가 이 집합이고, 글롭을 더하거나(`["auto", "e2e/**"]`) `auto` 를 빼고 직접 적어 바꿀 수 있습니다([설정](#설정)).
+- **커밋 비밀 스캔** — 대소문자를 구분하는 패턴이라 base64 덩어리를 비밀로 잘못 보지 않고, 따옴표 없는 값·`sk-proj-`·`sk_live_`·Slack 웹훅·`npm_`·`ghs_`·암호화된 개인 키·`Bearer` 토큰도 잡습니다. 막을 때는 파일과 줄, 빠져나갈 길을 함께 알려 줍니다. 기본은 스테이지된 diff 입니다. 같은 명령줄에서 `git add` 가 앞서거나 `-a`/`--all` 이면 커밋이 가져갈 수 있는 전부(추적 파일의 변경과, 무시되지 않는 추적 안 된 텍스트 파일 — 개수 상한 있음)를 보고, `git -C <dir>` 로 다른 저장소에 커밋하면 그 저장소도 봅니다.
+- **한계** — `guard-bash` 는 명령줄을 읽을 뿐 실행하지 않는 최선 노력이라, 스스로 파일을 쓰는 프로그램(`python -c`·`patch`·`git apply`·`make`·패키지 매니저·`curl -o`)과 변수·중괄호 확장으로 만든 경로는 보지 못합니다. 배포 판정은 텍스트 도구의 출력이 명령이 되는 경우(`$(echo …)`), 두 명령에 나뉜 배포(`cd prod && make deploy`), 산문만 인자로 받는 스크립트(`./deploy.sh "to production"`), 스크립트 파일 안의 sed `e` 나 awk `system()` 을 보지 못합니다. 훅 잠금은 조기 경고라서 에이전트가 `active-work` 를 지우거나 브랜치를 떠나면 꺼집니다. 강제하는 것은 게이트(검사 3·4·6)입니다.
 
 ## 설정
 
-`.sdlc/config.json`(version 2)에는 init 이 감지한 값과 바꾼 값만 둡니다. 기본값은 엔진(`scripts/sdlclib/config.py` 의 `DEFAULTS`)에 있습니다. 편집을 막을 경로는 `protect.generated_paths` 와 `.sdlc/frozen-paths.txt`(한 줄에 하나)에 둡니다. 글롭은 이 둘과 `protect.test_paths`·`risk.human` 이 모두 같은 뜻입니다: `dir/` 은 그 디렉터리 아래 전부(접두사), `*`·`?` 는 경로 한 칸 안에서만 맞고(`/` 를 넘지 않음), `**` 는 깊이를 가리지 않고, `/` 없는 패턴은 어느 깊이의 파일 이름에나 맞고, 그 밖의 패턴은 저장소 루트 기준입니다.
+`.sdlc/config.json`(version 2)에는 init 이 감지한 값과 바꾼 값만 둡니다. 기본값은 엔진(`scripts/sdlclib/config.py` 의 `DEFAULTS`)에 있습니다. 편집을 막을 경로는 `protect.generated_paths` 와 `.sdlc/frozen-paths.txt`(한 줄에 하나)에 둡니다. 글롭은 이 둘과 `protect.test_paths`·`risk.human` 이 모두 같은 뜻입니다: `dir/` 은 그 디렉터리 아래 전부(접두사), `*`·`?` 는 경로 한 칸 안에서만 맞고(`/` 를 넘지 않음), `**` 는 깊이를 가리지 않고, `/` 없는 패턴은 어느 깊이의 파일 이름에나 맞고, 그 밖의 패턴은 저장소 루트 기준입니다. 앞에 붙은 `/`·`./` 는 루트에 고정한다는 뜻이고(`/*.tf` 는 루트의 것만), `**/migrations/`·`src/*/secrets/` 처럼 디렉터리 패턴에도 글롭을 쓸 수 있으며, 목록 대신 문자열 하나를 적어도 됩니다.
 
 | 키 | 기본값 | 뜻 |
 |---|---|---|
@@ -205,12 +214,13 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 | `risk.human` | `[]` | 글롭 — 걸리는 변경은 사람이 머지(가드 파일은 이 설정과 상관없이 사람 — 검사 6) |
 | `loop.fix_rounds` · `max_failures_per_slug` · `max_consecutive_failures` | `2` · `3` · `3` | 게이트(GitHub 에서는 PR 체크도) 실패 때 수정 세션 횟수 · 항목이 막히는 실패 횟수 · 루프가 멈추는 연속 실패 횟수 |
 | `loop.auto_effort` | `true` | 세션마다 effort 를 항목의 `difficulty`·이전 실패·수정 횟수에 맞춰 조정([모델과 비용](#모델과-비용)). `false` 면 `loop.efforts` 그대로 |
-| `loop.self_check` · `self_check_max_items` | `true` · `3` | 루프가 직접 머지한 뒤의 자기 점검(솔로 모드뿐, 팀 모드는 돌지 않음) · 한 번에 `ready` 로 만들 항목 상한(넘치면 `proposed`) |
+| `loop.self_check` · `self_check_max_items` | `true` · `3` | 루프가 직접 머지한 뒤의 자기 점검(솔로 모드뿐, 팀 모드는 돌지 않음) · 한 번에 `ready` 로 만들 항목 상한(넘치면 `proposed`, `0` 이면 모두 `proposed`) |
 | `loop.self_check_min_items` | `2` | 자기 점검이 돌려면 이번 실행(또는 직전 점검) 뒤 머지된 항목이 몇 개 이상이어야 하는지. 항목 하나는 그 항목의 리뷰가 이미 같은 diff 를 봤으므로 건너뜀 |
 | `loop.checks_wait_minutes` | `30` | GitHub: 머지 전에 PR 의 체크를 기다리는 시간(분). `0` 이면 기다리지 않고 머지 |
 | `loop.forge` · `budget_usd_per_session` | `auto` · `0` | `auto`·`github`·`local`(local: PR 없이 이 컴퓨터에서 squash 머지) · 세션당 비용 상한(0 = 없음, 이어 간 세션마다 다시 셈) |
 | `loop.isolate_sessions` | `false` | `true` 면 루프 세션이 이 프로젝트의 설정과 sdlc 플러그인만 불러옴(다른 플러그인과 MCP 서버 — 프로젝트의 `.mcp.json` 까지 — 제외, 세션마다 약 4.8k 토큰 절약). 사용자 설정에 둔 인증·환경은 읽히지 않음 |
 | `verify.required_before_stop` · `verify.agent` | `false` · `auto` | `stop-verify` 켜기 · 독립 검증 에이전트(`auto`: 비테스트 파일 4개 이상이거나 테스트가 닿지 않는 동작일 때) |
+| `check.public_site` | `true` | `init --check` 가 저장소 루트를 그대로 내보내는 정적 호스트(루트의 `index.html` 등)에서 sdlc 파일이 공개되는지 봄. `false` 면 끔 |
 | `secrets.*` · `hooks.*` | 켜짐 | 비밀 스캔(`scan_edits`·`scan_commits`·`extra_patterns`)과 훅 동작(`format_on_edit`·`session_context`·`log_events`) |
 
 `paths.*`(작업 문서·`REVIEW.md`·`checks/` 위치), 세션 상한·이어 하기·대기 주기(`loop.session_max_minutes`·`max_turns`·`max_continuations`·`cold_resume_minutes`·`limit_wait_hours`·`poll_minutes`·`idle_hours`), 한 번에 돌릴 항목 수·시간 제한(`loop.max_items`·`max_minutes`, 기본 0 = 큐가 빌 때까지), 루프 세션에 허용할 도구(`loop.allowed_tools`), 모든 항목 세션에 덧붙일 프로젝트 메모(`loop.item_note`) 같은 나머지 키도 `DEFAULTS` 에 있습니다.
@@ -225,25 +235,31 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
   - 이어지는 것: `commands.*`·`protect.*`·`secrets`·`hooks` 와 `loop` 의 `max_turns`·`fix_rounds`·`self_check` 등. `item_max_minutes` 는 `session_max_minutes` 가 됩니다.
   - 0.x 의 기본값이던 상한(`max_turns` 120·200, `item_max_minutes` 45)은 옮기지 않으므로 1.0 기본값(500턴·120분)이 적용됩니다.
   - 이름이 바뀌는 것: `roles.solo` 는 `mode` 로, `protect.ticketed_paths` 는 `risk.human` 으로, `environments.production` 의 패턴·승인 변수는 `protect.deploy_patterns`·`deploy_approval_env` 로 갑니다.
-  - 버리는 것: `loop.max_items`·`max_minutes` 와 1.0 이 쓰지 않는 최상위 키(`ci`·`monitor`·`policies` 등). 버린 것은 NOTE 로 알려 줍니다.
+  - `loop.max_items`·`max_minutes` 는 0.x 템플릿의 기본값(5개·480분, 0.8.2 이전의 120분)이면 버리고, 사용자가 바꾼 값이면 그대로 옮깁니다.
+  - 버리는 것: 1.0 이 쓰지 않는 최상위 키(`ci`·`monitor`·`policies` 등). 버린 것은 NOTE 로 알려 줍니다.
+  - 사용자가 일부러 비워 둔 명령(`""`)은 다시 실행해도 채우지 않습니다.
   - solo 에서 `roles.autopilot`·`auto_merge` 가 false 였으면, 1.0 은 게이트를 통과한 것을 머지한다고 NOTE 로 알려 줍니다. 사람이 머지하려면 team 모드를 쓰십시오.
 - **intent → 작업 문서** — 0.x 에서 아직 머지되지 않은 승인·초안 intent 는 `work/<slug>.md` 가 됩니다.
   - 상태: 승인된 것은 `ready`(승인된 plan 이 있으면 `planned`), 초안은 `proposed` 입니다.
   - 내용: Problem·Proposed outcome 이 Goal 이, spec 의 요구사항이 인수 조건이, plan 의 Proof 가 증명이 됩니다. 한글 템플릿의 `## 문제 (Problem)` 같은 제목도 읽습니다.
-  - `depends_on` 은 유지하되, 0.x 에서 이미 머지된 항목을 가리키는 것만 뺍니다.
+  - `depends_on` 은 유지하되, 0.x 에서 이미 머지된 항목과 옮기지 않은 항목(대체·반려된 것, 없는 것)을 가리키는 것은 NOTE 를 남기고 뺍니다.
+  - 0.x 의 intent·spec·plan 폴더에 커밋하지 않은 변경이 있으면 아무것도 바꾸지 않고 이전을 거부합니다. 커밋하거나 stash 한 뒤 다시 실행하십시오.
 - **REVIEW.md** — 0.x 템플릿 그대로인 줄만 고칩니다.
   - spec.md·plan.md 를 가리키던 정합성(Compliance) 줄은 작업 문서를 가리키게 합니다.
   - "지적만으로는 PR 을 막지 않는다"던 승인(Approval) 절은 1.x 의 "새로 생긴 것과 원래 있던 것"·"집계" 절로 바꿉니다. 1.x 게이트는 열린 Important 지적이 있으면 머지하지 않습니다.
   - 손댄 줄은 그대로 두고, `--check` 가 경고합니다.
   - 1.0~1.1.1 로 이미 올린 저장소도 init 을 한 번 더 돌리면 고쳐집니다.
 - **그대로 두는 것** — `intent/`·`spec/`·`plan/` 의 끝난 기록은 건드리지 않습니다.
-  - 0.x 가 만든 파일(`.sdlc/bands.json`, CI 워크플로, 예시 evals, 손대지 않은 `LESSONS.md` 템플릿 등)은 `LEFTOVER` 로 알려 주고, 사용자가 허락할 때만 `sdlc.py init --prune` 으로 지웁니다.
+  - 0.x 가 만든 파일(`.sdlc/bands.json`, CI 워크플로, 예시 evals, 손대지 않은 `LESSONS.md` 템플릿, 0.x 시작용 `.github/CODEOWNERS` 등)과 `.gitignore` 의 0.x 줄은 `LEFTOVER` 로 알려 주고, 사용자가 허락할 때만 `sdlc.py init --prune` 으로 지웁니다. `.gitignore` 는 0.x 머리말을 1.x 것으로 바꾸고 로그·상태 줄은 남깁니다.
   - 내용이 있는 `.sdlc/LESSONS.md` 는 1.0 이 읽지 않으니, 쓸 만한 줄을 CLAUDE.md 의 "Things Claude gets wrong"으로 옮기십시오.
 - **사람이 볼 것** — init 이 NOTE 로 알려 주는 것들입니다.
   - `intent/triage/` 의 초안: 1.0 에는 triage 대기열이 없습니다.
   - 버린 정책: 스킬은 남지만 리뷰에서 적용하지 않습니다. 리뷰어가 적용할 것은 REVIEW.md 에 적으십시오.
   - 남아 있는 `.sdlc/state/pause`: 지우기 전에는 루프가 시작하지 않습니다.
   - 지워진 명령을 부르는 `.claude/skills`·`commands`·`agents` 파일: `--check` 도 경고합니다.
+  - 0.x 의 작업 방식을 가르치는 줄 — 세션이 PR 을 직접 머지하라(`gh pr merge`), 큐는 `intent/` 에, `spec.md`·`plan.md` 를 읽으라 — 이 CLAUDE.md·AGENTS.md·프로젝트 스킬에 남아 있으면 파일과 줄 번호로 알려 줍니다(`CLAUDE.md:163 tells sessions to merge PRs themselves — …`). init 은 고치지 않으니 `/sdlc:go`·`/sdlc:run` 에 맞게 고치십시오. 그사이에도 훅이 sdlc 작업 중의 `gh pr merge` 를 막습니다.
+  - 사용자가 쓴 같은 뜻의 절(`## 명령어`·`## 자주 쓰는 명령` 같은 한글 제목 포함)은 그대로 두고 sdlc 의 절을 더하지 않습니다.
+  - 앱이 한 단계 아래 폴더(`ios/`·`android/` 등)에 있으면 그 폴더의 명령을 `--commands` 로 넣으라고 제안합니다.
 - **훅 동작이 달라진 곳** — 테스트 잠금은 sdlc 작업 중에만 걸립니다(0.x 는 늘 잠김). `.sdlc/state/allow-test-edit` 파일로 푸는 길은 없어졌으니 `test_changes: allowed` 나 `SDLC_ALLOW_TEST_EDIT=1` 을 쓰십시오. 글롭의 `*` 는 이제 `/` 를 넘지 않고(깊이는 `**`) `/` 가 들어간 패턴은 저장소 루트에서 시작하므로(`dist/**` 는 `pkg/dist/` 에 맞지 않음 — `**/dist/**`) 동결 목록·`generated_paths`·`test_paths`·`risk.human`(0.x 의 `ticketed_paths`) 에서 더 깊은 단계나 다른 위치의 같은 경로까지 막던 항목은 `**` 로 고쳐야 합니다. 0.x 의 `spec/` 이력 문서는 기본 테스트 집합(RSpec 식 `spec/`)에 들어가 작업 중에는 잠기고 게이트 검사 3 의 대상이 됩니다. 보통은 바뀔 일이 없고, 손대야 하면 설계에서 `test_changes: allowed` 로 풀어야 합니다.
 
 | 0.x | 1.0 |
@@ -265,7 +281,9 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 - **테스트 잠금이 막을 때** — 테스트 자체가 틀렸거나 새 동작이 기존 테스트를 바꿔야 한다면 설계에서 `test_changes: allowed` 로 푸는 것이 정식 경로입니다. 사용자가 직접 띄운 세션에서만 마지막 수단으로 `SDLC_ALLOW_TEST_EDIT=1` 을 씁니다(환경에 두는 값이라 세션 안의 명령으로는 켤 수 없습니다). 잠금은 sdlc 작업 중에만 걸리고, 프로젝트 전체에서 끄려면 `protect.protect_tests: false` 입니다(게이트의 기존 테스트 변경 검사도 함께 꺼집니다).
 - **PR 체크가 머지를 막을 때** — GitHub 에서 엔진은 게이트를 통과한 PR 의 체크를 `loop.checks_wait_minutes`(30분)까지 기다립니다. 모두 통과하면 머지합니다. 실패가 있으면 아직 도는 체크가 끝난 뒤 항목이 `built` 로 돌아가 실패한 체크의 로그를 받은 수정 세션이 돌고(`loop.fix_rounds` 번까지), 그래도 실패하면 사람 몫입니다. 한도 안에 끝나지 않거나 `gh` 로 체크를 끝내 읽지 못해도(사유에 그렇게 적힘) 사람 몫이며, 체크가 통과한 뒤 직접 머지하면 루프가 알아챕니다. 체크가 늘 오래 걸리면 `loop.checks_wait_minutes` 를 늘리고, 기다리지 않으려면 `0` 으로 둡니다. 체크가 하나도 없는 PR 은 `.github/workflows/` 파일이 있으면 2분 뒤, 없으면 바로 통과로 칩니다. 끝내 보고하지 않는 체크가 있으면 한도까지 대기 상태로 남습니다.
 - **CLAUDE.md 가 길 때** — 세션마다(루프 세션도) 파일 전체를 읽으므로 길수록 매번 컨텍스트를 씁니다. `/sdlc:init --check`("점검해줘")가 `claude_md.max_lines`(120줄) 초과를 알리면 init 이 줄이기를 제안합니다. 동의하면 일부 변경에만 필요한 상세를 `docs/claude/<주제>.md` 로 옮기고 그 자리에는 포인터 한 줄(`- <주제>: read docs/claude/<주제>.md before changing <경로>.`)만 남깁니다. `@` 로 불러오면 다시 모든 세션에 실리므로 쓰지 않습니다. 낡았거나 README.md·AGENTS.md 와 겹치거나 린터가 지키는 줄은 지웁니다. 남길 것·옮길 것·지울 것을 먼저 보여 주고, 사용자가 쓴 규칙은 목록에 올리지 않고는 빼지 않으며, `docs: trim CLAUDE.md` 로 커밋합니다(GitHub 이면 PR).
-- **저장소 루트를 그대로 배포할 때** — 빌드 없이 저장소 루트를 내보내는 정적 배포(예: 그런 설정의 Vercel 프로젝트)는 sdlc 파일도 공개합니다. `CLAUDE.md`·`REVIEW.md`·`work/`·`docs/claude/`·`.sdlc/` 를 배포 제외 목록(`.vercelignore` 등)에 넣으십시오. 저장소가 어떻게 배포되는지는 플러그인이 알 수 없어 대신 해 주지 않습니다.
+- **저장소 루트를 그대로 배포할 때** — 빌드 없이 저장소 루트를 내보내는 정적 배포(예: 그런 설정의 Vercel 프로젝트)는 sdlc 파일도 공개합니다. `CLAUDE.md`·`REVIEW.md`·`work/`·`docs/claude/`·`.sdlc/` 를 배포 제외 목록(`.vercelignore` 등)에 넣으십시오. `/sdlc:init --check` 가 루트의 `index.html` 과 호스트 설정(Vercel·Netlify·Cloudflare Pages·Firebase·GitHub Pages 의 Jekyll)을 보고 공개될 파일을 `public site` 경고로 알려 주지만, 제외 목록은 대신 고치지 않습니다.
+- **항목이 `held by another loop` 일 때** — 다른 클론이나 워크트리의 루프가 그 항목을 잡고 있습니다(로그의 `SKIP` 줄에 누가·어디서·언제). 그 루프가 끝나면 claim 이 풀리고, 루프가 죽었으면 `2 × loop.session_max_minutes` 뒤 넘겨받습니다. GitHub 에서 직접 지우려면 `git push origin --delete refs/sdlc/claims/<slug>` 입니다.
+- **`… on origin has commits this checkout does not have, and the other way round`** — origin 의 항목 브랜치와 이 체크아웃의 브랜치가 갈라졌습니다(사람이 PR 에 올린 커밋과 루프의 커밋). 그 브랜치에서 `git pull --no-rebase origin sdlc/<slug>` 로 합친 뒤 "다시 해봐"라고 하면 됩니다. `remote branch changed` 도 같은 뜻으로, push 직전에 누가 브랜치를 바꾼 경우입니다.
 - **로그** — `.sdlc/logs/` 아래 `run-<시각>.log`(루프가 한 일, 한 줄씩), `sessions/*.jsonl`(세션 전체 스트림), `events.jsonl`(감사 기록 — 세션 이벤트에 effort 와 그 이유, 이어 간 창인지가 들어 있고 이어 가기는 `loop.continue` 로 따로 남음), 백그라운드 루프의 표준 출력 `loop-*.out`. `.sdlc/logs/` 와 `.sdlc/state/` 는 git 에 올라가지 않습니다.
 
 ## 구조
@@ -279,7 +297,7 @@ plugins/sdlc/
 ├── agents/       sdlc-builder · sdlc-reviewer · sdlc-verifier · sdlc-simplifier · sdlc-researcher
 ├── scripts/      sdlc.py + sdlclib/ (엔진) · hooks/ · lib/ (훅, bash) · github-setup.sh · secret-scan.sh
 ├── templates/    en · ko (work.md, work-README.md, REVIEW.md, CLAUDE.sections.md) · config/
-└── evals/ · tests/   스킬 트리거 평가 5건 · hooks.sh · scripts.sh · py/ · run.sh
+└── evals/ · tests/   스킬 트리거 평가 7건 · hooks.sh · scripts.sh · py/ · run.sh
 ```
 
 엔진은 스킬이 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/sdlc.py" <명령>` 으로 부르므로 직접 칠 일이 드뭅니다. 터미널에서 쓰려면 설치본(`~/.claude/plugins/cache/ai-native-sdlc/sdlc/<버전>/scripts/sdlc.py`)을 저장소 안에서 실행합니다.
@@ -294,7 +312,7 @@ drop <slug> [이유]     기본 브랜치에 dropped 로 기록(팀은 사람이
 gate <slug> [--json] [--no-commands] · ship <slug>   머지 게이트만(--no-commands: 명령과 checks/ 는 건너뜀) · 게이트 후 머지, GitHub 이면 PR 체크를 기다림 (`/sdlc:go` 의 끝)
 ```
 
-테스트는 저장소 루트에서 `bash plugins/sdlc/tests/run.sh` 로 한꺼번에 돌립니다. 훅 매트릭스(`hooks.sh`), 구조·비밀 스캔 검사(`scripts.sh`), 엔진 단위 테스트(`py/`: 표준 라이브러리 `unittest` 에 가짜 `claude`·`gh`, 찾은 `python3` 마다 한 번씩), 그리고 `claude` CLI 가 있으면 `claude plugin validate` 가 차례로 돕니다. 스킬 설명이 자연스러운 요청에서 올바른 스킬을 부르는지는 트리거 평가로 봅니다(5건, 약 $0.25).
+테스트는 저장소 루트에서 `bash plugins/sdlc/tests/run.sh` 로 한꺼번에 돌립니다. 훅 매트릭스(`hooks.sh`), 구조·비밀 스캔 검사(`scripts.sh`), 엔진 단위 테스트(`py/`: 표준 라이브러리 `unittest` 에 가짜 `claude`·`gh`, 찾은 `python3` 마다 한 번씩), 그리고 `claude` CLI 가 있으면 `claude plugin validate` 가 차례로 돕니다. 스킬 설명이 자연스러운 요청에서 올바른 스킬을 부르는지, 그리고 "테스트 돌려줘" 같은 말에는 부르지 않는지는 트리거 평가로 봅니다(7건, 약 $0.40).
 
 ```bash
 claude plugin eval plugins/sdlc --scaffold --runs 1 --ablation none --model sonnet --no-publish --trust-plugin --max-cost-usd 1

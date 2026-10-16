@@ -278,9 +278,29 @@ These numbers shaped F5 and F6: the startup prompt is a real cost of every sessi
 - **Self-check proposals on GitHub.** `enqueue` does not pull while a loop runs in the checkout, so that it never moves the branch under the loop. That includes the loop itself, so the scan after the self-check missed the queue PR it had just merged. The loop now pulls before it counts what waits.
 - **Found, not changed.** A static site deployed from the repository root serves `CLAUDE.md`, `REVIEW.md`, `work/` and `.sdlc/config.json`. The plugin cannot tell how a repository is deployed, so the README says to keep these files out of the deployment.
 
+## 1.2 (2026-10-17)
+
+Branch `improve-1.2`. The user: "진짜 니가 놀랄정도로 완벽하게 만들어봐 그리고 이후에 지금 사용하고있는 프로젝트들에 다 적용시켜". So 1.2 is not a feature release. It is everything six independent audits of 1.1.2 could find, each finding reproduced by a script before it was fixed.
+
+**How it was found.** Six read-only audits ran in parallel, each on the strongest model, each in its own area: the gate and git plumbing, the loop, init (against throwaway clones of the user's repositories), the hooks (probe corpora), the skills against the code, and the transcripts of the real loop runs on two private web apps. One ledger collected every finding with a decision. Implementation went to six agents with disjoint files (plumbing, gate, init, hooks, skills, engine), and the engine came last because it uses the others' new APIs. Each diff was reviewed before it was applied.
+
+**Decisions**
+- **The review is enforced from the session log, not trusted from the doc.** A real build session on a private web app skipped the reviewer, wrote `validated=yes` and merged unattended. Text alone ("launch the reviewer") had been there. The engine now reads the `subagent_type` of every tool call in the build and fix streams. It accepts `Agent` and `Task`, because the tool was renamed. A build without an `sdlc-reviewer` call fails the gate as fixable, so the cure is a fix session that runs the review, not a person. `None` (an item built before 1.2, or an interactive ship) checks nothing: the interactive session reports to a user who watches.
+- **The design reference is recorded, with fallbacks that only get stricter.** First the engine's `design_sha`, if still an ancestor. Then the first `planned` commit. Then the doc as queued at the merge-base. Then a person. The first draft sent "no planned commit" straight to a person. That would also have stopped a design session that legitimately goes straight to `built`, which the engine allows. The queued doc catches what the rewrite was hiding: a squashed branch is held to the criteria the queue holds.
+- **Leases on the exact sha.** Plain `--force-with-lease` compares with the local remote-tracking ref, which a fetch moves. A loop that fetched after a person pushed would overwrite the person's commit with a clean conscience. The loop now remembers what it last saw (`remote_sha` in the item record) and leases on that. Before it works, it fast-forwards to origin's branch, so the normal case, a person adding a fix, is taken in rather than refused.
+- **Cross-clone claims are refs, not files.** The claim files work for worktrees, which share `.git`. Clones share only origin. A ref under `refs/sdlc/claims/` was tested on GitHub first: a second create with an empty lease was rejected as stale info, and a delete with a lease worked. It holds a commit of the empty tree whose message names only the git user, the checkout's folder and the time. The first draft carried the hostname and the absolute path, which any reader of a public repository could see. Stale after `2 × session_max_minutes`: one session can run that long and is renewed at each session start and every five minutes of a checks wait. When origin cannot be asked, the loop goes on without a claim and says so once: losing the loop to a flaky network is worse than a rare double take, which the leases then catch.
+- **Old branches: merge, and when that is wrong, start over.** A branch behind the default branch gets it merged before a session (hooks off, like `adopt_doc`). A conflict is the session's to solve, with the files named in its prompt. A `ready` item whose branch predates its doc is not merged: that branch is someone else's history (0.x, or a reused slug). It is kept as `sdlc-old/<slug>` and the item starts fresh, with a pointer to the old work.
+- **Stop reasons say what is true.** One stop line per run is what the user reads, so it is computed over what the run was asked to do. Each part names the items and says who must act.
+- **Fail closed in the gate.** A gate that cannot compute its diff used to see "no changes" and pass. Every check that reads git or manifests now runs under a guard that turns an exception into a reason for a person.
+- **Hooks: speed is safety.** A guard that times out blocks, because it fails closed. So the 43.7 s test-lock walk over 800 directories was a correctness bug, not a performance one. The deploy gate's false positives on read-only commands were the other half: a guard that blocks `gh pr create --body "…deploy…"` teaches people to switch it off.
+- **Interactive text moved out of the loop's prompt.** Every loop session loaded the go skill's interactive section, about 1.2k tokens it never used. It lives in `references/interactive.md` now.
+
+**What was not changed.** A pid file written before 1.2 has no start time, so it is still checked by pid alone; the next loop start rewrites it. Item state stays per checkout (see Known limitations).
+
 ## Known limitations
 
 These were found in the live trial and the D1 work (P7), and while building 1.1. None of them blocks the loop.
+- **Item state is per checkout.** `.sdlc/state/items.json` lives in each worktree, so failure counts, waits and the recorded design commit of a loop in another worktree are not seen here. The claim on origin and the claim files keep two loops off one item; the counts are not shared.
 - **No progress needs a baseline.** The check compares a stop with the previous stop, so the first window has nothing to compare with. With a very small turn cap, a window that only reads is normal. Two such windows in a row fail the phase. The default caps make this unlikely.
 - **`num_turns` is not the cap unit.** claude reports N + 1 turns for a window capped at N.
 - **Session logs are not pure JSONL.** claude may print a plain-text warning first: `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. In an untrusted workspace, loop sessions do not get the project's allow list. The engine's `--allowedTools` covers what they need.
@@ -348,3 +368,11 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
   - The REVIEW.md migration was also run in memory on the REVIEW.md files of five 0.x repositories. Each came out with the 1.x Compliance line and sections; nothing was written.
 - [x] 1.1.2 release: merge to main, push and update on the user's go-ahead
   - Released 2026-10-14 on the user's go-ahead: main fast-forwarded to the branch, pushed, and the plugin updated to 1.1.2 in both profiles.
+- [x] 1.2 built: six audits of 1.1.2 and the fixes for every finding (review enforced from the session log, exact-sha leases and sync with origin, claims on origin across clones, stale-branch catch-up, true stop reasons, fail-closed gate with a recorded design, init checks for 0.x workflow lines and public sites, faster and quieter hooks, skills and agents matched to the code), with tests and docs
+  - `tests/run.sh` parts pass:
+    - hooks 2620
+    - scripts 91
+    - engine 1238 tests on Python 3.12 and 3.9
+    - `plugin validate --strict` and the marketplace
+  - Trigger evals: 7 of 7 ($0.40).
+  - End-to-end on a scratch repository without a remote (real claude 2.1.301, this checkout's plugin through `loop.isolate_sessions`): two items designed, built, gated and merged, each build calling the reviewer agent (`review_seen` recorded), and a clean self-check, in 5 minutes for $1.47.

@@ -41,7 +41,7 @@ bash plugins/sdlc/tests/run.sh             # 훅 매트릭스 · 구조·비밀 
 |---|---|
 | [plugins/sdlc/README.md](plugins/sdlc/README.md) | 플러그인 사용 설명서: 설치·업데이트, 빠른 시작, 루프, 머지 게이트, 훅, 설정, 0.x 에서 올리기 |
 | [그림으로 보는 플레이북](https://freewisl.github.io/ai-native-sdlc/eli5.html) | 플레이북을 쉬운 말로 풀어 쓴 페이지 (원본 `docs/eli5.html`) |
-| [docs/redesign-1.0.md](docs/redesign-1.0.md) | 1.0 설계 기록: 사용법이 너무 복잡하다는 지적에서 스킬 19개를 4개로, 단계 파일을 작업 문서 한 장으로 줄인 과정, 그리고 1.1 의 결정(자동 effort·PR 체크 대기·세션 격리 등) |
+| [docs/redesign-1.0.md](docs/redesign-1.0.md) | 1.0 설계 기록: 사용법이 너무 복잡하다는 지적에서 스킬 19개를 4개로, 단계 파일을 작업 문서 한 장으로 줄인 과정, 1.1 의 결정(자동 effort·PR 체크 대기·세션 격리 등), 1.2 의 감사와 수정(리뷰 실행 강제·브랜치 덮어쓰기 방지·클론 간 claim 등) |
 | [plugins/sdlc/CHANGELOG.md](plugins/sdlc/CHANGELOG.md) | 변경 이력 |
 
 ## 저장소 구성

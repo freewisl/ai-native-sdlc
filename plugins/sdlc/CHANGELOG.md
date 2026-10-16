@@ -3,6 +3,124 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-17
+
+Release 1.2 comes from six audits of 1.1.2: the merge gate and git plumbing, the loop, init, the hooks, the skills against the code, and the transcripts of real loop runs on two private web apps. Every finding was reproduced with a script before it was fixed. The two that mattered most:
+- A real loop build session never called the reviewer agent, wrote `validated=yes` itself, and its change merged unattended.
+- A stale local branch could be force-pushed over commits a person had added to the item's pull request.
+
+New key: `check.public_site` (default `true`). Every other change keeps the existing settings.
+
+### Fixed — the loop
+- **The review must really run.** The engine reads each build and fix session's stream for an `Agent`/`Task` call to `sdlc-reviewer`. A build without one is a fixable gate failure, `the review did not run in a fresh context (no sdlc-reviewer subagent call in the build session) — run references/review.md steps 2–4 and record the tally`, so a fix session runs the review. Items built before 1.2 are not held to it. The go skill now says plainly that a loop build session is top level and launches the reviewer itself.
+- **Nothing on the item branch is overwritten.**
+  - Before it works on an item, the loop fast-forwards to origin's `sdlc/<slug>`, so a person's fix on a needs-human PR or a reviewer's commit on a team design PR comes in first.
+  - When both sides have commits the other lacks, the item goes to a person: `sdlc/<slug> on origin has commits this checkout does not have, and the other way round — merge them by hand, then retry`.
+  - Every push is leased on the exact commit the loop last saw on origin (none, for a new branch). A lost lease goes to a person as `remote branch changed: …`.
+  - A merge passes `--match-head-commit` with the pushed commit and is confirmed by PR number. Pull requests from forks are ignored, and an open PR wins over an old merged one with the same head name.
+- **Separate clones no longer take the same item.** On GitHub the loop holds an item with the ref `refs/sdlc/claims/<slug>` on origin. The push that creates it is leased on "no such ref", so one clone wins. The claim names only the git user, the checkout's folder and the time. It is renewed at each session and every five minutes while the loop waits for checks, released when the item is left, and taken over after `2 × loop.session_max_minutes` without renewal. A held item is skipped (`SKIP    <slug> — held by <user> in <folder> since <time>`). When origin cannot be asked, the loop warns once and goes on without a claim. Worktrees of one clone already used claim files; these are now created with `O_EXCL`, so of eight processes racing for one item exactly one wins.
+- **Old branches are brought up to date.**
+  - Before a design or build session, a branch behind the default branch gets the default branch merged in. On a conflict the merge is undone, and the session's prompt names the conflicting files and says to merge first.
+  - A `ready` item whose branch was cut before its work doc existed (0.x, or an earlier item of the same name) keeps that branch as `sdlc-old/<slug>` and starts again from the default branch. The design session is told where the earlier work is. The first push replaces origin's branch, leased on its old commit, and the log says so (`FRESH`, `REPLACE`).
+- **Run-end reasons are true.** They are computed over the `--items` selection when there is one:
+  - `queue empty`
+  - `selected items finished`, with ` · N other item(s) not selected` when the queue has more
+  - `nothing runnable — ` followed by `N wait for you (…)`, `N wait on other items (…)`, `N failed this run (…) — the next run retries them` and `N held by another loop (…)`, joined by `; `
+
+  An `--items` name that is no work doc refuses the start: `no work doc named x`.
+- **A network blip no longer stops the loop.** A failed fetch is `WARN    fetch failed: …; going on with what is here`, said once per run. The loop stops only when the default branch has really diverged from origin's.
+- **The self-check cleans up after itself.** Only new `work/*.md` files survive. Every other change the session made is undone: edits to existing work docs or `.sdlc/config.json`, staged files, and new files and directories (names read NUL-separated). An edited work doc used to stay behind and stop the next pass with "the working tree is not clean". A self-check that did not finish (usage limit, cap, error) is not counted, keeps its range for the next check, and sends a usage limit through the same handling as an item's session. `loop.self_check_max_items: 0` now means no `ready` findings; it used to mean three.
+- **Worktrees.** An item whose branch is checked out in another worktree is skipped for this pass (`SKIP    <slug> — checked out in <path>`) instead of stopping the run.
+- **Smaller loop fixes.**
+  - A PR-checks fix round is counted when its fix session returns, so a stop or a service error does not use one.
+  - A resumed fix session is told when its brief changed.
+  - Committing the work in progress no longer looks like progress to the no-progress check.
+  - No fix session starts after a stop was requested.
+  - A `resetsAt` in milliseconds is read correctly.
+  - An answer from `gh` in an unexpected shape fails that item with the traceback in the run log; it no longer ends the run.
+  - `sdlc.py stop` survives a pid it may not signal.
+  - A pid file now records the process start time, so a reused pid is not taken for the loop.
+  - A timeout kills the whole process group, so no child keeps running.
+
+### Fixed — the merge gate
+- **The design cannot be rewritten away.** The engine records the commit where the design phase ended. Criteria and `test_changes` are held to the doc there, if that commit is still on the branch. Otherwise they are held to the first commit where the doc says `planned`, then to the doc as it was queued. A branch with none of these goes to a person. Before, a session that squashed the branch onto a commit already saying `built` freed both.
+- **Fail closed.** A gate that cannot compute the diff, or a check that crashes on a manifest, hands the PR to a person (`the gate could not compute the diff: …`) instead of passing.
+- **Odd paths.** Paths are read NUL-separated with literal pathspecs. A path git would quote (Korean, spaces, quotes, `[`, `*`) used to skip every file check.
+- **The tree is always restored.** After the gate, however it ended (a command timeout included), the merge is aborted, tracked files go back to the branch head, and untracked files the gate made are removed.
+- **More goes to a person:**
+  - frozen paths (`.sdlc/frozen-paths.txt`) and `protect.generated_paths`, which the hooks guarded but the gate did not check;
+  - test-runner configuration (`conftest.py`, `pytest.ini`, jest/vitest/playwright/cypress configs, `karma.conf.*`, `.mocharc*`, `phpunit.xml*`), even with `test_changes: allowed`;
+  - changes to `package.json`'s `scripts.test` or to the pytest settings in `pyproject.toml`.
+- **Dependencies** are read from PEP 621, Poetry and dependency groups, `requirements*.txt` (also `-e` and `name @ url`), `setup.py`, `Pipfile`, `package.json` (also `bundleDependencies`), `Cargo.toml`, `go.mod` (not `// indirect`), Gradle and version catalogs, `pubspec.yaml`, `pom.xml`, `Package.swift`, `Podfile` and `Gemfile`. A version bump of a URL dependency is not new. Python names are compared normalized.
+- **Tests.**
+  - Skip markers are recognized for Python, Rust, Go, Ruby, PHP, Java/Kotlin, C#, Swift and JS.
+  - Rust `#[test]`, `#[tokio::test]` and Swift `func test…` count as test cases.
+  - A test file renamed to another test path is compared by counts. A test renamed to a non-test path counts as deleted.
+- **Work docs.** A byte-order mark before the front matter is accepted. `depends_on` written as a YAML block list is read. With two `## Review` sections, the last tally counts and the doc is reported.
+
+### Fixed — init
+- **0.x workflow lines.** A CLAUDE.md, AGENTS.md or project skill that still tells sessions to merge PRs themselves (`gh pr merge`), keep the queue in `intent/` or read `spec.md`/`plan.md` is named with file and line, as an init NOTE and a `--check` WARN. Init does not edit those lines. Meanwhile the hooks block `gh pr merge` during sdlc work.
+- **New `--check` rows:**
+  - `default branch`: FAIL when the branch exists neither here nor on origin, WARN when origin's default is another;
+  - `dependencies`: a `depends_on` naming no doc, or a cycle;
+  - `ignored files`: git ignores `.sdlc/config.json`, the work docs or REVIEW.md;
+  - `pause file`;
+  - `public site`.
+- **Public site.** A static host that serves the repository root would publish `CLAUDE.md`, `REVIEW.md`, `work/` and `.sdlc/`. The check reads a root `index.html` and the host's configuration: Vercel, Netlify, Cloudflare Pages, Firebase, and Jekyll on GitHub Pages. It names what would be served and stays quiet once the host's exclusion list covers it. `check.public_site: false` turns it off.
+- **`--prune`** also replaces the 0.x block of `.gitignore` (log and state lines are kept) and removes the unchanged 0.x `.github/CODEOWNERS` starter.
+- **Migration.**
+  - Dangling `depends_on` entries are dropped with a NOTE.
+  - `loop.max_items`/`max_minutes` are kept when they differ from the 0.x defaults.
+  - Migration refuses while the 0.x intent, spec or plan folders have uncommitted changes.
+  - Files that already had uncommitted changes are named.
+- **Detection.**
+  - A command the user set to `""` stays empty on a re-run.
+  - uv, poetry, `.venv` and `packageManager` are detected.
+  - Korean section names (`## 명령어`, `## 자주 쓰는 명령`) count as the user's own section.
+  - An app one folder down (`ios/`, `android/`) or a root Xcode project gets a `--commands` suggestion.
+  - Compound commands (`cd x && y`) get one permission per part.
+  - A `gh` that is logged in but does not answer is a WARN, not a FAIL.
+  - Deploy patterns equal to the defaults are not written out.
+- **Templates.** The CLAUDE.md sections and the work-dir README name the configured work dir. The tally rule reads `validated=<yes|no>`.
+
+### Fixed — hooks
+- **Deploy gate false positives.** Commands that only read no longer count as deploys: `gh pr create --body …`, `gh api`, `curl` reads, `ls`/`find`/`sed -n` on paths, `node -e`, `pytest -k`, prose in arguments, and `git commit` with `GIT_EDITOR=`. Piping into a shell (`… | bash`) is now checked. `vercel --prod`, alone or inside `bash -c`, is now blocked.
+- **Speed.** A writing command over a glob of 800 directories under the test lock took up to 43.7 s and hit the hook timeout, which blocked it. It now takes 0.2–0.5 s: one `git ls-tree` per prefix.
+- **Without jq** the python fallback read the payload from an environment variable and failed open on a large one (E2BIG). It now reads stdin, and unreadable JSON is blocked.
+- **Secret scan.**
+  - Patterns are case-sensitive, so base64 blobs are no longer secrets.
+  - It now finds unquoted values, `sk-proj-`, `sk_live_`, Slack webhooks, `npm_`, `ghs_`, encrypted private keys and `Bearer` tokens: 15 of 15 audit samples, where 1.1.2 found 2.
+  - A block names the file and line and the way out.
+- **Push and merge.**
+  - `git push origin HEAD` and `@` on the default branch are resolved.
+  - During sdlc work, `gh pr merge` and a push to the default branch are blocked whatever `protect.block_direct_push` says.
+- **Test lock.** It now sees `$(…)`, `bash <<EOF`, `bash -s`, `pushd`, and directory operands of `git checkout`/`restore`. The test-runner config files above are locked like tests.
+- **post-bash.** Failed commands are recorded too (`PostToolUseFailure`). A command counts as the verify command only when a simple command starts with it.
+- **Paths and messages.**
+  - A file outside the project is no longer matched against the project's globs or run through its formatter.
+  - Commit scope with `-a` is read correctly.
+  - On macOS, the session-start context adds one line about zsh and BSD tools.
+- **Globs.** A leading `/` or `./` roots a pattern. `**/dir/` and `src/*/x/` work. A string is accepted where a list is expected. Python and bash agree on all 19,722 pairs of the drift corpus.
+
+### Changed — skills and agents
+- `/sdlc:go`'s interactive steps moved to `references/interactive.md`, so loop sessions no longer load them (about 1.2k tokens each).
+- Sessions no longer park an item for a new dependency or a `risk.human` path the Plan can justify. The gate hands that PR to a person, who reads the Plan.
+- Build sessions run what the gate runs: `gate.commands` and `checks/`.
+- There is one rule for long commands: the longest foreground timeout, or a bounded background wait. This came from a 9.5-minute hang on `wc -l` padding in a real run.
+- Tracked files are changed with Edit/Write, and shell commands follow zsh/BSD habits.
+- Fix sessions re-review non-test code they changed beyond the failure. A command that already fails or flakes on the default branch is fixed or reported with `SDLC_FIX_BLOCKED`, not worked around. A fix that resolves another open doc drops it.
+- The self-check tells the reviewer that pre-existing means present at `<from>`, not on the default branch, which already holds the merged work.
+- The reviewer may run the project's build, test and lint commands.
+- `/sdlc:status` lists merges with a `manual` Proof row first and names the row.
+- Trigger words are narrower: "루프 돌려" and "루프 멈춰" for the run skill, and "좋아"/"별로" for status only as a reply about a merge. Two negative evals were added ("테스트 돌려줘", and "좋아" approving a design), and the negative evals run in an adopted repository.
+
+### Known limitations
+- Item state (`.sdlc/state/items.json`) is per checkout: a loop in another worktree keeps its own failure counts and waits.
+- A pid file written before 1.2 has no start time and is still checked by pid alone.
+
+### Migration
+Nothing needs migrating. Update the plugin everywhere it runs, then run `/sdlc:init --check` once per repository: it now reports 0.x workflow lines, a public site, a pause file and dangling dependencies.
+
 ## [1.1.2] - 2026-10-14
 
 Found in the first run on a real repository: a private web app with GitHub Actions and a Vercel deployment, moved from 0.x with `/sdlc:init`, then two items through `/sdlc:run`. Both merged after their pull requests' checks passed: 11 minutes and $2.79 with the self-check.

@@ -20,7 +20,7 @@ From the marketplace root (the directory that contains `plugins/`):
 
     claude plugin eval plugins/sdlc --scaffold --runs 1 --ablation none --model sonnet --no-publish --trust-plugin --max-cost-usd 1
 
-About $0.35 for the seven cases. Add `--case trigger-run` for one case or `--runs 3` to see flakiness.
+About $0.40 for the seven cases. Add `--case trigger-run` for one case or `--runs 3` to see flakiness.
 
 - `--ablation none`: the default also runs every case without the plugin, which can never call an sdlc skill; that doubles the cost and turns the Skill graders into indicators.
 - `--scaffold`: runs each case's `fixture.sh` (git init plus a minimal `.sdlc/config.json` in the run's temporary workspace); the cases that name one (`trigger-go` and the three `no-trigger-*`) carry the same copy. Without it they run in an empty directory and the CLI warns that the scaffold was skipped.
