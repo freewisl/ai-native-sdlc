@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: no-trigger-question
+description: A plain code question that shares words with the skills ("루프", "해줘") must call no sdlc skill, also in an adopted repository (fixture.sh, as trigger-go).
+tags: [trigger, negative]
+execution:
+  max_turns: 4
+  timeout_seconds: 120
+  allowed_tools: [Read, Glob, Grep, Skill]
+context:
+  scaffold_script: fixture.sh

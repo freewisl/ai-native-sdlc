@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: no-trigger-design-approval
+description: The reply "좋아" approving a design shown in the middle of /sdlc:go is not the rating of a merge — it must not call sdlc:status. Runs in the adopted repository of fixture.sh.
+tags: [trigger, negative]
+execution:
+  max_turns: 4
+  timeout_seconds: 120
+  allowed_tools: [Read, Glob, Grep, Skill]
+context:
+  scaffold_script: fixture.sh
