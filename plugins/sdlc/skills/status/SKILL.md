@@ -20,7 +20,7 @@ If the live data above is missing or an error, run `sdlc.py status` yourself (`-
 2. **Queue:** counts in plain words — ready = waits for design, planned = waits for build, built = at the gate, design in review and awaiting merge = a person, question, needs a person, blocked, done. `next:` is what the loop takes next.
 3. **Needs you:** one line per item — what happened and the exact reply that resolves it (table below). Nothing there: say nothing needs them.
 4. **Cost:** the line says `loop cost` — what the loop spent: today, 7 days, median per merged item. Sessions the user ran by hand (`/sdlc:go`) are not in it; say so when they ask about their total.
-5. **Recent merges**, and "worth a look": auto-merged changes nobody rated, with their PR or commit — ask for a verdict.
+5. **Recent merges**, and "worth a look": auto-merged changes nobody rated, with their PR or commit — ask for a verdict. Those with a `manual proof: R3 — …` row come first: nobody has run that check — ask the user to do it (the criterion and what to look at) before rating.
 6. One closing line with the next step: the loop is stopped while items can run → "루프 돌려"; the queue is empty → give me a goal.
 
 With a slug in the arguments, show that item alone: status, phase, what it waits for, failures and last error, cost, PR, and from its work doc (`git show sdlc/<slug>:<work dir>/<slug>.md`, else `<default>:<work dir>/<slug>.md`; the work dir is `paths.work`, default `work`) the Goal, the Review tally, Departures and Questions.

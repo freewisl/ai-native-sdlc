@@ -226,7 +226,12 @@ if sub == "list":
         if state != "ALL" and pr["state"] != state:
             continue
         out.append({f: pr.get(f) for f in fields})
-    out.sort(key=lambda p: -int(p.get("number") or 0))
+    def number(p):                                      # a db PR may hold a number that is no number: gh prints it as it is
+        try:
+            return int(p.get("number") or 0)
+        except (TypeError, ValueError):
+            return 0
+    out.sort(key=lambda p: -number(p))
     lim = int(opt("--limit") or 30)
     print(json.dumps(out[:lim]))
 elif sub == "view" and "--json" in args:

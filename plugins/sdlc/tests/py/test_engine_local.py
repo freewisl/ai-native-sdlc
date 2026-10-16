@@ -1764,7 +1764,7 @@ class Detach(RepoCase):
         self.repo.add_items(("a-idea", {"status": "proposed"}))
         r = self.detach()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("nothing to do: nothing runnable — 1 item(s) wait for you", r.stdout)
+        self.assertIn("nothing to do: nothing runnable — 1 wait for you (a-idea)", r.stdout)
         self.assertNotIn("loop started", r.stdout)
 
     def test_a_pause_shows_the_loops_own_line_and_fails(self):
@@ -1866,7 +1866,7 @@ class SelfCheck(RepoCase):
         self.repo.scenario({"selfcheck_docs": [{"slug": "old-debt", "status": "proposed"},
                                                {"slug": "more-debt", "status": "proposed"}]})
         self.assertEqual(self.repo.engine().run(), 0)
-        self.assertIn("stop=nothing runnable — 2 item(s) wait for you", latest_run_log(self.repo))
+        self.assertIn("stop=nothing runnable — 2 wait for you (more-debt, old-debt)", latest_run_log(self.repo))
         self.assertEqual(self.repo.status_of("old-debt"), "proposed")
 
     def test_findings_that_are_only_proposed_are_committed_as_a_proposal(self):
@@ -2253,7 +2253,8 @@ class RefusedStart(RepoCase):
 
 class Adoption(RepoCase):
     """A branch sdlc/<slug> that 0.x (or a person) made before the item had a work doc gets the doc when the engine checks
-    the item out — committed on the branch — and the item then goes through design, build, gate and merge like any other."""
+    the item out — committed on the branch — for an item that is already `planned`, and the item then goes through build, gate
+    and merge like any other."""
 
     def zero_x_branch(self, slug="a-first", files=None):
         """sdlc/<slug> cut from main as it is now, with what 0.x left on it, then back to main."""
@@ -2264,9 +2265,17 @@ class Adoption(RepoCase):
         self.repo.git("commit", "-q", "-m", "plan %s" % slug)
         self.repo.git("checkout", "-q", "main")
 
+    def planned(self):
+        """The item as a design session leaves it on main: planned, with its Plan and Proof. (A `ready` item with such a branch
+        starts again from main instead: `FreshStart` in test_engine_more.)"""
+        self.repo.write("work/a-first.md", self.repo.doc_text("a-first", status="planned") +
+                        "\n## Plan\n1. Write src/a-first.txt.\n\n## Proof\n| R | check | kind |\n|---|---|---|\n| R1 | test command | auto |\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-q", "-m", "queue")
+
     def test_the_checkout_commits_the_default_branchs_doc_on_the_branch(self):
         self.zero_x_branch()
-        self.repo.add_items("a-first")
+        self.planned()
         self.assertIsNone(self.repo.show("sdlc/a-first", "work/a-first.md"))
         e = self.repo.engine()
         e.checkout_item("a-first")
@@ -2282,9 +2291,9 @@ class Adoption(RepoCase):
 
     def test_the_item_then_completes_without_a_fix_session(self):
         self.zero_x_branch()
-        self.repo.add_items("a-first")
+        self.planned()
         self.assertEqual(self.repo.engine().run(), 0)
-        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build"])      # no conflict, no fix round
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:build"])      # no conflict, no fix round
         self.assertEqual(self.repo.status_of("a-first"), "done")
         self.assertEqual(self.repo.show("main", "src/a-first.txt"), "built a-first\n")
         self.assertIn("## Plan", self.repo.show("main", "work/a-first.md"))
@@ -2294,12 +2303,12 @@ class Adoption(RepoCase):
 
     def test_the_doc_is_taken_even_when_the_default_branch_moved_on_after_the_branch_was_cut(self):
         self.zero_x_branch()
-        self.repo.add_items("a-first")
+        self.planned()
         self.repo.write("src/other.txt", "work that landed on main meanwhile\n")
         self.repo.git("add", "-A")
         self.repo.git("commit", "-q", "-m", "other work")
         self.assertEqual(self.repo.engine().run(), 0)
-        self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build"])
+        self.assertEqual([k for k, *_ in self.keys()], ["a-first:build"])
         self.assertEqual(self.repo.status_of("a-first"), "done")
         self.assertEqual(self.repo.show("main", "src/other.txt"), "work that landed on main meanwhile\n")
 
@@ -2320,7 +2329,7 @@ class Adoption(RepoCase):
         self.repo.write("src/x.txt", "main's version\n")
         self.repo.git("add", "-A")
         self.repo.git("commit", "-q", "-m", "main changes the same file")
-        self.repo.add_items("a-first")
+        self.planned()
         self.repo.engine().checkout_item("a-first")
         self.assertEqual(self.repo.git("rev-parse", "--abbrev-ref", "HEAD"), "sdlc/a-first")
         self.assertFalse(os.path.exists(self.repo.path(".git/MERGE_HEAD")))
@@ -2360,7 +2369,10 @@ class AdoptionOnRemote(RepoCase):
         r.git("push", "-q", "origin", "sdlc/a-first")
         r.git("checkout", "-q", "main")
         r.git("branch", "-q", "-D", "sdlc/a-first")
-        r.add_items("a-first")                                                   # committed on main and pushed
+        r.write("work/a-first.md", r.doc_text("a-first", status="planned"))      # committed on main and pushed
+        r.git("add", "-A")
+        r.git("commit", "-q", "-m", "queue")
+        r.git("push", "-q", "origin", "main")
         self.assertIsNone(r.origin_show("sdlc/a-first", "work/a-first.md"))
         r.engine().checkout_item("a-first")
         self.assertEqual(r.git("rev-parse", "--abbrev-ref", "HEAD"), "sdlc/a-first")

@@ -29,11 +29,23 @@ class EnqueueError(Exception):
     pass
 
 
+def parked(git: Git) -> Dict[str, str]:
+    """The docs waiting in the inbox while a loop runs here — {slug: path}. They are on the queue as far as a later `enqueue`
+    is concerned: the loop commits them between items."""
+    inbox = os.path.join(git.root, INBOX_REL)
+    try:
+        return {n[:-3]: os.path.join(inbox, n) for n in sorted(os.listdir(inbox)) if n.endswith(".md")}
+    except OSError:
+        return {}
+
+
 def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = "") -> List[WorkDoc]:
     """Load and check the docs; fill in created/source; refuse what would break the queue."""
     docs: List[WorkDoc] = []
     errors: List[str] = []
     work = cfg.rel("work")
+    waiting_in_inbox = parked(git)
+    here = {os.path.abspath(p) for p in paths}
     for p in paths:
         d = WorkDoc.load(p)
         if d is None:
@@ -48,6 +60,14 @@ def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = ""
         replaces = leaving or (committed is not None and _accepts(committed, d))      # the two steps that may replace a doc
         if committed is not None and committed.strip() != (read_text(p) or "").strip() and not replaces:
             errs.append("work/%s.md is already on %s — pick another slug" % (d.slug, base))
+        if committed is None:                       # a new item: whatever branch the slug has belongs to somebody else's work
+            b = "sdlc/" + d.slug
+            if git.branch_exists(b) or git.remote_branch_exists(b):
+                errs.append("a branch %s already exists — pick another slug or delete the branch" % b)
+        parked_at = waiting_in_inbox.get(d.slug)
+        if parked_at and os.path.abspath(parked_at) not in here:
+            errs.append("work/%s.md is already waiting in the inbox (the running loop commits it between items) — pick "
+                        "another slug" % d.slug)
         if "slug" not in d.meta:
             d.meta["slug"] = d.slug
         if not d.created:
@@ -63,7 +83,7 @@ def prepare(cfg: Config, git: Git, base: str, paths: List[str], source: str = ""
     staying = [d for d in docs if d.status != "dropped"]        # an item leaving the queue waits for nothing
     for d in staying:
         for dep in d.depends_on:
-            if dep not in known and git.show(base, "%s/%s.md" % (work, dep)) is None:
+            if dep not in known and dep not in waiting_in_inbox and git.show(base, "%s/%s.md" % (work, dep)) is None:
                 errors.append("%s: depends_on '%s' — no such work doc" % (d.slug, dep))
     cyc = _cycle({d.slug: d.depends_on for d in staying})
     if cyc:
@@ -357,11 +377,21 @@ def drain_inbox(cfg: Config, git: Git, forge: Forge) -> List[str]:
 
 
 def new_docs(cfg: Config, git: Git) -> List[str]:
-    """Untracked or modified work docs in the working tree (`enqueue --new`)."""
+    """Untracked or modified work docs in the working tree (`enqueue --new`). A doc that was deleted there — tidying up a
+    finished one — is no new doc. Read NUL-separated (`XY path`; a rename or copy is followed by its source path)."""
     work = cfg.rel("work")
     out = []
-    for line in git("status", "--porcelain", "--untracked-files=all", "--", work + "/").out.splitlines():
-        path = line[3:].strip().strip('"')
+    entries = git("status", "--porcelain", "-z", "--untracked-files=all", "--", work + "/").out.split("\0")
+    i = 0
+    while i < len(entries):
+        entry, i = entries[i], i + 1
+        if len(entry) < 4:
+            continue
+        if entry[0] in "RC" or entry[1] in "RC":
+            i += 1
+        path = entry[3:]
+        if "D" in entry[:2] or not os.path.isfile(os.path.join(git.root, path)):
+            continue
         if re.search(r"\.md$", path) and os.path.basename(path) not in ("README.md", "TEMPLATE.md"):
             out.append(os.path.join(git.root, path))
     return sorted(out)

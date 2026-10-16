@@ -12,6 +12,15 @@ session id accumulates across resumes in $STUB_CLAUDE_STATE, like the real total
 Actions beyond the obvious ones (`<name>[:<text after the colon>]`): `fix_blocked:<why>` is a fix session that cannot fix it — it
 writes <why> under Departures, commits that, and prints `SDLC_FIX_BLOCKED <why>` instead of SDLC_FIXED (no text: the bare marker);
 `fix_blocked_dirty:<why>` the same with the note left uncommitted in the tree.
+
+A build session calls the reviewer subagent (an `assistant` event with a `tool_use` of `Agent`, input `subagent_type:
+"sdlc:sdlc-reviewer"`) unless the action says it does not: `no_review` is a build that skips the review and writes the tally
+anyway. A fix session calls it when its brief says the review did not run in a fresh context (what references/fix.md has it do),
+or always with `fix_review`. `subagent:<type>[:<tool name>]` is a build that calls that subagent instead of the reviewer, by the
+tool's name (`Agent` by default, `Task` as an older Claude Code calls it). A self-check session writes the files of the scenario's
+`selfcheck_write` ({path: text}), stages the ones in `selfcheck_stage` and changes the ones in `selfcheck_touch` (paths of
+tracked files), besides the work docs of `selfcheck_docs`; `max_turns` in that phase leaves the same behind.
+`person_push[:<file>]` is a build, and somebody else pushing a commit to origin's sdlc/<slug> while it ran.
 """
 import json
 import os
@@ -19,6 +28,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 args = sys.argv[1:]
@@ -144,7 +154,19 @@ def design():
     commit("design %s" % slug)
 
 
-def build(important=0, tally=True, extra=None):
+def call_subagent(kind, tool="Agent"):
+    """What a session's stream shows when it calls a subagent: an `assistant` event whose message has a tool_use block."""
+    emit({"type": "assistant", "session_id": sid, "message": {"id": "msg_stub", "role": "assistant", "content": [
+        {"type": "text", "text": "calling the subagent"},
+        {"type": "tool_use", "id": "toolu_stub", "name": tool, "input": {"description": "stub", "subagent_type": kind,
+                                                                           "prompt": "do it"}}]}})
+
+
+def build(important=0, tally=True, extra=None, review=True, agent=None):
+    if agent:
+        call_subagent(*agent)
+    elif review:
+        call_subagent("sdlc:sdlc-reviewer")
     os.makedirs("src", exist_ok=True)
     with open(os.path.join("src", slug + ".txt"), "w") as fh:
         fh.write("built %s\n" % slug)
@@ -157,7 +179,11 @@ def build(important=0, tally=True, extra=None):
     commit("build %s" % slug)
 
 
-def fix():
+def fix(review=None):
+    if review is None:
+        review = "did not run in a fresh context" in prompt
+    if review:
+        call_subagent("sdlc:sdlc-reviewer")
     if "conflicts" in prompt:
         base = re.search(r"`git merge (\S+)` conflicts", prompt).group(1)
         git("merge", "-q", "-X", "ours", "--no-edit", base)
@@ -233,6 +259,23 @@ def write_raw(path, text):
         fh.write(text)
 
 
+def selfcheck_work(n):
+    """What a self-check session leaves in the tree (the first one only): files from `selfcheck_write` ({path: text}), the
+    staging of `selfcheck_stage` (paths), changes to the tracked files of `selfcheck_touch`, the work docs of `selfcheck_docs`."""
+    if n != 0:
+        return
+    for path, text in scen.get("selfcheck_write", {}).items():
+        write_raw(path, text)
+    for path in scen.get("selfcheck_stage", []):
+        git("add", "--", path)
+    for path in scen.get("selfcheck_touch", []):
+        touch_file(path)
+    for d in scen.get("selfcheck_docs", []):
+        with open(os.path.join("work", d["slug"] + ".md"), "w") as fh:
+            fh.write("---\nslug: %s\ntitle: %s\nstatus: %s\n---\n\n## Goal\n%s\n" % (
+                d["slug"], d.get("title", d["slug"]), d.get("status", "ready"), d.get("goal", "Fix a finding.")))
+
+
 if name == "sleep":
     signal.signal(signal.SIGINT, on_sigint)
     time.sleep(float(param or 30))
@@ -253,15 +296,14 @@ if name in ("ok", "no_plugin"):
         fix()
         result("SDLC_FIXED")
     elif phase == "self-check":
-        for d in scen.get("selfcheck_docs", []) if n == 0 else []:
-            with open(os.path.join("work", d["slug"] + ".md"), "w") as fh:
-                fh.write("---\nslug: %s\ntitle: %s\nstatus: %s\n---\n\n## Goal\n%s\n" % (
-                    d["slug"], d.get("title", d["slug"]), d.get("status", "ready"), d.get("goal", "Fix a finding.")))
+        selfcheck_work(n)
         result("SDLC_SELFCHECK items=%d" % (len(scen.get("selfcheck_docs", [])) if n == 0 else 0))
     else:
         result("ok")
 elif name in ("max_turns", "max_budget"):
     # the two caps that stop a session with its work resumable: the turn cap and the spend cap (--max-budget-usd)
+    if phase == "self-check":                            # a self-check cut short has written what it had by then
+        selfcheck_work(n)
     os.makedirs("src", exist_ok=True)
     with open(os.path.join("src", "%s-partial-%d.txt" % (slug, n)), "w") as fh:
         fh.write("partial\n")
@@ -336,6 +378,36 @@ elif name == "fail_gate":
     result("SDLC_BUILT %s" % slug)
 elif name == "important":
     build(important=1)
+    result("SDLC_BUILT %s" % slug)
+elif name == "no_review":
+    build(review=False)
+    result("SDLC_BUILT %s" % slug)
+elif name == "subagent":
+    kind, tool = param, "Agent"                  # the type has a colon in it (`sdlc:sdlc-reviewer`): a trailing tool name is cut off
+    head, _, last = param.rpartition(":")
+    if last in ("Agent", "Task"):
+        kind, tool = head, last
+    build(agent=(kind, tool))
+    result("SDLC_BUILT %s" % slug)
+elif name == "fix_review":
+    fix(review=True)
+    result("SDLC_FIXED")
+elif name == "person_push":
+    build()
+    # somebody else pushes a commit to origin's sdlc/<slug> while the session runs: from a clone of their own, on top of the
+    # branch when origin has it, else on a branch cut from main
+    origin = git("remote", "get-url", "origin").stdout.strip()
+    work_dir = tempfile.mkdtemp(prefix="stub-person-")
+    clone = os.path.join(work_dir, "c")
+    br = "sdlc/" + slug
+    subprocess.run(["git", "clone", "-q", origin, clone], capture_output=True)
+    has = subprocess.run(["git", "-C", clone, "ls-remote", "--exit-code", "--heads", "origin", br], capture_output=True).returncode == 0
+    subprocess.run(["git", "-C", clone, "checkout", "-q"] + (["-B", br, "origin/" + br] if has else ["-b", br]), capture_output=True)
+    with open(os.path.join(clone, param or "PERSON.txt"), "w") as fh:
+        fh.write("a person's commit\n")
+    subprocess.run(["git", "-C", clone, "add", "-A"], capture_output=True)
+    subprocess.run(["git", "-C", clone, "commit", "-q", "-m", "PERSON: a fix"], capture_output=True)
+    subprocess.run(["git", "-C", clone, "push", "-q", "origin", "HEAD:refs/heads/" + br], capture_output=True)
     result("SDLC_BUILT %s" % slug)
 elif name == "no_tally":
     build(tally=False)

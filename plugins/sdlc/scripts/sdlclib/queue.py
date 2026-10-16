@@ -126,7 +126,8 @@ def phase_of(it: Item, team: bool, max_failures: int) -> str:
 
 def scan(cfg: Config, git: Git, base: str, records: Dict[str, Dict[str, object]]) -> Dict[str, Item]:
     work = cfg.rel("work")
-    names = [n for n in git.out("ls-tree", "--name-only", base, "--", work + "/").splitlines()
+    listed = git("ls-tree", "-z", "--name-only", base, "--", work + "/")        # NUL-separated: a name git would quote is the name
+    names = [n for n in (listed.out.split("\0") if listed.ok else [])
              if n.endswith(".md") and n.rsplit("/", 1)[-1] not in ("README.md", "TEMPLATE.md")]
     blobs = read_blobs(git, ["%s:%s" % (base, n) for n in names])
     items: Dict[str, Item] = {}

@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import statistics
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import state as st
 from .config import Config
@@ -14,6 +14,7 @@ from .events import read_events
 from .gitops import Git, make_forge
 from .queue import Item, counts, runnable, scan
 from .util import epoch, parse_iso, read_json
+from .workdoc import WorkDoc
 
 SESSION_PHASES = ("design", "build", "fix", "self-check")      # the phases a claude session runs in (the gate, the merge do not)
 
@@ -36,10 +37,31 @@ def _first_lines(text: str, n: int = 3) -> List[str]:
     return [l.strip() for l in (text or "").splitlines() if l.strip()][:n]
 
 
+LINE_CAP = 160        # characters of a "needs you" line or a manual-proof note
+
+
+def one_line(text: object, cap: int = LINE_CAP) -> str:
+    """`text` on one line: every run of whitespace (a newline included) is one space, cut at `cap` characters with an ellipsis."""
+    t = " ".join(str(text if text is not None else "").split())
+    return t if len(t) <= cap else t[:cap - 1].rstrip() + "…"
+
+
+def manual_proof(doc: Optional[WorkDoc]) -> List[str]:
+    """The rows of the doc's Proof table whose kind is `manual` — what only a person can check — as `R3 — <first 80 characters
+    of how>`."""
+    out: List[str] = []
+    for line in (doc.section("Proof") if doc is not None else "").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")] if line.strip().startswith("|") else []
+        if len(cells) >= 3 and cells[-1].strip("`*_ ").lower() == "manual" and cells[0].lower() != "r" and not set(cells[0]) <= set("-: "):
+            out.append("%s — %s" % (cells[0], one_line(cells[1], 80)))
+    return out
+
+
 def collect(root: str) -> Dict[str, Any]:
     cfg = Config(root)
     git = Git(root)
     default = cfg.default_branch
+    forge = make_forge(git, default, str(cfg.get("loop.forge", "auto")))      # it says whether changes are measured against origin's
     base = git.base_ref(default)
     records = st.load_items(root)
     items = scan(cfg, git, base, records)
@@ -62,14 +84,14 @@ def collect(root: str) -> Dict[str, Any]:
     out["loop"]["refused_ago"] = _ago(str(loop["refused_at"])) if refused else ""
     out["counts"] = counts(items)
     out["next"] = [it.slug for it in runnable(items)][:5]
-    out["needs_you"] = needs_you(items, local=make_forge(git, default, str(cfg.get("loop.forge", "auto"))).kind == "local")
+    out["needs_you"] = needs_you(items, local=forge.kind == "local")
     out["items"] = [it.as_dict() for it in sorted(items.values(), key=lambda i: (i.created or "9999", i.slug))]
     out["cost"] = costs(root)
     merges = [e for e in read_events(root, "loop.merge")]
     out["recent_merges"] = [{"slug": (e.get("detail") or {}).get("slug", ""), "title": e.get("reason", ""),
                              "pr": (e.get("detail") or {}).get("pr", ""), "ago": _ago(e.get("ts", "")),
                              "cost_usd": (e.get("detail") or {}).get("cost_usd", 0)} for e in merges[-5:]][::-1]
-    out["review_sample"] = review_sample(root, cfg, merges)
+    out["review_sample"] = review_sample(root, cfg, merges, git, base)
     return out
 
 
@@ -81,9 +103,10 @@ def needs_you(items: Dict[str, Item], local: bool = False) -> List[Dict[str, Any
         d = it.branch_doc or it.doc
         base = {"slug": it.slug, "title": it.title, "pr": it.rec.get("pr", "")}
         if it.phase == "needs-input":
-            out.append(dict(base, kind="question", text=_first_lines(d.section("Questions") if d else "", 8)))
+            out.append(dict(base, kind="question", text=[one_line(l) for l in _first_lines(d.section("Questions") if d else "", 8)]))
         elif it.phase == "needs-human":
-            entry = dict(base, kind="human", text=[str(r) for r in it.rec.get("reasons") or []])
+            reasons = it.rec.get("reasons")
+            entry = dict(base, kind="human", text=[one_line(r) for r in (reasons if isinstance(reasons, list) else [reasons] if reasons else [])])
             if local and it.branch:
                 entry["accept"] = "git merge sdlc/%s" % it.slug
             out.append(entry)
@@ -92,11 +115,11 @@ def needs_you(items: Dict[str, Item], local: bool = False) -> List[Dict[str, Any
         elif it.phase == "awaiting-merge":
             out.append(dict(base, kind="merge", text=["gate passed — merge the PR"]))
         elif it.phase == "blocked":
-            out.append(dict(base, kind="blocked", text=["failed %s times: %s" % (it.rec.get("failures"), it.rec.get("last_error", ""))]))
+            out.append(dict(base, kind="blocked", text=[one_line("failed %s times: %s" % (it.rec.get("failures"), it.rec.get("last_error", "")))]))
         elif it.phase == "proposed":
-            out.append(dict(base, kind="proposed", text=_first_lines(d.section("Goal") if d else "", 2)))
+            out.append(dict(base, kind="proposed", text=[one_line(it.title)]))       # the title says what it is; the Goal's first lines may be a template hint
         elif it.wait_kind == "human":
-            out.append(dict(base, kind="dependency", text=[it.wait]))
+            out.append(dict(base, kind="dependency", text=[one_line(it.wait)]))
     return out
 
 
@@ -125,8 +148,10 @@ def costs(root: str) -> Dict[str, Any]:
             "median_per_merged_usd": round(statistics.median(vals), 2) if vals else None, "merged_items_counted": len(vals)}
 
 
-def review_sample(root: str, cfg: Config, merges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Auto-merged changes from the last 7 days nobody rated yet — the costliest first (more turns, more risk)."""
+def review_sample(root: str, cfg: Config, merges: List[Dict[str, Any]], git: Optional[Git] = None,
+                  base: str = "") -> List[Dict[str, Any]]:
+    """Auto-merged changes from the last 7 days nobody rated yet. Those with a `manual` row in their Proof — the one thing the gate
+    could not run, so nobody has seen it work — come first, named; then the rest, the costliest first (more turns, more risk)."""
     rated = read_json(os.path.join(root, st.RATINGS_REL), {}) or {}
     n = int(cfg.get("review.sample_per_week", 3) or 0)
     if n <= 0:
@@ -139,9 +164,12 @@ def review_sample(root: str, cfg: Config, merges: List[Dict[str, Any]]) -> List[
             continue
         if det.get("slug") in rated:
             continue
-        recent.append({"slug": det.get("slug", ""), "title": e.get("reason", ""), "pr": det.get("pr", ""),
-                       "sha": det.get("sha", ""), "ago": _ago(e.get("ts", "")), "cost_usd": det.get("cost_usd", 0)})
-    recent.sort(key=lambda r: -float(r.get("cost_usd") or 0))
+        slug = det.get("slug", "")
+        text = git.show(base, "%s/%s.md" % (cfg.rel("work"), slug)) if git is not None and base and slug else None
+        recent.append({"slug": slug, "title": e.get("reason", ""), "pr": det.get("pr", ""),
+                       "sha": det.get("sha", ""), "ago": _ago(e.get("ts", "")), "cost_usd": det.get("cost_usd", 0),
+                       "manual_proof": manual_proof(WorkDoc.parse(text)) if text is not None else []})
+    recent.sort(key=lambda r: (not r["manual_proof"], -float(r.get("cost_usd") or 0)))
     return recent[:n]
 
 
@@ -194,6 +222,12 @@ def render(s: Dict[str, Any]) -> str:
     if s["recent_merges"]:
         L.append("merged lately: " + ", ".join("%s (%s ago)" % (m["slug"], m["ago"]) for m in s["recent_merges"]))
     if s["review_sample"]:
-        L.append("worth a look (auto-merged, not rated): " + ", ".join(
-            "%s %s" % (r["slug"], r["pr"] or r["sha"][:10]) for r in s["review_sample"]))
+        def sampled(r: Dict[str, Any]) -> str:
+            line = "%s %s" % (r["slug"], r["pr"] or r["sha"][:10])
+            manual = r.get("manual_proof") or []
+            if manual:
+                line += " (%s%s)" % ("; ".join("manual proof: " + m for m in manual[:3]),
+                                     "; +%d more" % (len(manual) - 3) if len(manual) > 3 else "")
+            return line
+        L.append("worth a look (auto-merged, not rated): " + ", ".join(sampled(r) for r in s["review_sample"]))
     return "\n".join(L)

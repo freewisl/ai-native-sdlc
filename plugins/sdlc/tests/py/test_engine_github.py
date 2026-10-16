@@ -419,7 +419,7 @@ class SelfCheck(RepoCase):
         self.repo.scenario({"selfcheck_docs": [{"slug": "old-debt", "status": "proposed"},
                                                {"slug": "more-debt", "status": "proposed"}]})
         log = self.run_engine()
-        self.assertIn("stop=nothing runnable — 2 item(s) wait for you", log)
+        self.assertIn("stop=nothing runnable — 2 wait for you (more-debt, old-debt)", log)
         self.assertNotIn("stop=queue empty", log)
         self.assertEqual(self.repo.git("rev-parse", "main"), self.remote_head())
         self.assertEqual(self.repo.git("rev-parse", "origin/main"), self.remote_head())
@@ -437,7 +437,7 @@ class SelfCheck(RepoCase):
         self.assertEqual(self.repo.status_of("old-debt"), "proposed")
         self.assertEqual([(p["head"], p["state"]) for p in self.repo.gh_db()["prs"] if p["head"] == "sdlc/fix-one"],
                          [("sdlc/fix-one", "MERGED")])
-        self.assertIn("stop=nothing runnable — 1 item(s) wait for you", log)
+        self.assertIn("stop=nothing runnable — 1 wait for you (old-debt)", log)
         self.assertEqual(self.repo.git("rev-parse", "main"), self.remote_head())
 
     def test_a_check_that_found_nothing_changes_nothing(self):
@@ -967,7 +967,7 @@ class PrChecks(ChecksBase):
         self.assertEqual(len(seen), 1)
         s = seen[0]
         self.assertEqual((s["status"], s["subject"]), ("built", "sdlc(a-first): PR checks failed — back to built"))
-        self.assertEqual((s["ci_rounds"], s["round"]), (1, 1))
+        self.assertEqual((s["ci_rounds"], s["round"]), (None, 1))                                      # counted when the session is over, not before
         brief = s["extra"]
         self.assertTrue(brief.startswith("The PR's checks failed on GitHub after the shell gate had passed (they run on GitHub, not here):\n"))
         self.assertIn("- `build` (workflow CI) — " + run_link(100) + "\n", brief)
@@ -1066,7 +1066,7 @@ class PrChecks(ChecksBase):
         self.assertEqual(e2.run(), 0)
         self.assertEqual([k for k, *_ in self.keys()], ["a-first:design", "a-first:build", "a-first:fix"])
         (s,) = seen
-        self.assertEqual((s["ci_rounds"], s["round"]), (1, 1))                                         # the first fix round, not the second
+        self.assertEqual((s["ci_rounds"], s["round"]), (None, 1))                                      # the first fix round, not the second
         self.assertIn("\n".join(failed_job_log("build")[1][-4:]), self.fix_prompts()[0])               # with the log that was not there before
         self.assertEqual([g["decision"] for g in self.events("loop.gate")], ["pass", "pass", "pass"])  # before the stop, after it, after the fix
         self.assertEqual([c["decision"] for c in self.events("loop.checks")], ["fail", "fail", "pass"])

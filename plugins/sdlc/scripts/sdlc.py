@@ -56,6 +56,9 @@ def cmd_run(a: argparse.Namespace) -> int:
 SETTLE_SECONDS = 2.0      # a loop with nothing to do (empty queue, a pause) is gone this soon after it registered
 START_SECONDS = 20.0      # the longest a loop that has not registered yet (gh login check) is waited for
 STATUS_FETCH_SECONDS = 10.0   # the longest `status` waits for the remote before it shows what it has
+# how a run that simply had nothing more to do says so (engine.end_reason): the queue is empty, the selected items are finished
+# (`--items`), or what is left waits for somebody
+CLEAN_ENDS = ("queue empty", "selected items finished", "nothing runnable")
 DONE_LINE = re.compile(r"^== done +merged=(\d+) awaiting=(\d+) parked=(\d+) needs_human=(\d+) failed=(\d+) "
                        r"stop=(.*?) \(\d+ min, \$[\d.]+\)\s*$", re.M)
 
@@ -99,7 +102,7 @@ def ended_at_once(log: str, rc: int) -> int:
     last = None
     for last in DONE_LINE.finditer(text):
         pass
-    if rc == 0 and last and (last.group(6) == "queue empty" or last.group(6).startswith("nothing runnable")):
+    if rc == 0 and last and last.group(6).startswith(CLEAN_ENDS):
         if not any(int(n) for n in last.groups()[:5]):
             print("nothing to do: %s — no loop is running (sdlc.py status shows the queue)" % last.group(6))
         else:                                       # a quick queue: it did its work before detach() looked
@@ -190,7 +193,17 @@ def cmd_stop(a: argparse.Namespace) -> int:
     if not pid:
         print("the loop is not running")
         return 0
-    os.kill(pid, signal.SIGTERM)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        print("the loop (pid %d) is gone already" % pid)
+        return 0
+    except PermissionError:
+        eprint("cannot signal the loop (pid %d): it belongs to another user — stop it from that account" % pid)
+        return 1
+    except OSError as e:
+        eprint("cannot signal the loop (pid %d): %s" % (pid, e))
+        return 1
     print("stopping the loop (pid %d): the current session is asked to stop and recorded, so `resume` continues it" % pid)
     for _ in range(120):
         time.sleep(0.5)
@@ -211,10 +224,8 @@ def cmd_resume(a: argparse.Namespace) -> int:
 
 
 def _find_item(root: str, slug: str):
-    from sdlclib.gitops import Git
     from sdlclib.queue import scan
-    cfg = Config(root)
-    git = Git(root)
+    cfg, git, _ = _forge_and_git(root)                # the forge says whether changes are measured against origin's branch
     items = scan(cfg, git, git.base_ref(cfg.default_branch), st.load_items(root))
     return cfg, git, items.get(slug)
 
@@ -295,9 +306,8 @@ def cmd_rate(a: argparse.Namespace) -> int:
 
 def cmd_gate(a: argparse.Namespace) -> int:
     from sdlclib.gate import run_gate
-    from sdlclib.gitops import Git, dirty_summary
-    cfg = Config(a.root)
-    git = Git(a.root)
+    from sdlclib.gitops import dirty_summary
+    cfg, git, _ = _forge_and_git(a.root)
     dirty = git.dirty()
     if git.branch() != "sdlc/" + a.slug or dirty:
         eprint("check out sdlc/%s with a clean tree first%s" % (a.slug, " (uncommitted: %s)" % dirty_summary(dirty) if dirty else ""))

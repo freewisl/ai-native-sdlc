@@ -40,11 +40,17 @@ class SessionResult:
         self.limit_reset = 0.0       # epoch seconds, 0 = unknown
         self.limit_text = ""
         self.api_error = ""
+        self.subagents: List[str] = []   # the subagent_type of every subagent the session called, in order (`sdlc:sdlc-reviewer`)
         self.denials = 0
         self.plugin_loaded: Optional[bool] = None
         self.log = ""
         self.started = 0.0
         self.ended = 0.0
+
+    def called(self, suffix: str) -> bool:
+        """The session called a subagent whose type ends in `suffix` — `sdlc:sdlc-reviewer` and `sdlc-reviewer` both end in
+        `sdlc-reviewer`. What the loop knows of "the review ran in a fresh context"."""
+        return any(t.endswith(suffix) for t in self.subagents)
 
     @property
     def stopped(self) -> bool:
@@ -59,9 +65,26 @@ class SessionResult:
         return m.group(1).strip() if m else None
 
 
+def subagent_types(event: dict) -> List[str]:
+    """The `subagent_type` of every subagent call in one `assistant` event: a `tool_use` block whose input names one. The tool
+    is `Agent` in current Claude Code and `Task` in older ones; going by the input rather than the name keeps a rename from
+    blinding the loop. Calls a subagent makes in its own turn count too: the review still ran in a fresh context."""
+    msg = event.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    out: List[str] = []
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        args = block.get("input")
+        kind = args.get("subagent_type") if isinstance(args, dict) else None
+        if isinstance(kind, str) and kind.strip():
+            out.append(kind.strip())
+    return out
+
+
 def parse_stream(path: str) -> Dict[str, object]:
     """The parts of a stream-json log the loop needs."""
-    info: Dict[str, object] = {"result": None, "rate": None, "plugins": None, "init": False}
+    info: Dict[str, object] = {"result": None, "rate": None, "plugins": None, "init": False, "subagents": []}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -75,9 +98,13 @@ def parse_stream(path: str) -> Dict[str, object]:
                 ev = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(ev, dict):
+                continue
             t = ev.get("type")
             if t == "result":
                 info["result"] = ev
+            elif t == "assistant":
+                info["subagents"].extend(subagent_types(ev))      # type: ignore[union-attr]
             elif t == "rate_limit_event":
                 ri = ev.get("rate_limit_info") or {}
                 if ri.get("status") not in (None, "allowed"):
@@ -114,7 +141,9 @@ def classify_limit(text: str, rate: Optional[dict]) -> tuple:
                 try:
                     reset = float(rate[k])
                 except (TypeError, ValueError):
-                    pass
+                    continue
+                if reset > 1e12:                # milliseconds, not seconds (a year 33658 as seconds)
+                    reset /= 1000.0
         msg = msg or "usage limit (%s)" % (rt or "rejected")
     return kind, reset, msg
 
@@ -247,6 +276,7 @@ class Runner:
     def _read(self, res: SessionResult) -> None:
         info = parse_stream(res.log)
         r = info.get("result") or {}
+        res.subagents = list(info.get("subagents") or [])      # type: ignore[call-overload]
         plugins = info.get("plugins")
         if isinstance(plugins, list):
             res.plugin_loaded = "sdlc" in plugins
