@@ -24,7 +24,9 @@ answer the previous tip, and a "statusCheckRollup" asked in such a view answers 
 checks) without playing the script on ("head_tips", "head_held" and "checks_last" are that bookkeeping). "mergeStateStatus"
 is CLEAN unless the head branch is in the db list "behind": then it is BEHIND, and `pr merge` fails with GitHub's "Head
 branch is out of date" — until the head's tip on origin has changed since the first refused merge (the tip seen then is kept
-in "behind_seen"); the head then leaves the list and the merge goes through. `run view <id> --log-failed` prints
+in "behind_seen"); the head then leaves the list and the merge goes through. `pr merge --match-head-commit <sha>` fails with GitHub's "Head branch was
+modified" unless the head's tip on origin starts with <sha>. `pr list` rows carry what the db holds for each field asked for, so a
+db PR with "isCrossRepository": true is one from a fork. `run view <id> --log-failed` prints
 db["run_logs"][id] when it has one, else a few lines that name the run and end with an error line; an id in the db list
 "run_view_fail" makes it fail instead. db["run_in_progress"] = {id: N} is a run that is still being finalized: its first N
 `run view <id> --log-failed` calls print gh's "run <id> is still in progress; logs will be available when it is complete" to
@@ -285,6 +287,10 @@ elif sub == "merge":
     pr = find(db, args[2])
     if os.environ.get("STUB_GH_MERGE_FAIL") == "1" or pr["state"] != "OPEN" or pr.get("isDraft"):
         sys.stderr.write("GraphQL: Pull request is not mergeable\n")
+        sys.exit(1)
+    want = opt("--match-head-commit")                   # the merge is refused when the head is not the commit asked for
+    if want and not origin_tip(pr["head"]).startswith(want):
+        sys.stderr.write("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)\n")
         sys.exit(1)
     if behind(db, pr["head"], merging=True):            # the branch has to be brought up to date first
         save(db)
