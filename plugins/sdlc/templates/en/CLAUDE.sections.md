@@ -29,5 +29,5 @@
 
 Run all three before reporting any task complete, and paste the output.
 If a test fails, fix the code, not the test.
-Every change has a work doc (`work/<slug>.md`: goal, acceptance criteria, plan, proof); `/sdlc:go` writes it.
+Every change has a work doc (`{{work_dir}}/<slug>.md`: goal, acceptance criteria, plan, proof); `/sdlc:go` writes it.
 <!-- sdlc:end verifying -->

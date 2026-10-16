@@ -15,6 +15,9 @@ CONFIG_REL = os.path.join(".sdlc", "config.json")
 PHASES = ("design", "build", "fix", "self_check")      # the sessions the loop starts; each has a model and an effort
 LEGACY_LOOP_DEFAULTS = {"model": "opus", "fix_model": "sonnet", "effort": "high"}   # what 0.x ran when the file said nothing
 LEGACY_LOOP_CAPS = {"max_turns": (120, 200), "item_max_minutes": (45,)}   # caps 0.x shipped as defaults (0.8.2's init moved them)
+# what a 0.x run was capped at when the file said nothing (the last number is the 0.x template's; 0.8.2 moved max_minutes from
+# 120 to 480); 1.0: 0 = until the queue is empty
+LEGACY_RUN_CAPS = {"max_items": (5,), "max_minutes": (120, 480)}
 
 DEPLOY_PATTERNS = [
     "(deploy|release|rollout|promote)[^|;&]*(prod|production|live)",
@@ -88,6 +91,7 @@ DEFAULTS: Dict[str, Any] = {
         "forge": "auto",                         # auto | github | local (local: squash-merge on this machine, no PR)
     },
     "review": {"sample_per_week": 3},
+    "check": {"public_site": True},              # `init --check` warns when a static site would serve the repository's own files
 }
 
 
@@ -128,11 +132,13 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
                               "default_branch") if k in p}
     kept = set()                                       # 0.x keys whose content lives on in 1.0: not "dropped"
     prod = section(section(raw, "environments"), "production")
-    if prod.get("patterns"):
-        prot["deploy_patterns"] = prod["patterns"]
+    if prod.get("patterns"):                            # 1.0's own defaults need no line in the file
+        if prod["patterns"] != DEFAULTS["protect"]["deploy_patterns"]:
+            prot["deploy_patterns"] = prod["patterns"]
         kept.add("environments")
     if prod.get("approval_env"):
-        prot["deploy_approval_env"] = prod["approval_env"]
+        if prod["approval_env"] != DEFAULTS["protect"]["deploy_approval_env"]:
+            prot["deploy_approval_env"] = prod["approval_env"]
         kept.add("environments")
     new["protect"] = prot
     if p.get("ticketed_paths"):
@@ -169,8 +175,20 @@ def migrate_v1(raw: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         else:   # 0.x ran the loop in solo repositories only; false was the team default, not a choice
             notes.append("loop.enabled=false not carried over: 1.0 runs the loop in team repositories too, with people "
                          "approving designs and merges (set it again to switch the loop off)")
-    if lp.get("max_items") or lp.get("max_minutes"):
-        notes.append("loop.max_items / loop.max_minutes dropped: a run now goes until the queue is empty (set them again to cap it)")
+    run_caps = []
+    for k, old_defaults in LEGACY_RUN_CAPS.items():
+        if not lp.get(k):                                 # unset or 0: no cap, as in 1.0
+            continue
+        if lp[k] in old_defaults:                         # the 0.x template's number is not a choice: a run goes on until the queue is empty
+            run_caps.append("loop.%s %s" % (k, lp[k]))
+        else:
+            loop[k] = lp[k]
+            notes.append("loop.%s %r kept (it differs from the 0.x default of %d) — a run stops at that cap" %
+                         (k, lp[k], old_defaults[-1]))
+    if run_caps:
+        notes.append("%s %s — a run now goes until the queue is empty (set %s to cap it)" % (
+            ", ".join(run_caps), "were 0.x defaults" if len(run_caps) > 1 else "was a 0.x default",
+            "them" if len(run_caps) > 1 else "it"))
     new["loop"] = loop
     rv = section(raw, "paths").get("review")
     if rv and rv != DEFAULTS["paths"]["review"]:

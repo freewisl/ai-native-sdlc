@@ -22,8 +22,9 @@ Report at most five nits per review; summarize the rest as a count.
 Generated files under {{generated_paths}} and anything the gate already enforces (build, tests, lint, formatting).
 
 ## Tally
-End with one line: `SDLC_REVIEW_TALLY important=<n> nits=<n> validated=yes`. It goes into the work doc's `## Review`;
-the merge gate reads it, and a change with an open Important finding does not merge.
+End with one line: `SDLC_REVIEW_TALLY important=<n> nits=<n> validated=<yes|no>` (the session records this final line
+after validating each Important finding). It goes into the work doc's `## Review`; the merge gate reads `important`,
+and a change with an open Important finding does not merge.
 
 ## Feedback into CLAUDE.md
 When a review flags a mistake for the second time, add the correction to the "Things Claude gets wrong" section of

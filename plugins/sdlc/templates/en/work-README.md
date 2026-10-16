@@ -1,7 +1,7 @@
 <!-- sdlc:work -->
-# work/
+# {{work_dir}}/
 
-One file per change: `work/<slug>.md` — goal, acceptance criteria, plan, proof, review. The sdlc plugin reads and
+One file per change: `{{work_dir}}/<slug>.md` — goal, acceptance criteria, plan, proof, review. The sdlc plugin reads and
 writes these; you can too.
 
 | status | meaning |

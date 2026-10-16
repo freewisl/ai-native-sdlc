@@ -22,8 +22,9 @@ Important 지적은 구체적인 실패를 적습니다: 이 입력이나 상태
 {{generated_paths}} 아래의 생성 파일과 게이트가 이미 강제하는 것(빌드, 테스트, 린트, 포매팅).
 
 ## 집계 (Tally)
-마지막 줄은 `SDLC_REVIEW_TALLY important=<n> nits=<n> validated=yes` 입니다. 작업 문서의 `## Review` 에 들어가고,
-머지 게이트가 읽습니다. 열린 Important 지적이 있는 변경은 머지되지 않습니다.
+마지막 줄은 `SDLC_REVIEW_TALLY important=<n> nits=<n> validated=<yes|no>` 입니다 (각 Important 지적을 검증한 뒤 세션이
+이 최종 줄을 기록합니다). 작업 문서의 `## Review` 에 들어가고, 머지 게이트는 `important` 를 읽습니다. 열린 Important
+지적이 있는 변경은 머지되지 않습니다.
 
 ## CLAUDE.md 로의 피드백 (Feedback into CLAUDE.md)
 리뷰가 같은 실수를 두 번째로 지적하면, 그 변경의 일부로 CLAUDE.md 의 "Things Claude gets wrong" 섹션에 교정 내용을

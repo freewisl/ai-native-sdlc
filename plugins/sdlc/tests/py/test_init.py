@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 from helpers import BASE_ENV, PLUGIN, SDLC, STUBS
 
@@ -37,6 +38,7 @@ class InitRepo:
         e = dict(os.environ)
         e.update(BASE_ENV)
         e.update({"SDLC_SKIP_GH_DETECT": "1", "HOME": os.path.join(self.tmp, "home"), "GIT_CEILING_DIRECTORIES": self.tmp,
+                  "GIT_ALLOW_PROTOCOL": "file",              # a remote that is a made-up ssh or https URL fails at once: no network
                   "SDLC_CLAUDE_BIN": os.path.join(STUBS, "claude"), "CLAUDE_BIN": os.path.join(STUBS, "claude"),
                   "PATH": STUBS + os.pathsep + e.get("PATH", "")})
         for k in ("CLAUDECODE", "CLAUDE_PROJECT_DIR", "STUB_GH_COLLAB", "STUB_GH_LOGGED_OUT"):
@@ -194,7 +196,7 @@ class FirstRun(Case):
         with open(os.path.join(PLUGIN, "templates", "config", "frozen-paths.txt"), encoding="utf-8") as fh:
             self.assertEqual(self.repo.read(".sdlc/frozen-paths.txt"), fh.read())
         with open(os.path.join(PLUGIN, "templates", "en", "work-README.md"), encoding="utf-8") as fh:
-            self.assertEqual(self.repo.read("work/README.md"), fh.read())
+            self.assertEqual(self.repo.read("work/README.md"), fh.read().replace("{{work_dir}}", "work"))
         review = self.repo.read("REVIEW.md")
         self.assertIn("SDLC_REVIEW_TALLY", review)
         self.assertIn("TODO: generated paths", review)
@@ -1342,7 +1344,8 @@ class Migration(Case):
     def test_notes_explain_what_changed(self):
         notes = " | ".join(self.res["notes"])
         self.assertIn("protect.ticketed_paths → risk.human", notes)
-        self.assertIn("loop.max_items / loop.max_minutes dropped", notes)
+        self.assertIn("loop.max_items 5, loop.max_minutes 480 were 0.x defaults — a run now goes until the queue is empty "
+                      "(set them to cap it)", notes)
         self.assertIn("dropped (not used by 1.0)", notes)
         self.assertIn(".sdlc/LESSONS.md holds 0.x lessons", notes)
         self.assertNotIn("loop.model", notes)                               # opus/sonnet/high are the 0.x defaults: nothing to say
@@ -1387,13 +1390,22 @@ class Migration(Case):
         self.assertEqual(d.section("Goal"), "Nobody can export.\n\nAn export button.")
         self.assertEqual(d.section("Acceptance criteria"), "- R1. WHEN the user clicks export THE SYSTEM SHALL download a CSV.")
 
-    def test_a_dependency_on_a_rejected_or_unknown_item_is_kept_so_a_person_sees_it(self):
+    def test_a_dependency_on_a_rejected_or_unknown_item_is_dropped_with_a_note_each(self):
+        """No work doc will ever exist for either, so the queue would wait for it for good."""
         other = InitRepo()
         self.addCleanup(other.cleanup)
         make_v1_repo(other)
-        other.write("intent/f-dep.md", intent("f-dep", "approved", "F", "p", "o", depends_on=["e-rejected", "nowhere", "c-done"]))
-        other.init()
-        self.assertEqual(WorkDoc.parse(other.read("work/f-dep.md")).depends_on, ["e-rejected", "nowhere"])
+        other.write("intent/f-dep.md", intent("f-dep", "approved", "F", "p", "o",
+                                              depends_on=["e-rejected", "nowhere", "c-done", "b-planned"]))
+        other.commit("f-dep")
+        res = other.init()
+        self.assertEqual(WorkDoc.parse(other.read("work/f-dep.md")).depends_on, ["b-planned"])      # an open item stays
+        self.assertIn("work/f-dep.md: depends_on e-rejected dropped — intent e-rejected is rejected, so the item would wait "
+                      "for it for good", res["notes"])
+        self.assertIn("work/f-dep.md: depends_on nowhere dropped — no intent or work doc has that slug, so the item would "
+                      "wait for it for good", res["notes"])
+        self.assertFalse([n for n in res["notes"] if "depends_on c-done" in n or "depends_on b-planned" in n],
+                         res["notes"])                       # the merged one has its row note, the open one is kept
 
     def test_a_draft_intent_is_proposed(self):
         d = self.doc("d-draft")
@@ -1557,6 +1569,7 @@ class MigrationDetails(Case):
         self.repo.write("intent/Bad_Slug.md", intent("Bad_Slug", "approved", "Bad", "p", "o"))
         self.repo.write("intent/no-front.md", "# Just notes\n\n## Problem\nx\n")
         self.repo.write("intent/notes.txt", "text\n")
+        self.repo.commit("intents of other kinds")
         res = self.repo.init()
         self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
 
@@ -1590,6 +1603,7 @@ class MigrationDetails(Case):
         make_v1_repo(self.repo)
         self.repo.write("intent/f-bare.md", "---\nslug: f-bare\ntitle: Bare\nstatus: approved\n---\n# Intent: Bare\n\n"
                                             "## Affected users and systems\nSomeone.\n")
+        self.repo.commit("a bare intent")
         self.repo.init()
         d = WorkDoc.parse(self.repo.read("work/f-bare.md"))
         self.assertEqual(d.status, "ready")
@@ -1847,7 +1861,7 @@ class MigrationConfigNotes(Case):
         res = self.migrate({"max_turns": 300, "item_max_minutes": 90})
         loop = self.repo.config()["loop"]
         self.assertEqual((loop["max_turns"], loop["session_max_minutes"]), (300, 90))
-        self.assertFalse([n for n in res["notes"] if "0.x default" in n])
+        self.assertFalse([n for n in res["notes"] if "0.x default" in n and "max_turns" in n])
         other = InitRepo()
         self.addCleanup(other.cleanup)
         cfg = json.loads(json.dumps(V1_CONFIG))
@@ -1855,7 +1869,7 @@ class MigrationConfigNotes(Case):
         make_v1_repo(other, cfg)
         again = other.init()
         self.assertFalse({"max_turns", "session_max_minutes"} & set(other.config()["loop"]))
-        self.assertFalse([n for n in again["notes"] if "0.x default" in n])
+        self.assertFalse([n for n in again["notes"] if "0.x default" in n and "max_turns" in n])
 
     def test_policies_that_are_dropped_are_named_with_what_that_means(self):
         res = self.migrate(policies=["secure-api-review", "brand-voice"])
@@ -1987,6 +2001,7 @@ class MigrationLeftovers(Case):
     def test_triage_drafts_are_noted_by_name_and_stay(self):
         self.repo.write("intent/triage/b-two.md", "---\nstatus: draft\n---\n# Two\n")
         self.repo.write("intent/triage/a-one.md", "---\nstatus: draft\n---\n# One\n")
+        self.repo.commit("drafts")
         res = self.repo.init()
         self.assertIn("intent/triage/ holds 2 0.x triage draft(s) (a-one.md, b-two.md) — 1.0 does not read them; start the ones "
                       "still wanted with /sdlc:go, or delete them", res["notes"])
@@ -1999,7 +2014,8 @@ class MigrationLeftovers(Case):
         for i in range(7):
             self.repo.write("intent/triage/d%d.md" % i, "# d%d\n" % i)
         self.repo.write("intent/triage/notes.txt", "not a draft\n")
-        note = [n for n in self.repo.init()["notes"] if n.startswith("intent/triage/ holds")][0]
+        self.repo.commit("drafts")
+        note =[n for n in self.repo.init()["notes"] if n.startswith("intent/triage/ holds")][0]
         self.assertTrue(note.startswith("intent/triage/ holds 7 0.x triage draft(s) (d0.md, d1.md, d2.md, d3.md, d4.md, …) — "), note)
 
     def test_a_triage_directory_with_nothing_but_a_gitkeep_gets_no_note_and_is_a_leftover(self):
@@ -2310,6 +2326,7 @@ class Prune(Case):
             os.remove(lone.path(rel))
             os.rmdir(os.path.dirname(lone.path(rel))) if not os.listdir(os.path.dirname(lone.path(rel))) else None
         os.remove(lone.path("plan/c-done.md"))
+        lone.commit("the merged plan is gone")
         lone.init("--prune")
         self.assertFalse(lone.exists(".github"))                           # workflows/ then .github/
         self.assertFalse(lone.exists("evals"))                             # cases/ then evals/
@@ -2651,6 +2668,876 @@ class Check(Case):
         self.assertTrue(data["ok"])
         self.assertRegex(data["version"], r"^\d+\.\d+\.\d+")
         self.assertEqual({c["status"] for c in data["checks"]} - {"ok", "warn", "missing"}, set())
+
+
+# =====================================================================================================================
+# 1.2: what init and `--check` tell about the repository they meet
+FAKE_GH = """#!/bin/sh
+echo "$@" >> "$FAKE_GH_LOG"
+case "$1" in
+  api) echo 3; exit 0;;
+  auth)
+    case "$2" in
+      status) exit ${FAKE_GH_STATUS:-0};;
+      token) if [ -n "$FAKE_GH_TOKEN" ]; then echo "$FAKE_GH_TOKEN"; exit 0; fi; exit 1;;
+    esac;;
+esac
+exit 1
+"""
+OLD_CODEOWNERS = "\n".join(I.CODEOWNERS_0X) + "\n# Replace the %s placeholders with GitHub teams or users (e.g. @acme/platform).\n" + "".join(
+    "%-25s %s\n" % (p, "@acme/team") for p in I.CODEOWNERS_0X_PATHS)
+OLD_GITIGNORE_HEADER = "# sdlc plugin — local state and logs (audit copies go to OpenTelemetry / CI artifacts)"
+
+
+def fake_gh(repo):
+    """A `gh` that logs every call: (the environment that puts it first on PATH, the log's path)."""
+    bindir = os.path.join(repo.tmp, "fakebin")
+    os.makedirs(bindir, exist_ok=True)
+    gh = os.path.join(bindir, "gh")
+    with open(gh, "w", encoding="utf-8") as fh:
+        fh.write(FAKE_GH)
+    os.chmod(gh, 0o755)
+    return {"PATH": bindir + os.pathsep + STUBS + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_GH_LOG": os.path.join(repo.tmp, "gh.log")}, os.path.join(repo.tmp, "gh.log")
+
+
+def notes_with(res, text):
+    return [n for n in res["notes"] if text in n]
+
+
+class OldWorkflowLines(Case):
+    """CLAUDE.md and the project's own skills, commands and agents may still send sessions the 0.x way. Init names the lines
+    and edits none of them; `--check` warns."""
+    CLAUDE = ("# Shop\n\n## Commands\n- Test: npm test\n\n## Workflow\n- Open a PR, then run GH PR MERGE --squash yourself.\n"
+              "- Intents live in intent/ — read them first.\n- Read spec.md and plan.md before editing.\n")
+    MERGE = "tells sessions to merge PRs themselves — 1.x merges only through the gate; remove or reword it"
+
+    def setUp(self):
+        super().setUp()
+        self.node_repo()
+        self.repo.write("CLAUDE.md", self.CLAUDE)
+        self.repo.write(".claude/skills/ship/SKILL.md", "---\nname: ship\n---\nWhen done run `gh pr merge 12`.\n")
+        self.repo.write(".claude/commands/old.md", "First write intent/foo.md,\nthen intent/bar.md.\n")
+        self.repo.write(".claude/agents/a.md", "Nothing to see here.\n")
+        self.repo.commit("project files")
+
+    def test_each_file_and_kind_is_a_note_with_its_line_numbers(self):
+        res = self.repo.init()
+        self.assertIn("CLAUDE.md:7 " + self.MERGE, res["notes"])                       # any case: GH PR MERGE
+        self.assertIn("CLAUDE.md:8 points sessions at intent/ — 1.x keeps the queue in work/; remove or reword it", res["notes"])
+        self.assertIn("CLAUDE.md:9 sends sessions to spec.md / plan.md — 1.x has one work doc per change (work/<slug>.md); "
+                      "remove or reword it", res["notes"])
+        self.assertIn(".claude/skills/ship/SKILL.md:4 " + self.MERGE, res["notes"])
+        self.assertIn(".claude/commands/old.md:1,2 points sessions at intent/ — 1.x keeps the queue in work/; remove or reword it",
+                      res["notes"])
+        self.assertFalse([n for n in res["notes"] if ".claude/agents/a.md" in n])
+
+    def test_nothing_is_edited_and_the_notes_name_the_configured_work_directory(self):
+        before = {rel: self.repo.read(rel) for rel in (".claude/skills/ship/SKILL.md", ".claude/commands/old.md")}
+        self.repo.write("work/notes.txt", "mine\n")                          # so work docs go to sdlc-work/
+        self.repo.commit("foreign work dir")
+        res = self.repo.init()
+        self.assertEqual({rel: self.repo.read(rel) for rel in before}, before)
+        for line in self.CLAUDE.splitlines():
+            self.assertIn(line, self.repo.read("CLAUDE.md"))                  # the user's lines stand
+        self.assertTrue(notes_with(res, "1.x keeps the queue in sdlc-work/"), res["notes"])
+
+    def test_check_warns_with_the_same_words(self):
+        self.repo.init()
+        self.repo.commit("sdlc")
+        code, got = self.repo.check()
+        self.assertEqual((code, got["workflow"]["status"]), (0, "warn"))
+        self.assertIn("CLAUDE.md:7 " + self.MERGE, got["workflow"]["detail"])
+        self.assertIn(" | ", got["workflow"]["detail"])
+        self.assertIn("… 2 more", got["workflow"]["detail"])                   # five findings, three shown
+
+    def test_a_line_that_says_nothing_of_the_old_way_is_not_a_finding(self):
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        other.write("CLAUDE.md", "# Shop\n\n- The plan for the quarter is in the wiki.\n- Our intent is clear.\n- see intentional/x\n"
+                                 "- the spec.mdx file is generated\n")
+        other.commit("claude")
+        res = other.init()
+        self.assertFalse([n for n in res["notes"] if "tells sessions" in n or "points sessions" in n or "sends sessions" in n])
+        other.commit("sdlc")
+        self.assertNotIn("workflow", other.check()[1])
+
+    def test_agents_md_is_read_too_and_a_fresh_adoption_has_nothing_to_say(self):
+        self.repo.write("AGENTS.md", "# Agents\nAlways gh pr merge your own PRs.\n")
+        self.repo.commit("agents")
+        self.assertIn("AGENTS.md:2 " + self.MERGE, self.repo.init()["notes"])
+        fresh = InitRepo()
+        self.addCleanup(fresh.cleanup)
+        self.assertFalse([n for n in fresh.init()["notes"] if "sessions" in n])
+
+
+class DependencyProblems(Case):
+    def test_check_warns_for_a_dependency_that_is_no_work_doc(self):
+        self.node_repo()
+        self.repo.init()
+        self.repo.write("work/a-one.md", "---\nslug: a-one\nstatus: ready\ndepends_on: [b-two, ghost]\n---\n\n## Goal\ng\n")
+        self.repo.write("work/b-two.md", "---\nslug: b-two\nstatus: ready\n---\n\n## Goal\ng\n")
+        self.repo.write("work/c-done.md", "---\nslug: c-done\nstatus: done\ndepends_on: [gone-too]\n---\n\n## Goal\ng\n")
+        code, got = self.repo.check()
+        self.assertEqual((code, got["deps"]["status"]), (0, "warn"))
+        self.assertEqual(got["deps"]["detail"], "a-one depends on ghost, which is no work doc")       # finished docs are not asked
+
+    def test_check_warns_for_dependencies_that_wait_for_each_other(self):
+        self.node_repo()
+        self.repo.init()
+        for slug, dep in (("a-one", "b-two"), ("b-two", "c-three"), ("c-three", "a-one"), ("d-self", "d-self"), ("e-free", "a-one")):
+            self.repo.write("work/%s.md" % slug, "---\nslug: %s\nstatus: ready\ndepends_on: [%s]\n---\n\n## Goal\ng\n" % (slug, dep))
+        _, got = self.repo.check()
+        self.assertEqual(got["deps"]["status"], "warn")
+        self.assertIn("dependencies wait for each other: a-one → b-two → c-three → a-one", got["deps"]["detail"])
+        self.assertIn("dependencies wait for each other: d-self → d-self", got["deps"]["detail"])
+        self.assertNotIn("e-free", got["deps"]["detail"])                        # it waits, but not in a circle
+
+    def test_a_queue_without_problems_has_no_row(self):
+        self.node_repo()
+        self.repo.init()
+        self.repo.write("work/a-one.md", "---\nslug: a-one\nstatus: ready\n---\n\n## Goal\ng\n")
+        self.repo.write("work/b-two.md", "---\nslug: b-two\nstatus: ready\ndepends_on: [a-one]\n---\n\n## Goal\ng\n")
+        self.assertNotIn("deps", self.repo.check()[1])
+
+
+class DefaultBranchChecks(Case):
+    def ready(self, branch="main"):
+        self.node_repo()
+        self.repo.init()
+        cfg = self.repo.config()
+        cfg["protect"]["default_branch"] = branch
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.commit("sdlc")
+
+    def test_a_branch_that_exists_nowhere_is_a_failure(self):
+        self.ready("trunk")
+        code, got = self.repo.check()
+        self.assertEqual((code, got["default_branch"]["status"]), (1, "missing"))
+        self.assertIn("protect.default_branch is 'trunk', but no such branch exists here or on origin", got["default_branch"]["detail"])
+        r = self.repo.run("--check")
+        self.assertRegex(r.stdout, r"(?m)^FAIL +default branch +protect\.default_branch is 'trunk'")
+
+    def test_a_branch_that_is_there_is_not_mentioned_and_neither_is_a_repository_without_commits(self):
+        self.ready("main")
+        self.assertNotIn("default_branch", self.repo.check()[1])
+        empty = InitRepo()
+        self.addCleanup(empty.cleanup)
+        empty.init()
+        empty.git("branch", "-m", "unborn")                         # nothing committed: no branch of any name exists yet
+        self.assertNotIn("default_branch", empty.check()[1])
+
+    def test_a_remote_only_branch_counts_and_a_remote_default_that_differs_is_a_warning(self):
+        self.ready("develop")
+        bare = with_origin(self.repo)
+        self.repo.git("checkout", "-q", "-b", "develop")
+        self.repo.git("push", "-q", "origin", "develop")
+        self.repo.git("checkout", "-q", "main")
+        self.repo.git("branch", "-q", "-D", "develop")              # only origin/develop is left
+        self.repo.git("remote", "set-head", "origin", "main")        # origin's default is main
+        code, got = self.repo.check()
+        self.assertEqual((code, got["default_branch"]["status"]), (0, "warn"))
+        self.assertIn("protect.default_branch is 'develop', but origin's default branch is 'main'", got["default_branch"]["detail"])
+        self.repo.git("remote", "set-head", "origin", "develop")
+        self.assertNotIn("default_branch", self.repo.check()[1])
+
+    def test_a_branch_the_remote_has_and_this_clone_never_fetched_is_found_by_asking_it(self):
+        self.ready("release")
+        bare = with_origin(self.repo)
+        subprocess.run(["git", "-C", bare, "branch", "release", "main"], check=True, env=self.repo.env())
+        code, got = self.repo.check()                               # SDLC_SKIP_GH_DETECT: the remote is not asked
+        self.assertEqual(got["default_branch"]["status"], "missing")
+        code, got = self.repo.check(SDLC_SKIP_GH_DETECT=None)                 # found: no failure (origin's own default is main: a warning)
+        self.assertEqual((code, got["default_branch"]["status"]), (0, "warn"))
+        self.assertIn("origin's default branch is 'main'", got["default_branch"]["detail"])
+
+    def test_detect_asks_the_remote_for_its_default_branch_before_guessing_main(self):
+        self.node_repo()
+        bare = with_origin(self.repo)
+        subprocess.run(["git", "-C", bare, "branch", "trunk", "main"], check=True, env=self.repo.env())
+        subprocess.run(["git", "-C", bare, "symbolic-ref", "HEAD", "refs/heads/trunk"], check=True, env=self.repo.env())
+        self.assertNotIn("refs/remotes/origin/HEAD", self.repo.git("for-each-ref", "--format=%(refname)", "refs/remotes/origin/"))
+        self.assertEqual(self.repo.init("--dry-run", SDLC_SKIP_GH_DETECT=None)["git"]["default_branch"], "trunk")
+        self.assertEqual(self.repo.init("--dry-run")["git"]["default_branch"], "main")          # skipped: the local guess
+
+
+class ClearedCommands(Case):
+    def test_a_command_the_user_cleared_stays_cleared(self):
+        self.node_repo()
+        self.repo.init()
+        cfg = self.repo.config()
+        cfg["commands"]["lint"] = ""
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        res = self.repo.init()
+        self.assertEqual(self.repo.config()["commands"]["lint"], "")
+        self.assertEqual(verbs(res)[".sdlc/config.json"], "SKIPPED")
+
+    def test_a_key_the_file_does_not_have_is_filled_and_the_flag_always_wins(self):
+        self.node_repo()
+        self.repo.init()
+        cfg = self.repo.config()
+        del cfg["commands"]["lint"]
+        cfg["commands"]["build"] = ""
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        res = self.repo.init()
+        self.assertEqual(self.repo.config()["commands"], {"build": "", "test": "npm run test", "lint": "npm run lint"})
+        self.assertEqual(rows(res)[".sdlc/config.json"], ("MERGED", "commands.lint"))
+        self.repo.init("--commands", "build=make all")
+        self.assertEqual(self.repo.config()["commands"]["build"], "make all")
+
+    def test_the_same_holds_when_a_0x_config_is_migrated(self):
+        cfg = json.loads(json.dumps(V1_CONFIG))
+        cfg["commands"] = {"test": "npm test", "lint": "", "build": ""}
+        make_v1_repo(self.repo, cfg)
+        self.repo.init()
+        self.assertEqual({k: self.repo.config()["commands"].get(k) for k in ("lint", "build", "test")},
+                         {"lint": None, "build": None, "test": "npm test"})       # 0.x kept no empty command: detection may fill them
+
+
+class StackDetection(Case):
+    def commands(self):
+        return I.detect(self.repo.root)["commands"]
+
+    def test_uv_poetry_and_a_virtualenv_say_how_python_is_run(self):
+        self.repo.write("pyproject.toml", "[tool.ruff]\nline-length = 100\n")
+        self.assertEqual(self.commands(), {"test": "pytest", "lint": "ruff check ."})
+        self.repo.write("poetry.lock", "")
+        self.assertEqual(self.commands(), {"test": "poetry run pytest", "lint": "poetry run ruff check ."})
+        self.repo.write("uv.lock", "")
+        self.assertEqual(self.commands(), {"test": "uv run pytest", "lint": "uv run ruff check ."})      # uv first
+        os.remove(self.repo.path("uv.lock"))
+        os.remove(self.repo.path("poetry.lock"))
+        self.repo.write(".venv/bin/pytest", "#!/bin/sh\n")
+        self.assertEqual(self.commands(), {"test": ".venv/bin/pytest", "lint": "ruff check ."})
+        self.repo.write(".venv/bin/ruff", "#!/bin/sh\n")
+        self.assertEqual(self.commands(), {"test": ".venv/bin/pytest", "lint": ".venv/bin/ruff check ."})
+
+    def test_a_project_without_ruff_gets_no_lint_command_from_uv(self):
+        self.repo.write("pyproject.toml", "[project]\nname = 'x'\n")
+        self.repo.write("uv.lock", "")
+        self.assertEqual(self.commands(), {"test": "uv run pytest"})
+        self.repo.write(".flake8", "[flake8]\n")
+        self.assertEqual(self.commands(), {"test": "uv run pytest", "lint": "uv run flake8"})
+
+    def test_the_package_manager_field_decides_when_there_is_no_lock_file(self):
+        for field, runner in (("pnpm@9.1.0", "pnpm"), ("yarn@4.2.2", "yarn"), ("bun@1.1.0", "bun"), ("npm@10.0.0", "npm"),
+                              ("deno@2", "npm"), ("", "npm")):
+            other = InitRepo()
+            self.addCleanup(other.cleanup)
+            pkg = {"name": "x", "scripts": {"test": "jest", "build": "tsc"}}
+            if field:
+                pkg["packageManager"] = field
+            other.write("package.json", json.dumps(pkg))
+            self.assertEqual(I.detect(other.root)["commands"], {"test": "%s run test" % runner, "build": "%s run build" % runner}, field)
+
+    def test_a_lock_file_wins_over_the_field(self):
+        self.repo.write("package.json", json.dumps({"scripts": {"test": "jest"}, "packageManager": "pnpm@9.0.0"}))
+        self.repo.write("yarn.lock", "")
+        self.assertEqual(self.commands(), {"test": "yarn run test"})
+        self.repo.write("bun.lock", "")
+        os.remove(self.repo.path("yarn.lock"))
+        self.assertEqual(self.commands(), {"test": "bun run test"})
+
+
+class GhLogin(Case):
+    def github_repo(self):
+        self.node_repo()
+        self.repo.git("remote", "add", "origin", "git@github.com:o/r.git")
+        self.repo.init("--solo")
+        self.repo.commit("sdlc")
+
+    def test_a_login_that_is_there_but_a_host_that_does_not_answer_is_a_warning_not_a_failure(self):
+        self.github_repo()
+        env, log = fake_gh(self.repo)
+        code, got = self.repo.check(FAKE_GH_STATUS="1", FAKE_GH_TOKEN="ghp_secret_token", **env)
+        self.assertEqual((code, got["gh"]["status"]), (0, "warn"))
+        self.assertEqual(got["gh"]["detail"], "logged in to github.com, but it did not answer (network or VPN?)")
+        out = self.repo.run("--check", FAKE_GH_STATUS="1", FAKE_GH_TOKEN="ghp_secret_token", **env)
+        self.assertNotIn("ghp_secret_token", out.stdout + out.stderr)
+        self.assertRegex(out.stdout, r"(?m)^WARN +gh +logged in to github\.com, but it did not answer")
+        with open(log, encoding="utf-8") as fh:
+            self.assertIn("auth token --hostname github.com", fh.read())
+
+    def test_no_login_at_all_is_still_a_failure_and_a_working_one_is_ok(self):
+        self.github_repo()
+        env, _ = fake_gh(self.repo)
+        code, got = self.repo.check(FAKE_GH_STATUS="1", **env)
+        self.assertEqual((code, got["gh"]["status"]), (1, "missing"))
+        self.assertIn("not logged in — run `gh auth login --hostname github.com`", got["gh"]["detail"])
+        code, got = self.repo.check(**env)
+        self.assertEqual((code, got["gh"]["status"], got["gh"]["detail"]), (0, "ok", "logged in to github.com"))
+
+    def test_the_collaborators_are_not_asked_when_the_mode_comes_from_a_config_or_a_flag(self):
+        make_v1_repo(self.repo)
+        self.repo.git("remote", "add", "origin", "git@github.com:o/r.git")
+        env, log = fake_gh(self.repo)
+        res = self.repo.init("--dry-run", SDLC_SKIP_GH_DETECT=None, **env)               # a 0.x config has the mode
+        self.assertEqual((res["forge"], res["mode"]), ("github", "solo"))
+        fresh = InitRepo()
+        self.addCleanup(fresh.cleanup)
+        fresh.git("remote", "add", "origin", "git@github.com:o/r.git")
+        fenv, flog = fake_gh(fresh)
+        self.assertEqual(fresh.init("--dry-run", "--solo", SDLC_SKIP_GH_DETECT=None, **fenv)["mode"], "solo")
+        self.assertIn("as asked", rows(fresh.init("--dry-run", "--solo", SDLC_SKIP_GH_DETECT=None, **fenv))[".sdlc/config.json"][1])
+        def calls(path):
+            if not os.path.exists(path):
+                return []
+            with open(path, encoding="utf-8") as fh:
+                return fh.read().splitlines()
+        for path in (log, flog):
+            self.assertFalse([l for l in calls(path) if l.startswith("api")], path)
+        self.assertEqual(fresh.init("--dry-run", SDLC_SKIP_GH_DETECT=None, **fenv)["mode"], "team")     # nothing said: asked
+        self.assertTrue([l for l in calls(flog) if l.startswith("api")])
+
+
+class KoreanAndRenamedSections(Case):
+    def test_headings_in_korean_stand_in_for_the_sections_init_would_add(self):
+        self.repo.write("CLAUDE.md", "# 상점\n\n## 명령어\n- 테스트: npm test\n\n## 컨벤션\n- 한 줄\n\n## 구조\n- 모듈\n\n"
+                                     "## 검증\n- 끝나면 실행\n")
+        self.repo.commit("claude")
+        res = self.repo.init()
+        text = self.repo.read("CLAUDE.md")
+        for sid in ("commands", "conventions", "architecture", "verifying"):
+            self.assertNotIn("<!-- sdlc:begin %s -->" % sid, text, sid)
+        self.assertIn("<!-- sdlc:begin mistakes -->", text)                              # nothing of theirs covers this one
+        self.assertEqual(text.count("## 명령어"), 1)
+        for heading, title in (("## 명령어", "Commands"), ("## 컨벤션", "Conventions"), ("## 구조", "Architecture"),
+                               ("## 검증", "Verifying your work")):
+            self.assertIn("kept your `%s`; sdlc's %s section was not added" % (heading, title), res["notes"])
+        self.assertEqual(rows(res)["CLAUDE.md"][1], "added: Things Claude gets wrong")
+
+    def test_the_synonyms_each_count(self):
+        for heading, sid in (("명령", "commands"), ("규칙", "conventions"), ("규약", "conventions"), ("아키텍처", "architecture"),
+                             ("코드 컨벤션", "conventions"), ("Verification", "verifying"), ("Common commands", "commands"),
+                             ("1. Architecture", "architecture"), ("Commands (명령어)", "commands"),
+                             ("Claude 가 반복하는 실수", "mistakes"), ("Things Claude gets wrong", "mistakes")):
+            self.assertTrue(I.section_present("# T\n\n## %s\n- x\n" % heading, sid), heading)
+
+    def test_whole_headings_count_and_substrings_do_not(self):
+        for heading, sid in (("Where the commands run", "commands"), ("구조화된 로깅", "architecture"),
+                             ("Architecture decision records and the long story of why we picked this", "architecture"),
+                             ("How we got to our conventions", "conventions"), ("검증되지 않은 가정에 대하여 길게", "verifying")):
+            self.assertFalse(I.section_present("# T\n\n## %s\n- x\n" % heading, sid), heading)
+        text = "# T\n\n```\n## Commands\n```\n"
+        self.assertFalse(I.section_present(text, "commands"))                           # a heading in a code block is none
+
+    def test_the_korean_template_headings_are_the_sections_init_wrote(self):
+        self.repo.init("--lang", "ko")
+        text = self.repo.read("CLAUDE.md")
+        self.assertTrue(all(I.section_present(text, sid) for sid in SECTION_IDS))
+        before = self.repo.snapshot()
+        res = self.repo.init()
+        self.assertEqual(self.repo.snapshot(), before)
+        self.assertFalse([n for n in res["notes"] if "kept your" in n])                    # init's own headings are not "yours"
+
+    def test_the_korean_placeholders_are_korean(self):
+        self.repo.init("--lang", "ko")
+        text = self.repo.read("CLAUDE.md")
+        self.assertIn("TODO: test 명령을 설정한다", text)
+        self.assertIn("TODO: 이름 짓기, 오류 처리, 테스트, 의존성 규약", text)
+        self.assertIn("TODO: 주요 구성요소, 경계, 데이터 흐름", text)
+        self.assertNotRegex(text, r"TODO: (set|naming|main)")
+        self.assertIn("TODO: 생성 파일 경로", self.repo.read("REVIEW.md"))
+        code, got = self.repo.check()
+        self.assertIn("TODO placeholders left", got["claude_md"]["detail"])
+        self.assertEqual(I.OPTIONAL_TODO.sub("", "- Build(빌드): TODO: build 명령을 설정한다\n- Lint: TODO: lint 명령을 설정한다"),
+                         "- Build(빌드): \n- Lint: ")                                      # optional ones are no placeholders to chase
+
+
+class WorkDirInTemplates(Case):
+    def test_nothing_hard_codes_work_when_the_work_directory_is_another(self):
+        for lang in ("en", "ko"):
+            other = InitRepo()
+            self.addCleanup(other.cleanup)
+            other.write("work/notes.txt", "mine\n")
+            other.init("--lang", lang)
+            self.assertEqual(other.config()["paths"], {"work": "sdlc-work"})
+            for rel in ("CLAUDE.md", "sdlc-work/README.md"):
+                text = other.read(rel)
+                self.assertIn("sdlc-work/<slug>.md", text, (lang, rel))
+                self.assertNotRegex(text, r"(?<![\w-])work/", (lang, rel))
+                self.assertNotIn("{{", text)
+            self.assertTrue(other.read("sdlc-work/README.md").splitlines()[1].startswith("# sdlc-work/"))
+
+    def test_the_review_tally_does_not_present_validated_as_required(self):
+        for lang in ("en", "ko"):
+            text = new_review_template(lang)
+            self.assertIn("SDLC_REVIEW_TALLY important=<n> nits=<n> validated=<yes|no>", text, lang)
+            self.assertNotIn("validated=yes", text, lang)
+            self.assertIn("`important`", text, lang)                                       # the one thing the gate reads
+
+
+class IgnoredAdoptionFiles(Case):
+    def test_init_notes_and_check_warns_for_files_git_ignores(self):
+        self.node_repo()
+        self.repo.write(".gitignore", ".sdlc/config.json\nwork/\nREVIEW.md\n")
+        self.repo.commit("ignore")
+        res = self.repo.init()
+        self.assertTrue(notes_with(res, ".sdlc/config.json, work/<slug>.md, REVIEW.md are ignored by git — the queue reads "
+                                        "committed files"), res["notes"])
+        code, got = self.repo.check()
+        self.assertEqual((code, got["ignored"]["status"]), (0, "warn"))
+        self.assertIn(".sdlc/config.json, work/<slug>.md, REVIEW.md are ignored by git", got["ignored"]["detail"])
+
+    def test_a_single_ignored_file_and_the_review_file_at_its_configured_place(self):
+        self.node_repo()
+        self.repo.init()
+        cfg = self.repo.config()
+        cfg["paths"] = {"review": "docs/REVIEW.md"}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.write(".gitignore", self.repo.read(".gitignore") + "docs/\n")
+        _, got = self.repo.check()
+        self.assertTrue(got["ignored"]["detail"].startswith("docs/REVIEW.md is ignored by git"), got["ignored"]["detail"])
+
+    def test_nothing_ignored_nothing_said(self):
+        self.node_repo()
+        res = self.repo.init()
+        self.assertFalse(notes_with(res, "ignored by git"))
+        self.repo.commit("sdlc")
+        self.assertNotIn("ignored", self.repo.check()[1])
+
+
+class PauseFile(Case):
+    def test_check_warns_while_the_loop_is_paused(self):
+        self.node_repo()
+        self.repo.init()
+        self.repo.commit("sdlc")
+        self.assertNotIn("pause", self.repo.check()[1])
+        self.repo.write(".sdlc/state/pause", "paused\n")
+        code, got = self.repo.check()
+        self.assertEqual((code, got["pause"]["status"]), (0, "warn"))
+        self.assertEqual(got["pause"]["detail"], "paused — `sdlc.py resume` removes it")
+        self.assertRegex(self.repo.run("--check").stdout, r"(?m)^WARN +pause file +paused — `sdlc\.py resume` removes it$")
+
+    def test_the_configured_pause_file_is_the_one_looked_for(self):
+        self.node_repo()
+        self.repo.init()
+        cfg = self.repo.config()
+        cfg["loop"] = {"pause_file": ".sdlc/halt"}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.repo.write(".sdlc/state/pause", "x\n")
+        self.assertNotIn("pause", self.repo.check()[1])
+        self.repo.write(".sdlc/halt", "x\n")
+        self.assertEqual(self.repo.check()[1]["pause"]["status"], "warn")
+
+
+class RunCapsAndDeployDefaults(Case):
+    def migrate(self, loop=None, **top):
+        cfg = json.loads(json.dumps(V1_CONFIG))
+        cfg["loop"].update(loop or {})
+        cfg.update(top)
+        make_v1_repo(self.repo, cfg)
+        return self.repo.init()
+
+    def test_caps_that_are_the_0x_defaults_are_dropped_with_one_note(self):
+        res = self.migrate({"max_items": 5, "max_minutes": 480})
+        self.assertFalse({"max_items", "max_minutes"} & set(self.repo.config()["loop"]))
+        self.assertIn("loop.max_items 5, loop.max_minutes 480 were 0.x defaults — a run now goes until the queue is empty "
+                      "(set them to cap it)", res["notes"])
+        self.assertEqual((Config(self.repo.root).get("loop.max_items"), Config(self.repo.root).get("loop.max_minutes")), (0, 0))
+
+    def test_120_minutes_is_the_default_0x_had_before_0_8_2_and_is_dropped_too(self):
+        res = self.migrate({"max_items": 5, "max_minutes": 120})
+        self.assertNotIn("max_minutes", self.repo.config()["loop"])
+        self.assertIn("loop.max_items 5, loop.max_minutes 120 were 0.x defaults — a run now goes until the queue is empty "
+                      "(set them to cap it)", res["notes"])
+
+    def test_a_cap_that_differs_is_kept_and_named_and_one_that_equals_is_dropped(self):
+        res = self.migrate({"max_items": 8, "max_minutes": 480})
+        loop = self.repo.config()["loop"]
+        self.assertEqual((loop["max_items"], loop.get("max_minutes")), (8, None))
+        self.assertIn("loop.max_items 8 kept (it differs from the 0.x default of 5) — a run stops at that cap", res["notes"])
+        self.assertIn("loop.max_minutes 480 was a 0.x default — a run now goes until the queue is empty (set it to cap it)", res["notes"])
+        self.assertEqual(Config(self.repo.root).get("loop.max_items"), 8)
+
+    def test_both_kept_and_zero_means_no_cap_at_all(self):
+        res = self.migrate({"max_items": 20, "max_minutes": 90})
+        loop = self.repo.config()["loop"]
+        self.assertEqual((loop["max_items"], loop["max_minutes"]), (20, 90))
+        self.assertIn("loop.max_items 20 kept (it differs from the 0.x default of 5) — a run stops at that cap", res["notes"])
+        self.assertFalse([n for n in res["notes"] if "a 0.x default" in n and "max_" in n or "were 0.x defaults" in n and "max_" in n])
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        cfg = json.loads(json.dumps(V1_CONFIG))
+        cfg["loop"].update({"max_items": 0, "max_minutes": 0})
+        make_v1_repo(other, cfg)
+        res = other.init()
+        self.assertFalse({"max_items", "max_minutes"} & set(other.config()["loop"]))
+        self.assertFalse([n for n in res["notes"] if "max_items" in n or "max_minutes" in n])
+
+    def test_deploy_patterns_that_are_1_xs_defaults_are_not_written(self):
+        from sdlclib.config import DEPLOY_PATTERNS
+        self.migrate(environments={"production": {"autonomy": "gated", "patterns": DEPLOY_PATTERNS, "approval_env": "RELEASE_APPROVAL"}})
+        prot = self.repo.config()["protect"]
+        self.assertNotIn("deploy_patterns", prot)
+        self.assertNotIn("deploy_approval_env", prot)
+        cfg = Config(self.repo.root)
+        self.assertEqual((cfg.get("protect.deploy_patterns"), cfg.get("protect.deploy_approval_env")),
+                         (DEPLOY_PATTERNS, "RELEASE_APPROVAL"))
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        make_v1_repo(other, dict(V1_CONFIG, environments={"production": {"patterns": DEPLOY_PATTERNS, "approval_env": "OK_PROD"}}))
+        res = other.init()
+        self.assertNotIn("deploy_patterns", other.config()["protect"])
+        self.assertEqual(other.config()["protect"]["deploy_approval_env"], "OK_PROD")      # only what differs is written
+        self.assertFalse([n for n in res["notes"] if n.startswith("dropped") and "environments" in n])    # carried, not dropped
+
+
+class DirtyTree(Case):
+    def test_a_file_init_merges_into_that_had_uncommitted_changes_is_noted(self):
+        self.node_repo()
+        self.repo.write(".gitignore", "node_modules/\n")
+        self.repo.commit("ignore")
+        self.repo.write(".gitignore", "node_modules/\ndist/\n")                           # an edit nobody committed
+        self.repo.write("CLAUDE.md", "# Shop\n\n## Commands\n- Test: npm test\n")          # a new file nobody committed
+        res = self.repo.init()
+        self.assertEqual((verbs(res)[".gitignore"], verbs(res)["CLAUDE.md"]), ("MERGED", "MERGED"))
+        for rel in (".gitignore", "CLAUDE.md"):
+            self.assertTrue(notes_with(res, "%s had uncommitted changes before init ran" % rel), rel)
+        self.assertFalse(notes_with(res, "package.json had uncommitted"))
+        self.assertFalse(notes_with(res, ".sdlc/config.json had uncommitted"))             # created by init: nothing of anyone's
+
+    def test_a_dry_run_says_so_too_and_a_clean_tree_says_nothing(self):
+        self.node_repo()
+        self.repo.write("CLAUDE.md", "# Shop\n")
+        self.assertTrue(notes_with(self.repo.init("--dry-run"), "CLAUDE.md had uncommitted changes"))
+        self.repo.commit("claude")
+        self.assertFalse(notes_with(self.repo.init(), "uncommitted changes"))
+
+    def test_a_migration_refuses_while_the_0x_folders_have_uncommitted_changes(self):
+        make_v1_repo(self.repo)
+        self.repo.write("intent/g-new.md", intent("g-new", "approved", "G", "p", "o"))
+        self.repo.write("spec/a-ready.md", self.repo.read("spec/a-ready.md") + "\nan unsaved edit\n")
+        before = self.repo.snapshot()
+        r = self.repo.run()
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("uncommitted changes under the 0.x folders (intent/g-new.md, spec/a-ready.md)", r.stderr)
+        self.assertIn("commit or stash them and run init again; nothing was changed", r.stderr)
+        self.assertEqual(self.repo.snapshot(), before)
+        dry = self.repo.init("--dry-run")                                                   # a dry run only says it
+        self.assertTrue(notes_with(dry, "uncommitted changes under the 0.x folders"))
+        self.repo.commit("0.x edits")
+        self.assertIn("g-new", self.repo.init()["migrated"])
+
+    def test_changes_elsewhere_do_not_stop_a_migration(self):
+        make_v1_repo(self.repo)
+        self.repo.write("src/app.py", "x = 1\n")
+        res = self.repo.init()
+        self.assertEqual(sorted(res["migrated"]), ["a-ready", "b-planned", "d-draft"])
+
+
+class SubProjects(Case):
+    def test_an_android_project_one_level_down_is_suggested_and_not_filled_in(self):
+        self.repo.write("android/build.gradle", "plugins {}\n")
+        self.repo.write("android/gradlew", "#!/bin/sh\n")
+        res = self.repo.init()
+        note = [n for n in res["notes"] if n.startswith("nothing detected at the root, but android/")][0]
+        self.assertIn('init --commands "build=cd android && ./gradlew build -x test,test=cd android && ./gradlew test"', note)
+        self.assertEqual(self.repo.config()["commands"], {})
+        self.assertEqual(res["todo"], ["test"])
+
+    def test_an_xcode_project_is_suggested_with_xcodebuild(self):
+        os.makedirs(self.repo.path("ios/Shop.xcodeproj"))
+        os.makedirs(self.repo.path("node_modules/pkg"))
+        self.repo.write("node_modules/pkg/package.json", "{}\n")
+        note = [n for n in self.repo.init()["notes"] if "ios/ holds Shop.xcodeproj" in n][0]
+        self.assertIn("test=cd ios && xcodebuild test -scheme Shop -destination 'platform=iOS Simulator,name=iPhone 16'", note)
+        self.assertFalse([n for n in self.repo.init()["notes"] if "node_modules" in n])
+
+    def test_an_xcode_project_at_the_root_without_a_package_swift_and_a_service_directory_with_a_build_file(self):
+        os.makedirs(self.repo.path("Shop.xcworkspace"))
+        note = [n for n in self.repo.init()["notes"] if "the repository root holds Shop.xcworkspace" in n][0]
+        self.assertIn("test=xcodebuild test -scheme Shop", note)
+        self.assertNotIn("cd .", note)
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        other.write("services/api/go.mod", "module x\n")
+        other.write("backend/Cargo.toml", "[package]\n")
+        notes = other.init()["notes"]
+        self.assertTrue(notes_with({"notes": notes}, "but backend/ looks like a project (rust)"), notes)     # the usual names first
+        self.assertFalse(notes_with({"notes": notes}, "services/"))                                         # only one level down
+
+    def test_nothing_is_suggested_when_the_root_has_a_test_command_or_one_was_given(self):
+        self.repo.write("android/build.gradle", "plugins {}\n")
+        self.assertFalse(notes_with(self.repo.init("--commands", "test=make check"), "nothing detected"))
+        other = InitRepo()
+        self.addCleanup(other.cleanup)
+        other.write("package.json", PACKAGE_JSON)
+        other.write("android/build.gradle", "plugins {}\n")
+        self.assertFalse(notes_with(other.init(), "nothing detected"))
+
+
+class CompoundCommands(Case):
+    def test_each_simple_command_of_a_compound_one_is_allowed(self):
+        self.repo.init("--commands", "test=cd android && ./gradlew test | tee out.txt; echo done")
+        allow = json.loads(self.repo.read(".claude/settings.json"))["permissions"]["allow"]
+        for want in ("Bash(cd android*)", "Bash(./gradlew test*)", "Bash(tee out.txt*)", "Bash(echo done*)"):
+            self.assertIn(want, allow)
+        self.assertFalse([a for a in allow if "&&" in a or "{{" in a], allow)
+
+    def test_an_operator_inside_quotes_does_not_split(self):
+        self.assertEqual(I.split_compound("sh -c 'a && b' && make \"x;y\""), ["sh -c 'a && b'", "make \"x;y\""])
+        self.assertEqual(I.permissions("make test"), ["Bash(make test*)"])
+        self.assertEqual(I.permissions("cd a && cd a && make"), ["Bash(cd a*)", "Bash(make*)"])
+        self.assertEqual(I.permissions(""), [])
+
+
+class CommandProblems(Case):
+    def setUp(self):
+        super().setUp()
+        self.bin = os.path.join(self.repo.tmp, "bin")
+        os.makedirs(self.bin)
+        for name in ("npm", "pnpm", "yarn", "bun", "make"):
+            p = os.path.join(self.bin, name)
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(p, 0o755)
+        patcher = unittest.mock.patch.dict(os.environ, {"PATH": self.bin + os.pathsep + os.environ.get("PATH", "")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def problem(self, command):
+        return I.command_problem(self.repo.root, command)
+
+    def test_a_leading_cd_moves_where_the_rest_is_judged(self):
+        self.repo.write("android/gradlew", "#!/bin/sh\n")
+        self.assertEqual(self.problem("cd android && ./gradlew test"), "`./gradlew` is not executable (chmod +x ./gradlew)")
+        os.chmod(self.repo.path("android/gradlew"), 0o755)
+        self.assertEqual(self.problem("cd android && ./gradlew test"), "")
+        self.assertEqual(self.problem("./gradlew test"), "`./gradlew` not found")                  # not here, only in android/
+        self.assertEqual(self.problem("cd nowhere && make test"), "`cd nowhere`: no such folder")
+        self.assertEqual(self.problem("cd $HOME && make"), "")                                        # not judged
+
+    def test_a_script_path_must_exist_and_be_executable(self):
+        self.assertEqual(self.problem("scripts/test.sh --fast"), "`scripts/test.sh` not found")
+        self.repo.write("scripts/test.sh", "#!/bin/sh\n")
+        self.assertEqual(self.problem("scripts/test.sh --fast"), "`scripts/test.sh` is not executable (chmod +x scripts/test.sh)")
+        os.chmod(self.repo.path("scripts/test.sh"), 0o755)
+        self.assertEqual(self.problem("scripts/test.sh --fast"), "")
+        self.assertEqual(self.problem("sh scripts/test.sh"), "")                                       # run by sh: needs no mode bit
+
+    def test_a_package_script_must_be_in_package_json(self):
+        self.repo.write("package.json", json.dumps({"scripts": {"test": "jest", "build": "tsc"}}))
+        self.assertEqual(self.problem("npm run build"), "")
+        self.assertEqual(self.problem("npm test"), "")
+        self.assertEqual(self.problem("NODE_ENV=test npm run build"), "")
+        self.assertEqual(self.problem("npm run lint"), "package.json has no `lint` script")
+        self.assertEqual(self.problem("pnpm lint"), "package.json has no `lint` script")
+        self.assertEqual(self.problem("pnpm run lint"), "package.json has no `lint` script")
+        self.assertEqual(self.problem("yarn lint"), "package.json has no `lint` script")
+        self.assertEqual(self.problem("pnpm test"), "")
+        self.assertEqual(self.problem("yarn run build"), "")
+        self.assertEqual(self.problem("bun run dev"), "package.json has no `dev` script")
+        self.assertEqual(self.problem("pnpm install"), "")                                           # a package manager command
+        self.assertEqual(self.problem("yarn"), "")
+        self.assertEqual(self.problem("npm start"), "")                                              # falls back to node server.js
+        self.assertEqual(self.problem("npm run lint --workspace=web"), "")                           # another package's scripts
+        self.assertEqual(self.problem("pnpm --filter web lint"), "")
+
+    def test_a_package_script_is_looked_for_where_the_cd_leads(self):
+        self.repo.write("web/package.json", json.dumps({"scripts": {"test": "vitest"}}))
+        self.assertEqual(self.problem("cd web && npm test"), "")
+        self.assertEqual(self.problem("cd web && npm run lint"), "package.json has no `lint` script")
+
+    def test_check_reports_the_reason_next_to_the_command(self):
+        self.repo.write("package.json", json.dumps({"scripts": {"test": "jest"}}))
+        self.repo.commit("package")
+        self.repo.init("--commands", "test=npm test,build=cd ghost && make,lint=scripts/lint.sh")
+        code, got = self.repo.check(PATH=self.bin + os.pathsep + os.environ.get("PATH", ""))
+        self.assertEqual(got["cmd.test"]["status"], "ok")
+        self.assertEqual((got["cmd.build"]["status"], got["cmd.build"]["detail"]), ("warn", "cd ghost && make — `cd ghost`: no such folder"))
+        self.assertEqual(got["cmd.lint"]["detail"], "scripts/lint.sh — `scripts/lint.sh` not found")
+        self.assertEqual(code, 0)
+
+
+class ZeroXLeftoverFiles(Case):
+    def v1(self):
+        make_v1_repo(self.repo)
+
+    def test_the_0x_codeowners_starter_is_a_leftover_and_prune_removes_it(self):
+        self.v1()
+        self.repo.write(".github/CODEOWNERS", OLD_CODEOWNERS % "@freewisl")
+        self.repo.commit("codeowners")
+        res = self.repo.init()
+        self.assertIn(".github/CODEOWNERS", res["leftovers"])
+        self.assertTrue(notes_with(res, ".github/CODEOWNERS is the 0.x starter"), res["notes"])
+        self.assertTrue(notes_with(res, "if branch protection asks for code-owner review"))
+        pruned = self.repo.init("--prune")
+        self.assertEqual(verbs(pruned)[".github/CODEOWNERS"], "REMOVED")
+        self.assertFalse(self.repo.exists(".github/CODEOWNERS"))
+
+    def test_check_lists_the_codeowners_starter(self):
+        self.repo.init("--commands", "test=true")
+        self.repo.write(".github/CODEOWNERS", OLD_CODEOWNERS % "@acme")
+        code, got = self.repo.check()
+        self.assertEqual((code, got["leftovers"]["detail"]), (0, ".github/CODEOWNERS — `init --prune` removes them"))
+
+    def test_a_codeowners_somebody_wrote_or_changed_is_not_a_leftover(self):
+        self.v1()
+        for text in ("# our owners\n* @acme/platform\n",
+                     OLD_CODEOWNERS % "@acme" + "/src/payments/ @acme/payments\n",              # a rule of their own
+                     OLD_CODEOWNERS % "@acme" + "docs/ @acme/docs\n"):
+            self.repo.write(".github/CODEOWNERS", text)
+            self.assertNotIn(".github/CODEOWNERS", self.repo.init()["leftovers"], text)
+            self.repo.init("--prune")
+            self.assertTrue(self.repo.exists(".github/CODEOWNERS"))
+
+    def test_the_0x_gitignore_block_is_a_leftover_and_prune_keeps_what_is_still_true(self):
+        self.v1()
+        shutil.rmtree(self.repo.path("evals"))                                      # 0.x's evals directory is gone
+        self.repo.write(".gitignore", "node_modules/\n\n%s\n.sdlc/logs/\n.sdlc/state/\nevals/results/\n" % OLD_GITIGNORE_HEADER)
+        self.repo.commit("gitignore")
+        res = self.repo.init()
+        self.assertIn(".gitignore: 0.x lines", res["leftovers"])
+        text = self.repo.read(".gitignore")
+        self.assertIn(OLD_GITIGNORE_HEADER, text)                                    # reporting changes nothing of the block
+        pruned = self.repo.init("--prune")
+        text = self.repo.read(".gitignore")
+        self.assertNotIn(OLD_GITIGNORE_HEADER, text)
+        self.assertTrue(text.startswith("node_modules/\n"))
+        for line in (".sdlc/logs/", ".sdlc/state/", ".sdlc/worktrees/"):
+            self.assertEqual(text.splitlines().count(line), 1, line)                  # each once
+        self.assertIn(I.GITIGNORE_HEADER, text)
+        self.assertNotIn("evals/results/", text)                                     # no results/ directory, evals/ is 0.x's own
+        self.assertEqual(rows(pruned)[".gitignore"][0], "MERGED")
+        self.assertEqual(self.repo.init("--prune")["leftovers"], [])
+
+    def test_the_evals_results_line_stays_while_the_evals_directory_holds_a_teams_own_cases(self):
+        self.v1()                                                                   # evals/cases/my-own-case is theirs
+        self.repo.write(".gitignore", "%s\n.sdlc/logs/\n.sdlc/state/\nevals/results/\n" % OLD_GITIGNORE_HEADER)
+        self.repo.commit("gitignore")
+        self.repo.init("--prune")
+        text = self.repo.read(".gitignore")
+        self.assertIn("evals/results/", text)
+        self.assertNotIn(OLD_GITIGNORE_HEADER, text)
+
+    def test_the_evals_results_line_stays_while_a_results_directory_is_there(self):
+        self.v1()
+        self.repo.write(".gitignore", "%s\n.sdlc/logs/\n.sdlc/state/\nevals/results/\n" % OLD_GITIGNORE_HEADER)
+        self.repo.write("evals/results/run-1.json", "{}\n")
+        self.repo.commit("gitignore")
+        self.repo.init("--prune")
+        text = self.repo.read(".gitignore")
+        self.assertIn("evals/results/", text)
+        self.assertTrue(self.repo.exists("evals/results/run-1.json"))
+        self.assertNotIn(OLD_GITIGNORE_HEADER, text)
+
+    def test_both_headers_merge_into_one_block_and_crlf_and_bom_survive(self):
+        self.v1()
+        body = ["node_modules/", "", I.GITIGNORE_HEADER, ".sdlc/logs/", ".sdlc/state/", ".sdlc/worktrees/", "",
+                OLD_GITIGNORE_HEADER, ".sdlc/logs/", ".sdlc/state/", "sdlc-evals/results/"]
+        self.repo.write_bytes(".gitignore", ("\ufeff" + "\r\n".join(body) + "\r\n").encode("utf-8"))
+        self.repo.commit("gitignore")
+        self.repo.init("--prune")
+        raw = self.repo.read_bytes(".gitignore")
+        self.assertTrue(raw.startswith("\ufeff".encode("utf-8")))
+        text = raw.decode("utf-8-sig")
+        self.assertNotIn(OLD_GITIGNORE_HEADER, text)
+        self.assertEqual(text.count(I.GITIGNORE_HEADER), 1)
+        self.assertEqual(text.count(".sdlc/logs/"), 1)
+        self.assertEqual(text.count(".sdlc/state/"), 1)
+        self.assertNotIn("results/", text)
+        self.assertNotIn("\n", text.replace("\r\n", ""))                                # every line break is still CRLF
+
+    def test_lines_below_a_lookalike_header_are_not_the_0x_block(self):
+        self.v1()
+        self.repo.write(".gitignore", "# sdlc plugin — local state and logs\n.sdlc/logs/\n.sdlc/state/\n")
+        self.repo.commit("gitignore")
+        self.assertNotIn(".gitignore: 0.x lines", self.repo.init()["leftovers"])
+
+
+class PublicSiteCheck(Case):
+    """A repository with an index.html at its root, hosted as it is, serves CLAUDE.md, the work docs and the rest."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo.write("index.html", "<html></html>\n")
+        self.repo.init("--commands", "test=true")
+        self.repo.write("work/a-thing.md", "---\nslug: a-thing\nstatus: ready\n---\n\n## Goal\ng\n")
+        self.repo.commit("site")
+
+    def warn(self, **env):
+        code, got = self.repo.check(**env)
+        self.assertEqual(code, 0)
+        return got.get("public_site")
+
+    def test_it_fires_for_a_root_index_html_and_goes_quiet_once_vercelignore_lists_the_paths(self):
+        row = self.warn()
+        self.assertEqual(row["status"], "warn")
+        self.assertEqual(row["label"], "public site")
+        self.assertEqual(row["detail"], "CLAUDE.md, REVIEW.md, work/, .sdlc/, .claude/ would be served; list them in "
+                                        ".vercelignore (or your host's equivalent)")
+        self.assertRegex(self.repo.run("--check").stdout, r"(?m)^WARN +public site +CLAUDE\.md, REVIEW\.md, work/, \.sdlc/, \.claude/ would be served")
+        self.repo.write(".vercelignore", "CLAUDE.md\nREVIEW.md\nwork/\n.sdlc/\n.claude/\n")
+        self.assertIsNone(self.warn())
+
+    def test_a_vercelignore_that_lists_only_some_leaves_the_rest_named(self):
+        self.repo.write(".vercelignore", "work/\n.sdlc\n")
+        self.assertEqual(self.warn()["detail"].split(" would be served")[0], "CLAUDE.md, REVIEW.md, .claude/")
+
+    def test_a_repository_gitignore_does_not_answer_for_the_host(self):
+        self.repo.write(".vercelignore", "CLAUDE.md\n")
+        self.repo.write(".gitignore", self.repo.read(".gitignore") + "REVIEW.md\nwork/\n")        # git's rules, not Vercel's
+        self.assertIn("REVIEW.md, work/", self.warn()["detail"])
+
+    def test_no_index_html_no_warning_and_the_opt_out_key_silences_it(self):
+        os.remove(self.repo.path("index.html"))
+        self.repo.commit("no site")
+        self.assertIsNone(self.warn())
+        self.repo.write("index.html", "<html></html>\n")
+        self.repo.commit("site again")
+        self.assertEqual(self.warn()["status"], "warn")
+        cfg = self.repo.config()
+        cfg["check"] = {"public_site": False}
+        self.repo.write(".sdlc/config.json", json.dumps(cfg))
+        self.assertIsNone(self.warn())
+
+    def test_an_untracked_index_html_is_no_site(self):
+        os.remove(self.repo.path("index.html"))
+        self.repo.commit("no site")
+        self.repo.write("index.html", "<html></html>\n")                                           # on disk, not in git
+        self.assertIsNone(self.warn())
+
+    def test_a_build_output_means_the_checkout_is_not_what_is_served(self):
+        for name, text in (("package.json", json.dumps({"scripts": {"build": "vite build"}})),
+                           ("vercel.json", json.dumps({"outputDirectory": "dist"})),
+                           ("vercel.json", json.dumps({"buildCommand": "npm run build"})),
+                           ("netlify.toml", "[build]\n  publish = \"dist\"\n"),
+                           ("firebase.json", json.dumps({"hosting": {"public": "build"}})),
+                           ("wrangler.toml", "pages_build_output_dir = \"./out\"\n"),
+                           (".github/workflows/pages.yml",
+                            "jobs:\n  d:\n    steps:\n      - uses: actions/upload-pages-artifact@v3\n        with:\n          path: dist\n")):
+            self.repo.write(name, text)
+            self.assertIsNone(self.warn(), name)
+            os.remove(self.repo.path(name))
+        for name, text in (("vercel.json", json.dumps({"outputDirectory": "."})), ("netlify.toml", "[build]\n  publish = \".\"\n"),
+                           ("firebase.json", json.dumps({"hosting": {"public": "."}})),
+                           ("wrangler.toml", "pages_build_output_dir = \".\"\n"),
+                           (".github/workflows/pages.yml",
+                            "jobs:\n  d:\n    steps:\n      - uses: actions/upload-pages-artifact@v3\n        with:\n          path: .\n")):
+            self.repo.write(name, text)
+            self.assertIsNotNone(self.warn(), name)                                                 # the root itself is served
+            os.remove(self.repo.path(name))
+
+    def test_jekyll_leaves_out_dot_and_underscore_paths_unless_nojekyll_and_honours_exclude(self):
+        self.repo.write("_config.yml", "title: x\nexclude:\n  - CLAUDE.md\n  - work\n")
+        self.assertEqual(self.warn()["detail"].split(" would be served")[0], "REVIEW.md")           # .sdlc/ and .claude/: dot paths
+        self.repo.write(".nojekyll", "")
+        self.assertEqual(self.warn()["detail"].split(" would be served")[0], "CLAUDE.md, REVIEW.md, work/, .sdlc/, .claude/")
+
+    def test_firebase_ignore_and_not_found_rules_cover_paths_too(self):
+        self.repo.write("firebase.json", json.dumps({"hosting": {"public": ".", "ignore": ["**/.*", "work/**", "*.md"]}}))
+        self.assertIsNone(self.warn())
+        os.remove(self.repo.path("firebase.json"))
+        self.repo.write("_redirects", "/work/*  /404.html  404\n/CLAUDE.md /404.html 404!\n/.sdlc/* /404.html 404\n/.claude/* /x 404\n")
+        self.assertEqual(self.warn()["detail"].split(" would be served")[0], "REVIEW.md")
+
+    def test_tracked_0x_folders_count_too(self):
+        self.repo.write(".vercelignore", "CLAUDE.md\nREVIEW.md\nwork/\n.sdlc/\n.claude/\n")
+        self.repo.write("intent/a.md", "# a\n")
+        self.repo.write("spec/a.md", "# a\n")
+        self.repo.commit("0.x folders")
+        self.assertEqual(self.warn()["detail"].split(" would be served")[0], "intent/, spec/")
 
 
 if __name__ == "__main__":
