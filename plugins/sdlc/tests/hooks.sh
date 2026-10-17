@@ -3029,6 +3029,84 @@ assert_rc "an active item named release-prod-banner: sdlc.py ship passes the dep
 run_hook guard-bash "$SLUGDOCS" "$(j_bash "$SLUGDOCS" 'git commit -qm "sdlc(release-prod-banner): gate passed"')"
 assert_rc "an active item named release-prod-banner: committing on its branch passes" 0
 
+echo "-- deploy gate: the active item's slug is a name wherever it stands — work/<slug>.md, tests/test_<slug_>.py, <Slug>Tests.swift"
+# The slug of the item being built can carry deploy words (release-prod-banner) and the files, tests and directories of the feature
+# are named after it. While the item is active (its branch is checked out and .sdlc/state/active-work names it) the slug is replaced
+# by `_` in the text the patterns see (deploy_scrub_active): as written, with _ for -, or joined in any case (releaseProdBanner,
+# ReleaseProdBannerTests), as a whole token. With no active item, another item's slug or a stale active-work file the patterns see
+# everything; a real deploy on the same line is still caught. The accepted gap: a target named exactly like the item.
+slugv() { run_hook guard-bash "$1" "$(j_bash "$1" "$3")"; assert_rc "active slug ($4): $(short "$3")" "$2"; }   # slugv <root> <0|2> <command> <label>
+SA=$(fresh_active release-prod-banner); mk "$SA" work/release-prod-banner.md $'---\nslug: release-prod-banner\nstatus: planned\n---'   # the item is active
+SN=$(fresh_git)                                                           # no item: no active-work file
+SO=$(fresh_active other-item)                                             # another item is active
+SS=$(fresh_git); mkdir -p "$SS/.sdlc/state"; printf 'release-prod-banner\n' > "$SS/.sdlc/state/active-work"   # a stale file: its branch is not checked out
+SLUG_NAMES=(
+  'cp work/release-prod-banner.md /tmp/x.md'
+  'rm -f work/release-prod-banner.md.bak'
+  'mkdir -p tests/release_prod_banner'
+  'touch tests/test_release_prod_banner.py'
+  'tee tests/test_release_prod_banner.py < /tmp/in'
+  'mv work/release-prod-banner.md work/release-prod-banner.md.old'
+  'touch tests/test_release_prod_banner_edge.py tests/test-release-prod-banner.sh'
+  'cp -R work/release-prod-banner /tmp/x'
+)
+for c in "${SLUG_NAMES[@]}"; do
+  slugv "$SA" 0 "$c" "active"; slugv "$SN" 2 "$c" "no item"; slugv "$SO" 2 "$c" "another item"; slugv "$SS" 2 "$c" "stale file"
+done
+SLUG_DEPLOYS=(                                    # a real deploy on the line is caught whatever the slug is doing next to it
+  'cp work/release-prod-banner.md x && ./deploy.sh prod'
+  'mkdir -p tests/release_prod_banner ; vercel --prod'
+  'kubectl rollout restart deployment/api -n prod'
+  'touch tests/test_release_prod_banner.py && kubectl apply -f x.yaml -n production'
+  'rm -f work/release-prod-banner.md.bak || helm upgrade app ./chart -n prod'
+  'cp work/release-prod-banner.md "$(./deploy.sh prod)"'
+  './deploy.sh prod release-prod-banner'
+  'terraform apply -var env=prod && cp work/release-prod-banner.md x'
+  $'cp work/release-prod-banner.md x\n./release.sh live'
+)
+for c in "${SLUG_DEPLOYS[@]}"; do slugv "$SA" 2 "$c" "active, a real deploy"; done
+run_hook guard-bash "$SA" "$(j_bash "$SA" 'cp work/release-prod-banner.md x && ./deploy.sh prod')"
+assert_has "active slug: the message of a real deploy next to the slug names the command that matched" "$ERR" ", in './deploy.sh prod'"
+run_hook guard-bash "$SA" "$(j_bash "$SA" 'cp work/release-prod-banner.md x && ./deploy.sh prod')" RELEASE_APPROVAL=REL-9
+assert_rc "active slug: a real deploy next to the slug still passes with the release approval" 0
+SLUG_PARTS=(                                      # not the whole token — a longer word, another slug, a part of it — stays as it is
+  'cp work/release-prod-banners.md /tmp/x.md'
+  'cp work/release-prod-banner2.md /tmp/x.md'
+  'touch xrelease_prod_banner.md'
+  'cp work/deploy-prod-docs.md /tmp/x.md'
+  'cp work/release-prod.md /tmp/x.md'
+)
+for c in "${SLUG_PARTS[@]}"; do slugv "$SA" 2 "$c" "active, not the whole token"; done
+SB=$(fresh_active button-probe)                   # a slug without deploy words: nothing changes
+for c in 'cp work/button-probe.md /tmp/x.md' 'mkdir -p tests/button_probe' 'touch ButtonProbeTests.swift'; do
+  slugv "$SB" 0 "$c" "button-probe"
+done
+for c in 'cp work/button-probe.md x && ./deploy.sh prod' './deploy.sh prod button-probe' './deploy.sh prod-button-probe' 'touch ButtonProbeTests.swift; vercel --prod'; do
+  slugv "$SB" 2 "$c" "button-probe, a real deploy"
+done
+# joined spellings are no match for the built-in word patterns (releaseProd… has letters round the words) — a pattern written by hand
+# that has no word boundaries does match them: ReleaseProdBannerTests.swift, releaseProdBanner.ts, testReleaseProdBanner
+JP='["(deploy|release|rollout|promote)[^|;&]*(prod|production|live)"]'
+SAJ=$(fresh_active release-prod-banner); set_cfg "$SAJ" protect.deploy_patterns "$JP"
+SNJ=$(fresh_git); set_cfg "$SNJ" protect.deploy_patterns "$JP"
+SOJ=$(fresh_active other-item); set_cfg "$SOJ" protect.deploy_patterns "$JP"
+SLUG_JOINED=(
+  'touch ReleaseProdBannerTests.swift'
+  'touch src/releaseProdBanner.ts'
+  'touch src/releaseprodbanner.go'
+  'touch src/testReleaseProdBanner.ts'
+  'mkdir -p src/FakeReleaseProdBanner'
+  'cp src/ReleaseProdBanner.kt /tmp/x.kt'
+  'touch tests/test_release_prod_banner.py'
+)
+for c in "${SLUG_JOINED[@]}"; do
+  slugv "$SAJ" 0 "$c" "active, own pattern"; slugv "$SNJ" 2 "$c" "no item, own pattern"; slugv "$SOJ" 2 "$c" "another item, own pattern"
+done
+for c in 'touch ReleaseProdBannerTests.swift && ./deploy.sh prod' 'cp src/releaseProdBanner.ts x; ./deploy.sh prod' \
+         'touch src/releaseprodbannerx.go' 'touch src/xreleaseprodbanner.go' 'touch src/releaseprodbanners.go' 'touch src/ReleaseProdBanner2.kt'; do
+  slugv "$SAJ" 2 "$c" "active, own pattern, not a whole token or a real deploy"
+done
+
 echo "-- test lock: loop.forge local measures against the local default branch, like the merge gate"
 # A test merged locally by an earlier item (local forge: origin is not pushed to) exists as far as the gate is concerned.
 LB="$WORK/lf-origin.git"; git init -q --bare -b main "$LB" >/dev/null 2>&1

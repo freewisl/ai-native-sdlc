@@ -383,3 +383,7 @@ Tests: `plugins/sdlc/tests/py` (stdlib unittest, stub `claude` and `gh` in `test
 - [x] 1.2 release: merge to main, push and update
   - Released 2026-10-17 as the user asked ("이후에 지금 사용하고있는 프로젝트들에 다 적용시켜"): main fast-forwarded to the branch, pushed, and the plugin updated to 1.2.0 in both profiles.
   - GitHub push protection refused the first push: a secret-scan fixture in `tests/hooks.sh` had the shape of a Stripe test key. The unpublished commits were rewritten so the shell builds that string from two pieces (`sk_''test_…`); the file the test writes is the same.
+- [x] 1.2.1: the active item's slug is not a deploy wherever it appears
+  - Found after the 1.2.0 release by probing guard-bash with a slug that carries deploy words (`release-prod-banner`): `git`, `cat` and `sdlc.py` passed, but `cp`/`rm`/`mkdir` on `work/<slug>.md` or a test directory named after the feature were blocked as production deploys. While an item is active its slug is now left out of the match as a whole token (as written, `_` for dashes, separators dropped in any case). A real deploy on the same line is still caught.
+  - hooks 2988, scripts 91, `test_units` and `test_init` 373 (the change is shell only), `plugin validate --strict` and the marketplace.
+  - Released 2026-10-17 in the same session, with pixel-race's last 1.1.2 proposal dropped after `smoke.sh` passed 20 times in a row (PR #19 there).

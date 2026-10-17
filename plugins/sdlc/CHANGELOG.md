@@ -3,6 +3,11 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-10-17
+
+### Fixed
+- **The active item's slug is not a deploy, wherever it appears.** 1.2.0 stopped `sdlc.py ship <slug>` and `sdlc/<slug>` refs from matching the deploy patterns, but with a slug such as `release-prod-banner` a build session was still blocked as a production deploy for `cp work/release-prod-banner.md …`, `rm …`, `mkdir -p tests/release_prod_banner` and the like. While an item is active, guard-bash now leaves its slug out of the match as a whole token: as written, with `_` for its dashes, and with its separators dropped in any case (`ReleaseProdBannerTests.swift`, `releaseProdBanner.ts`). Only that slug, only while its item is active; a real deploy on the same line is still caught. The accepted gap: a deploy whose deploy words come only from the slug itself (a target named exactly like the work item) is not matched while that item is active.
+
 ## [1.2.0] - 2026-10-17
 
 Release 1.2 comes from six audits of 1.1.2: the merge gate and git plumbing, the loop, init, the hooks, the skills against the code, and the transcripts of real loop runs on two private web apps. Every finding was reproduced with a script before it was fixed. The two that mattered most:

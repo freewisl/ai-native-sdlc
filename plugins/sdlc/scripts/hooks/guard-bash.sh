@@ -17,7 +17,11 @@
 # (release-prod-banner), so the plugin's own program is not a deploy — sdlc.py, run directly or as the script of python/python3, at any
 # path (deploy_sdlc_py) — and in the text that is matched the branch refs sdlc/<slug> and sdlc-old/<slug> after a git word and the slug
 # argument of an sdlc.py subcommand are replaced by `_` (deploy_scrub_slugs); the rest of the line — `sdlc.py ship x && ./deploy.sh prod`
-# — is checked as before.
+# — is checked as before. The same goes for the ACTIVE item's slug wherever it stands as a whole token (deploy_scrub_active): the files,
+# tests and directories of a feature are named after it — `cp work/release-prod-banner.md x`, tests/test_release_prod_banner.py,
+# ReleaseProdBannerTests.swift — as written, with `_` for its dashes, or with its separators dropped in any case (camel, Pascal). Only that
+# slug, only while the item is active; a deploy that gets its deploy words from the slug itself (a target named like the item) is the
+# gap this opens.
 # (3) and (4) are best effort: the hook reads the command line, it does not run it — a program that writes on its own (python -c,
 # patch, git apply, make, a package manager, curl -o …) or a path built from a variable or brace expansion is not seen.
 # (2) also holds while an sdlc item is active (the work doc branch is checked out): then a session never merges and never pushes —
@@ -39,6 +43,7 @@ cmd=$(json_get "$input" .tool_input.command)
 [ -z "$cmd" ] && exit 0
 cmd_short=$(trunc "$(one_line "$cmd")" 100)
 initialized=false; sdlc_initialized "$root" && initialized=true
+active_slug=""; [ "$initialized" = true ] && active_slug=$(active_work_slug "$root")     # the item being built, when one applies: read by (1) and (2)
 
 # What can deploy. A text tool only prints, searches or lists its arguments, so words that look like a deploy there are text — unless an
 # option makes it run a program (deploy_text_runs); less and more are not on the list, they run what a ! line or LESSOPEN says. find,
@@ -443,6 +448,60 @@ deploy_scrub_slugs() {
   out=$(printf '%s' "$1" | LC_ALL=C awk "$SDLC_SCRUB_AWK" 2>/dev/null) && [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
   printf '%s\n' "$1"
 }
+# deploy_slug_forms <slug> → SLUG_UNDER (its dashes as underscores) and SLUG_JOIN (its separators - _ . dropped, every letter as a
+# [xX] pair — a glob for `case`, bash 3.2 has no ${var,,}); the pre-check for the awk below
+deploy_slug_forms() {
+  local s="$1" i c r lo=abcdefghijklmnopqrstuvwxyz up=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+  SLUG_UNDER="${s//-/_}"; SLUG_JOIN=""
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in
+      [a-z]) r="${lo%%"$c"*}"; SLUG_JOIN="$SLUG_JOIN[$c${up:${#r}:1}]";;
+      [0-9]) SLUG_JOIN="$SLUG_JOIN$c";;
+    esac
+  done
+}
+# deploy_scrub_active <slug> <candidates, one line each> → the same lines with the ACTIVE item's slug replaced by `_`, wherever it stands
+# as a whole token — the item a session is building names its files, tests and directories after the feature, and a feature can be
+# about releases (release-prod-banner): `cp work/<slug>.md x`, `mkdir tests/<slug_>`, tests/test_<slug_>.py, <Slug>Tests.swift, <slug>.ts.
+# Three spellings: as written (release-prod-banner) and with its dashes as underscores (release_prod_banner) — both exactly — and with
+# its separators dropped, in any case (releaseprodbanner, ReleaseProdBanner, releaseProdBanner). The text around it must not run on
+# into it: the character before and the one after are not a letter or a digit (`.md`, `/`, `_test`, a space, the ends of the line), and
+# for the joined spelling an uppercase letter is a boundary as well — the start of a new word of a camel- or Pascal-case name: the match
+# itself starting with an uppercase letter (testReleaseProdBanner, FakeReleaseProdBanner) or an uppercase letter right after it
+# (ReleaseProdBannerTests). So `release-prod-banners`, `xrelease_prod_banner` and `releaseprodbannerx` stay as they are, and so does
+# every other slug and every other word — only this item's slug goes, and what else is on the line is matched as before:
+# `cp work/<slug>.md x && ./deploy.sh prod` is still a deploy.
+# The accepted gap: a deploy whose deploy words come from the slug itself — a target named exactly like the work item (the slug
+# `prod-banner`, the command `./deploy.sh prod-banner`) — is no longer matched while that item is active. One awk, run only when the
+# text names the slug (deploy_hit).
+SDLC_ACTIVE_AWK='
+function alnum(c) { return c ~ /^[A-Za-z0-9]$/ }
+function scrub(s, pat, jn,   hay, m, out, from, p, c0, c1, a, b) {
+  m = length(pat); hay = jn ? tolower(s) : s; out = ""; from = 1
+  while ((p = index(substr(hay, from), pat)) > 0) {
+    p += from - 1
+    c0 = (p > 1) ? substr(s, p - 1, 1) : ""; c1 = substr(s, p + m, 1)
+    a = (c0 == "" || !alnum(c0) || (jn && substr(s, p, 1) ~ /[A-Z]/))
+    b = (c1 == "" || !alnum(c1) || (jn && c1 ~ /[A-Z]/))
+    if (a && b) { out = out substr(s, from, p - from) "_"; from = p + m }
+    else { out = out substr(s, from, p - from + 1); from = p + 1 }
+  }
+  return out substr(s, from)
+}
+BEGIN { s2 = slug; gsub(/-/, "_", s2); s3 = slug; gsub(/[-_.]/, "", s3) }
+{
+  l = $0
+  if (slug != s3) l = scrub(l, slug, 0)
+  if (s2 != slug) l = scrub(l, s2, 0)
+  if (s3 != "") l = scrub(l, s3, 1)
+  print l
+}'
+deploy_scrub_active() {
+  local out
+  out=$(printf '%s' "$2" | LC_ALL=C awk -v slug="$1" "$SDLC_ACTIVE_AWK" 2>/dev/null) && [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+  printf '%s\n' "$2"
+}
 # deploy_hit <command> → 0 when a simple command of it matches a deploy pattern: SDLC_DEPLOY_PATTERN is the pattern and
 # SDLC_DEPLOY_PART the text it matched (that simple command, words joined by single spaces)
 deploy_hit() {
@@ -451,6 +510,10 @@ deploy_hit() {
   deploy_collect "$1"
   [ -n "$DEPLOY_CAND" ] || return 1
   case "$DEPLOY_CAND" in *sdlc/*|*sdlc-old/*|*sdlc.py*) DEPLOY_CAND=$(deploy_scrub_slugs "$DEPLOY_CAND");; esac
+  if [ -n "$active_slug" ]; then                 # the active item's slug is a name too, in whichever spelling the text has it
+    deploy_slug_forms "$active_slug"
+    case "$DEPLOY_CAND" in *"$active_slug"*|*"$SLUG_UNDER"*|*$SLUG_JOIN*) DEPLOY_CAND=$(deploy_scrub_active "$active_slug" "$DEPLOY_CAND");; esac
+  fi
   SDLC_DEPLOY_PATTERN=$(deploy_match "$DEPLOY_CAND") || return 1
   SDLC_DEPLOY_PART=$(printf '%s\n' "$DEPLOY_CAND" | grep -E -i -m 1 -e "$SDLC_DEPLOY_PATTERN" 2>/dev/null)
   return 0
@@ -558,10 +621,10 @@ push_clause() {
   esac
   return 1
 }
-push_guard=false; work_active=false; active_slug=""
+push_guard=false; work_active=false
 if [ "$initialized" = true ]; then
   [ "$(cfg_bool "$root" .protect.block_direct_push true)" = "true" ] && push_guard=true
-  active_slug=$(active_work_slug "$root"); [ -z "$active_slug" ] || work_active=true
+  [ -z "$active_slug" ] || work_active=true
 fi
 case "$cmd" in *push*|*merge*)
   if [ "$push_guard" = true ] || [ "$work_active" = true ]; then
