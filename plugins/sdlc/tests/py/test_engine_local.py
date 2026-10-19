@@ -1021,6 +1021,7 @@ class WhatAPersonDecides(RepoCase):
         self.assertEqual(e.run(), 0)
         rec = self.repo.items_state()["a-first"]
         self.assertEqual(rec["state"], "merged")                                           # the loop clears the stale wait
+        self.assertIn("merged", rec)
         self.assertNotIn("reasons", rec)
         self.assertEqual(self.repo.status_of("b-second"), "done")                         # its dependent was released and ran
         self.assertEqual(self.counts(), {"done": 2})

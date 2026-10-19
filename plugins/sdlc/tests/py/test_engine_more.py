@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1297,6 +1298,46 @@ class StatusLines(RepoCase):
         s["review_sample"] = [{"slug": "a-first", "pr": "", "sha": "0123456789abcdef", "manual_proof": ["R%d — x" % i for i in range(1, 6)]}]
         line = [l for l in status.render(s).splitlines() if l.startswith("worth a look")][0]
         self.assertIn("(manual proof: R1 — x; manual proof: R2 — x; manual proof: R3 — x; +2 more)", line)
+
+    def merge_events(self, *rows):
+        """Events as the engine writes them, each row (seconds ago, event, decision, reason, detail)."""
+        lines = [json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - ago)), "event": event,
+                             "session_id": "", "decision": decision, "reason": reason, "detail": detail})
+                 for ago, event, decision, reason, detail in rows]
+        self.repo.write(".sdlc/logs/events.jsonl", "\n".join(lines) + "\n")
+
+    def test_a_persons_merge_is_a_recent_merge_and_in_the_median_but_is_not_auto_merged(self):
+        self.repo.add_items("a-first", ("b-second", {"title": "Second thing"}))
+        st.update(self.repo.root, "b-second", cost=3.0)
+        self.merge_events(
+            (7300, "loop.session", "allow", "", {"slug": "a-first", "cost_usd": 1.0}),
+            (7100, "loop.merge", "allow", "First thing", {"slug": "a-first", "pr": "https://github.test/o/r/pull/1",
+                                                          "cost_usd": 1.0, "mode": "auto", "sha": ""}),
+            (500, "loop.session", "allow", "", {"slug": "b-second", "cost_usd": 3.0}),
+            (330, "loop.item", "merged-by-person", "", {"slug": "b-second", "pr": "https://github.test/o/r/pull/2"}),
+            (300, "loop.item", "merged-by-person", "", {"slug": "a-first", "pr": ""}),            # the loop merged it: not twice
+            (250, "loop.item", "awaiting-merge", "https://github.test/o/r/pull/3", {"slug": "c-third"}),   # another decision
+            (200, "loop.item", "merged-by-person", "Third thing", {"slug": "c-third", "pr": ""}),   # the event names it
+            (150, "loop.item", "merged-by-person", "", {"slug": "d-gone", "pr": ""}))              # no event title, no item
+        s = self.status()
+        self.assertEqual([(m["slug"], m["by"], m["title"], m["pr"]) for m in s["recent_merges"]],
+                         [("d-gone", "person", "", ""), ("c-third", "person", "Third thing", ""),
+                          ("b-second", "person", "Second thing", "https://github.test/o/r/pull/2"),
+                          ("a-first", "loop", "First thing", "https://github.test/o/r/pull/1")])
+        self.assertEqual([m["cost_usd"] for m in s["recent_merges"]], [0, 0, 3.0, 1.0])
+        self.assertEqual((s["cost"]["median_per_merged_usd"], s["cost"]["merged_items_counted"]), (2.0, 2))      # 1.0 and 3.0
+        self.assertEqual([r["slug"] for r in s["review_sample"]], ["a-first"])                    # a person's is not auto-merged
+        out = self.repo.cli("status").stdout
+        line = re.sub(r"\(\d+[smhd] ago", "(N ago", [l for l in out.splitlines() if l.startswith("merged lately")][0])
+        self.assertEqual(line, "merged lately: d-gone (N ago, by a person), c-third (N ago, by a person), "
+                               "b-second (N ago, by a person), a-first (N ago)")
+        self.assertIn("median per merged item $2.00 (2)", out)
+
+    def test_only_the_five_newest_merges_are_shown_whoever_made_them(self):
+        self.merge_events(*[(1000 - 100 * i, "loop.item", "merged-by-person", "", {"slug": "p-%d" % i, "pr": ""}) for i in range(4)],
+                          *[(500 - 100 * i, "loop.merge", "allow", "", {"slug": "l-%d" % i, "mode": "auto"}) for i in range(3)])
+        s = self.status()
+        self.assertEqual([m["slug"] for m in s["recent_merges"]], ["l-2", "l-1", "l-0", "p-3", "p-2"])
 
     def test_manual_rows_are_read_from_the_proof_table_only(self):
         from sdlclib.status import manual_proof

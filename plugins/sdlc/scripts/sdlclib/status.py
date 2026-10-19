@@ -87,12 +87,33 @@ def collect(root: str) -> Dict[str, Any]:
     out["needs_you"] = needs_you(items, local=forge.kind == "local")
     out["items"] = [it.as_dict() for it in sorted(items.values(), key=lambda i: (i.created or "9999", i.slug))]
     out["cost"] = costs(root)
-    merges = [e for e in read_events(root, "loop.merge")]
-    out["recent_merges"] = [{"slug": (e.get("detail") or {}).get("slug", ""), "title": e.get("reason", ""),
-                             "pr": (e.get("detail") or {}).get("pr", ""), "ago": _ago(e.get("ts", "")),
-                             "cost_usd": (e.get("detail") or {}).get("cost_usd", 0)} for e in merges[-5:]][::-1]
-    out["review_sample"] = review_sample(root, cfg, merges, git, base)
+    merges = merges_on_record(root)
+
+    def recent(e: Dict[str, Any]) -> Dict[str, Any]:
+        det = e.get("detail") or {}
+        slug = det.get("slug", "")
+        person = e["by"] == "person"                  # its event carries no title and no cost: the item has them
+        title = e.get("reason", "") or (items[slug].title if person and slug in items else "")
+        cost = records.get(slug, {}).get("cost", 0) if person else det.get("cost_usd", 0)
+        return {"slug": slug, "title": title, "pr": det.get("pr", ""), "ago": _ago(e.get("ts", "")), "cost_usd": cost,
+                "by": e["by"]}
+    out["recent_merges"] = [recent(e) for e in merges[-5:]][::-1]
+    out["review_sample"] = review_sample(root, cfg, [e for e in merges if e["by"] == "loop"], git, base)   # a person's is not auto-merged
     return out
+
+
+def merges_on_record(root: str) -> List[Dict[str, Any]]:
+    """The merges the events record, oldest first, each with `by`: `loop` for the loop's own (`loop.merge`), `person` for a
+    person's (`loop.item` / `merged-by-person` — every merge in team mode, and the merge of an item that needed one). A slug
+    the loop merged is not also counted as a person's, and a person's merge written twice stands once."""
+    loop = [dict(e, by="loop") for e in read_events(root, "loop.merge")]
+    taken = {(e.get("detail") or {}).get("slug") for e in loop}
+    person: Dict[str, Dict[str, Any]] = {}
+    for e in read_events(root, "loop.item"):
+        slug = (e.get("detail") or {}).get("slug", "")
+        if e.get("decision") == "merged-by-person" and slug and slug not in taken:
+            person[slug] = dict(e, by="person")             # the latest event of a slug stands
+    return sorted(loop + list(person.values()), key=lambda e: e.get("ts", ""))
 
 
 def needs_you(items: Dict[str, Item], local: bool = False) -> List[Dict[str, Any]]:
@@ -142,7 +163,7 @@ def costs(root: str) -> Dict[str, Any]:
             week += c
         if det.get("slug"):
             per_slug[det["slug"]] = per_slug.get(det["slug"], 0.0) + c
-    merged = [(e.get("detail") or {}).get("slug") for e in read_events(root, "loop.merge")]
+    merged = [(e.get("detail") or {}).get("slug") for e in merges_on_record(root)]
     vals = [per_slug[s] for s in merged if s in per_slug and per_slug[s] > 0]
     return {"covers": "sessions the loop ran", "today_usd": round(day, 2), "week_usd": round(week, 2),
             "median_per_merged_usd": round(statistics.median(vals), 2) if vals else None, "merged_items_counted": len(vals)}
@@ -220,7 +241,9 @@ def render(s: Dict[str, Any]) -> str:
              " · median per merged item $%.2f (%d)" % (co["median_per_merged_usd"], co["merged_items_counted"])
              if co["median_per_merged_usd"] is not None else ""))
     if s["recent_merges"]:
-        L.append("merged lately: " + ", ".join("%s (%s ago)" % (m["slug"], m["ago"]) for m in s["recent_merges"]))
+        def merged(m: Dict[str, Any]) -> str:
+            return "%s (%s ago%s)" % (m["slug"], m["ago"], ", by a person" if m.get("by") == "person" else "")    # the loop's say nothing
+        L.append("merged lately: " + ", ".join(merged(m) for m in s["recent_merges"]))
     if s["review_sample"]:
         def sampled(r: Dict[str, Any]) -> str:
             line = "%s %s" % (r["slug"], r["pr"] or r["sha"][:10])

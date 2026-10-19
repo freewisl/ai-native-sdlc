@@ -190,22 +190,26 @@ class WhatAPersonDecides(RepoCase):
         self.assertNotIn("accept", entry)
         self.assertNotIn("git merge", self.repo.cli("status").stdout)
 
-    def test_a_merged_branch_is_left_to_github_to_remove(self):
+    def test_a_merged_branch_the_loop_did_not_push_is_left_in_place(self):
         self.repo.add_items("a-first")
         self.repo.git("branch", "sdlc/a-first")                                            # at main's tip: merged by any measure
         self.repo.engine().drop_merged_branch("a-first")
-        self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))
+        self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))                  # the loop never pushed it: not its to delete
 
     def test_a_pr_a_person_merged_makes_the_item_done_and_releases_its_dependents(self):
         self.waiting()
         self.gh("pr", "merge", "1", "--squash", "--delete-branch")
         e = self.repo.engine()
         self.assertEqual(e.run(), 0)
-        self.assertEqual(self.repo.items_state()["a-first"]["state"], "merged")
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec["state"], "merged")
+        self.assertIn("merged", rec)                                                      # when, as for any merge a person makes
+        (ev,) = [x for x in read_events(self.repo.root, "loop.item") if x["decision"] == "merged-by-person"]
+        self.assertEqual(ev["detail"], {"slug": "a-first", "pr": "https://github.test/o/r/pull/1"})
         self.assertEqual(self.repo.status_of("b-second", "origin/main"), "done")
         self.assertEqual(self.counts(), {"done": 2})
         self.assertEqual([k for k, *_ in self.keys()].count("a-first:build"), 1)
-        self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))                  # the branch of a PR is GitHub's to clean up
+        self.assertNotIn("sdlc/a-first", self.repo.git("branch", "--list"))               # at the commit the loop pushed: nothing is lost
 
     def test_a_pr_a_person_merged_is_done_with_no_engine_state(self):
         """The squash left the built doc on origin/main: that alone says a person merged it."""
@@ -754,7 +758,8 @@ class Team(RepoCase):
         self.assertEqual(e.run(), 0)
         self.assertEqual(self.repo.status_of("a-first", "origin/main"), "done")
         self.assertNotIn("self-check", [k for k, *_ in self.keys()])
-        self.assertEqual(e.done["merged"], [])                                    # a person's merge is not counted as the loop's
+        self.assertEqual(e.merged_since_check, [])                                # a person's merge is not one for the self-check
+        self.assertEqual(e.done["merged"], ["a-first"])                           # though the run's summary does count it
         self.assertFalse(e.self_check_due())
         self.assertNotEqual(e.git.head(), e.from_sha)                             # main did move under the loop, and still no self-check
 
@@ -778,6 +783,135 @@ class Team(RepoCase):
         self.assertEqual([c for c in calls if c.startswith(("pr view", "run view")) or "statusCheckRollup" in c], [])
         with open(e.log_path) as fh:
             self.assertNotIn("CHECKS", fh.read())
+
+    def human_close(self, number):
+        import subprocess
+        r = subprocess.run([os.path.join(os.path.dirname(__file__), "stubs", "gh"), "pr", "close", str(number)], cwd=self.repo.root,
+                           env=self.repo.env(), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def built_and_waiting(self, slug="a-first"):
+        """The item's design approved and its build done in earlier runs: its PR waits for a person to merge."""
+        self.repo.add_items(slug)
+        self.assertEqual(self.repo.engine().run(), 0)                             # the design PR waits for approval
+        self.approve(1)
+        self.assertEqual(self.repo.engine().run(), 0)                             # built and gated: waits for a person to merge
+        self.assertEqual(self.repo.items_state()[slug]["state"], "awaiting-merge")
+        self.assertIn("sdlc/" + slug, self.repo.git("branch", "--list"))
+
+    def waiting_run(self, meanwhile):
+        """An engine that polls without delay and calls `meanwhile(n)` at its n-th sleep — a person acting while the loop waits."""
+        e = self.repo.engine()
+        e.idle_max = 30
+        orig, calls = e.sleep, {"n": 0}
+
+        def sleep(seconds):
+            calls["n"] += 1
+            meanwhile(calls["n"])
+            return orig(0.01)
+        e.sleep = sleep
+        return e
+
+    def test_a_merge_a_person_makes_while_the_loop_waits_is_recorded_counted_and_its_branch_removed(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)                             # the design PR waits for approval
+        self.approve(1)
+
+        def meanwhile(n):
+            if n == 1:                                                            # the build is done; a person merges the PR
+                self.assertEqual(self.repo.items_state()["a-first"]["state"], "awaiting-merge")
+                self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))
+                self.human_merge(1)
+        e = self.waiting_run(meanwhile)
+        self.assertEqual(e.run(), 0)
+        rec = self.repo.items_state()["a-first"]
+        self.assertEqual(rec["state"], "merged")
+        self.assertIn("merged", rec)
+        self.assertNotIn("reasons", rec)
+        with open(e.log_path) as fh:
+            log = fh.read()
+        self.assertEqual(log.count("MERGED  a-first — merged by a person\n"), 1)
+        self.assertIn("== done  merged=1 awaiting=0 parked=0 needs_human=0 failed=0 stop=queue empty", log)
+        (ev,) = [x for x in read_events(self.repo.root, "loop.item") if x["decision"] == "merged-by-person"]
+        self.assertEqual(ev["detail"], {"slug": "a-first", "pr": "https://github.test/o/r/pull/1"})
+        self.assertEqual(e.done, {"merged": ["a-first"], "awaiting": [], "parked": [], "failed": [], "needs-human": []})
+        self.assertEqual(e.merged_since_check, [])                                # not the loop's merge
+        self.assertEqual([x["event"] for x in read_events(self.repo.root, "loop.merge")], [])
+        self.assertNotIn("sdlc/a-first", self.repo.git("branch", "--list"))        # it held only what was pushed: gone with the PR
+
+    def test_a_branch_with_a_commit_that_was_never_pushed_stays_after_a_person_merges(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.approve(1)
+
+        def meanwhile(n):
+            if n == 1:                                                            # a commit on the local branch only
+                tree = self.repo.git("rev-parse", "sdlc/a-first^{tree}")
+                new = self.repo.git("commit-tree", tree, "-p", "sdlc/a-first", "-m", "never pushed")
+                self.repo.git("update-ref", "refs/heads/sdlc/a-first", new)
+                self.human_merge(1)
+        e = self.waiting_run(meanwhile)
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "merged")   # the merge is recorded all the same
+        self.assertIn("sdlc/a-first", self.repo.git("branch", "--list"))
+        self.assertEqual(self.repo.git("log", "-1", "--format=%s", "sdlc/a-first"), "never pushed")
+
+    def test_a_merge_between_runs_is_recorded_but_is_in_no_summary(self):
+        self.built_and_waiting()
+        self.human_merge(1)
+        e = self.repo.engine()
+        self.assertEqual(e.run(), 0)                                              # the next run's first look takes it in
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "merged")
+        self.assertEqual(len([x for x in read_events(self.repo.root, "loop.item") if x["decision"] == "merged-by-person"]), 1)
+        with open(e.log_path) as fh:
+            log = fh.read()
+        self.assertIn("MERGED  a-first — merged by a person\n", log)
+        self.assertIn("== done  merged=0 awaiting=0 parked=0 needs_human=0 failed=0 stop=queue empty", log)
+        self.assertEqual(e.done["merged"], [])
+        self.assertNotIn("sdlc/a-first", self.repo.git("branch", "--list"))
+
+    def test_an_item_that_waited_through_its_approval_and_its_merge_is_counted_once(self):
+        self.repo.add_items("a-first")
+        approved = {"done": False}
+
+        def meanwhile(n):
+            if not approved["done"]:
+                approved["done"] = True
+                self.approve(1, how="label")                                      # the design waited; the build is next
+        e = self.waiting_run(meanwhile)
+        e.max_items = 2                                                           # the design, then the build: the merge never comes
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "awaiting-merge")
+        self.assertEqual(e.done["awaiting"], ["a-first"])
+        with open(e.log_path) as fh:
+            self.assertIn("== done  merged=0 awaiting=1 parked=0 needs_human=0 failed=0 stop=max_items (2)", fh.read())
+
+    def test_a_pr_a_person_closes_while_the_loop_waits_takes_the_item_off_the_summary(self):
+        self.repo.add_items("a-first")
+        self.assertEqual(self.repo.engine().run(), 0)
+        self.approve(1)
+
+        def meanwhile(n):
+            if n == 1:
+                self.human_close(1)
+        e = self.waiting_run(meanwhile)
+        self.assertEqual(e.run(), 0)
+        self.assertEqual(self.repo.items_state()["a-first"]["state"], "closed")
+        self.assertEqual((e.done["awaiting"], e.done["merged"]), ([], []))
+        with open(e.log_path) as fh:
+            self.assertIn("== done  merged=0 awaiting=0 parked=0 needs_human=0 failed=0 stop=queue empty", fh.read())
+
+    def test_a_person_settling_a_needs_human_item_moves_it_in_the_summary(self):
+        e = self.repo.engine()
+        e.done["needs-human"] = ["a-first", "b-second"]
+        e.done["awaiting"] = ["c-third"]
+        e.merged_by_person("a-first")
+        e.merged_by_person("c-third")
+        e.merged_by_person("z-earlier")                                           # left waiting by an earlier run: not this run's
+        e.leave_waiting("b-second")                                               # closed
+        self.assertEqual(e.done, {"merged": ["a-first", "c-third"], "awaiting": [], "parked": [], "failed": [],
+                                  "needs-human": []})
+        self.assertEqual(e.merged_since_check, [])
 
     def test_team_mode_without_a_remote_is_refused(self):
         self.repo.git("remote", "remove", "origin")

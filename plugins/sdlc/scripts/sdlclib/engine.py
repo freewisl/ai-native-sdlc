@@ -475,7 +475,7 @@ class Engine:
             return
         if out in (Outcome.FAILED, Outcome.INFRA):
             self.consec += 1
-            if out == Outcome.FAILED:
+            if out == Outcome.FAILED and slug not in self.done["failed"]:
                 self.done["failed"].append(slug)
             self.failed_now.append(slug)
         else:
@@ -483,7 +483,7 @@ class Engine:
             key = {"merged": "merged", "awaiting": "awaiting", "parked": "parked", "needs-human": "needs-human"}.get(out)
             if out == Outcome.SKIPPED:
                 self.failed_now.append(slug)
-            if key:
+            if key and slug not in self.done[key]:       # an item that waited through its approval and its merge is one item
                 self.done[key].append(slug)
             if out == Outcome.MERGED:
                 self.merged_since_check.append(slug)
@@ -1237,43 +1237,72 @@ class Engine:
                     st.update(self.root, it.slug, state="closed")
                     it.phase, it.wait_kind = "closed", ""
                     self.say("CLOSED  %s — PR closed by a person" % it.slug)
+                    self.leave_waiting(it.slug)
 
     def poll_human(self, items: Dict[str, Item]) -> bool:
         """Items that wait for a person are out of the loop's hands. A person who merged the change left the doc `built`
-        (or `done`) on the default branch, which the queue already reads as done: only the stale wait is cleared here.
+        (or `done`) on the default branch, which the queue already reads as done: the record that still says the item waited
+        — for a fix (`needs-human`) or for the merge itself (`awaiting-merge`) — is settled here, as a merge by a person.
         A merge that left the doc at another status (a blocked item's PR) is told by the PR (locally: the branch being
         merged); a PR a person closed closes the item. True when an item moved."""
         moved = False
         for it in items.values():
             gh = self.forge.kind == "github"
-            if it.phase == "done" and it.rec.get("state") == "needs-human":
-                st.update(self.root, it.slug, state="merged", reasons=None)
-                self.say("MERGED  %s — merged by a person" % it.slug)
-                self.event("loop.item", "merged-by-person", "", {"slug": it.slug})
-                self.drop_merged_branch(it.slug)
+            if it.phase == "done" and it.rec.get("state") in ("needs-human", "awaiting-merge"):
+                self.merged_by_person(it.slug)
                 continue
             if it.phase == "needs-human" or (it.phase == "blocked" and gh):
                 if gh and not it.rec.get("pr"):
                     continue                           # nothing was published for it, so there is no PR to have moved
                 s = self.forge.state(it.slug)
                 if s == "merged":
-                    st.update(self.root, it.slug, state="merged", reasons=None)
-                    self.say("MERGED  %s — merged by a person" % it.slug)
-                    self.event("loop.item", "merged-by-person", "", {"slug": it.slug})
-                    self.drop_merged_branch(it.slug)
+                    self.merged_by_person(it.slug)
                     moved = True
                 elif s == "closed" and gh:
                     st.update(self.root, it.slug, state="closed", reasons=None)
                     self.say("CLOSED  %s — PR closed by a person" % it.slug)
                     self.event("loop.item", "closed-by-person", "", {"slug": it.slug})
+                    self.leave_waiting(it.slug)
                     moved = True
         return moved
 
+    def merged_by_person(self, slug: str, **record: object) -> None:
+        """The one place a person's merge of an item the loop waited on is taken in — a fix it handed over, the merge it
+        waited for in team mode, a PR whose checks it was waiting for: the record says `merged` (with when, and the PR), the
+        line and the event say whose merge it was, and the branch it leaves behind goes if it holds nothing else. It is not
+        the loop's merge, so no self-check counts it (`merged_since_check`); the run summary does."""
+        rec = st.update(self.root, slug, state="merged", reasons=None, merged=now_iso(), **record)
+        self.say("MERGED  %s — merged by a person" % slug)
+        self.event("loop.item", "merged-by-person", "", {"slug": slug, "pr": rec.get("pr", "")})
+        self.drop_merged_branch(slug)
+        if self.leave_waiting(slug) and slug not in self.done["merged"]:
+            self.done["merged"].append(slug)
+
+    def leave_waiting(self, slug: str) -> bool:
+        """Take `slug` off the run summary's waiting lists (`awaiting`, `needs-human`) — a person settled it, so it no longer
+        waits. True when this run had put it there: an item an earlier run left waiting is not this run's to count."""
+        was = False
+        for key in ("awaiting", "needs-human"):
+            while slug in self.done[key]:
+                self.done[key].remove(slug)
+                was = True
+        return was
+
     def drop_merged_branch(self, slug: str) -> None:
-        """Without a remote nothing else removes the branch a person merged by hand (on GitHub the PR's merge does). Safe
-        delete: a branch that is not merged into the checked-out one — a squash — stays, and a failure is left alone."""
-        if self.forge.kind == "local" and self.git.branch() != "sdlc/" + slug:
-            self.git("branch", "-d", "sdlc/" + slug)
+        """The local `sdlc/<slug>` after a person merged its change; never the checked-out one. Without a remote nothing else
+        removes it (`-d`: a branch that is not merged into the checked-out one — a squash — stays, and a failure is left alone).
+        On GitHub the PR's merge removed origin's branch only: this one goes too when its tip is exactly the `remote_sha` the
+        loop recorded, so it holds nothing that was never pushed (`-D`: a squash leaves it unmerged by git's measure). A
+        branch with any other commit is left as it is."""
+        b = "sdlc/" + slug
+        if self.git.branch() == b:
+            return
+        if self.forge.kind == "local":
+            self.git("branch", "-d", b)
+        elif self.forge.kind == "github":
+            tip = self.git.head("refs/heads/" + b)
+            if tip and tip == str(st.item(self.root, slug).get("remote_sha") or ""):
+                self.git("branch", "-D", b)
 
     # ------------------------------------------------------------------ gate, ship
     def gate_phase(self, slug: str) -> str:
@@ -1473,9 +1502,7 @@ class Engine:
         """A person merged or closed the PR while the loop waited for its checks. Nothing is left to do for the loop — and it
         was not the loop's merge, so it counts toward no self-check."""
         if state == "merged":
-            st.update(self.root, slug, state="merged", reasons=None, merged=now_iso(), ci_rounds=None)
-            self.say("MERGED  %s — merged by a person" % slug)
-            self.event("loop.item", "merged-by-person", "", {"slug": slug})
+            self.merged_by_person(slug, ci_rounds=None)
         else:
             st.update(self.root, slug, state="closed")
             self.say("CLOSED  %s — PR closed by a person" % slug)
