@@ -38,7 +38,7 @@ class Setup(unittest.TestCase):
         e = dict(os.environ)
         e.update(BASE_ENV)
         for k in ("CLAUDE_PROJECT_DIR", "GH_HOST", "STUB_GH_COLLAB", "STUB_GH_LOGGED_OUT", "STUB_GH_RULESET_ID", "STUB_GH_RULESET_FAIL",
-                  "STUB_GH_PATCH_FAIL", "STUB_GH_NO_REPO", "STUB_GH_LOGIN_FAIL") + tuple(FAKE_TOKENS):
+                  "STUB_GH_PATCH_FAIL", "STUB_GH_NO_REPO", "STUB_GH_LOGIN_FAIL", "SHIM_LOOKUP_BODY", "SHIM_LOOKUP_RC") + tuple(FAKE_TOKENS):
             e.pop(k, None)
         e.update({"STUB_GH_DB": self.db, "HOME": os.path.join(self.tmp, "home"), "PATH": STUBS + os.pathsep + e.get("PATH", "")})
         for k, v in extra.items():
@@ -339,6 +339,108 @@ class Apply(Setup):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("auth status --hostname git.corp.example.com", self.calls())
         self.assertEqual(set(self.gh_db()["hosts"]), {"git.corp.example.com"})
+
+
+class RulesetLookup(Setup):
+    """The lookup of an existing ruleset (GET repos/…/rulesets): what gh answers decides between create, update and "unavailable".
+    The stub gh cannot refuse that call, so a shim in front of it answers the lookup with a given stdout and exit status (what gh
+    does when the API refuses: the error body on stdout and a non-zero exit) and hands every other call to the stub."""
+    PATCH = "api -X PATCH repos/acme/widgets -F allow_auto_merge=true -F delete_branch_on_merge=true"
+    FORBIDDEN = ('{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.",'
+                 '"documentation_url":"https://docs.github.com/rest/repos/rules#get-all-repository-rulesets","status":"403"}')
+    REASON = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+    HINT = "Rulesets on private repositories need GitHub Pro/Team/Enterprise (public repositories: free)."
+    GUARD = "The plugin's push guard (protect.block_direct_push) still keeps the agent off the default branch."
+
+    def lookup(self, body, rc=0):
+        """The environment of a run whose ruleset lookup prints `body` and exits `rc`."""
+        shim = os.path.join(self.tmp, "shim")
+        os.makedirs(shim, exist_ok=True)
+        real = os.path.join(STUBS, "gh")
+        with open(os.path.join(shim, "gh"), "w") as fh:
+            fh.write('#!/bin/bash\ncase "$*" in\n'
+                     '  "api repos/"*"/rulesets --jq "*) %(real)s "$@" >/dev/null 2>&1; printf \'%%s\' "$SHIM_LOOKUP_BODY"; '
+                     'exit "$SHIM_LOOKUP_RC";;\nesac\nexec %(real)s "$@"\n' % {"real": real})
+        os.chmod(os.path.join(shim, "gh"), 0o755)
+        return {"PATH": os.pathsep.join([shim, STUBS, os.environ.get("PATH", "")]), "SHIM_LOOKUP_BODY": body, "SHIM_LOOKUP_RC": str(rc)}
+
+    def writes(self):
+        """The calls that would create or change a ruleset."""
+        return [c for c in self.calls() if "/rulesets" in c and "-X" in c.split()]
+
+    def test_a_refused_lookup_is_unavailable_in_a_dry_run_and_never_an_id(self):
+        r = self.run_script("--dry-run", STUB_GH_COLLAB="3", **self.lookup(self.FORBIDDEN, 1))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("RULESET unavailable — %s\n" % self.REASON, r.stdout)
+        self.assertIn(self.HINT, r.stdout)
+        self.assertIn(self.GUARD, r.stdout)
+        for bogus in ("would update", "would create", "#{", '"message"'):
+            self.assertNotIn(bogus, r.stdout.replace(self.REASON, ""), bogus)
+        self.assertEqual((self.writes(), self.inputs()), ([], []))
+
+    def test_a_refused_lookup_stops_a_real_run_before_any_ruleset_call_and_exits_1(self):
+        r = self.run_script(STUB_GH_COLLAB="3", **self.lookup(self.FORBIDDEN, 1))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("RULESET unavailable — %s\n" % self.REASON, r.stderr)
+        self.assertIn(self.HINT, r.stderr)
+        self.assertIn(self.GUARD, r.stderr)
+        self.assertNotIn("RULESET failed", r.stderr)
+        self.assertNotIn("RULESET", r.stdout)
+        self.assertEqual((self.writes(), self.inputs()), ([], []))                    # no PUT to rulesets/{"message":…}, no POST
+        self.assertFalse([c for c in self.calls() if "rulesets/" in c])
+        self.assertIn(self.PATCH, self.calls())                                         # the repository settings ran before
+        self.assertIn("REPO    allow_auto_merge=true", r.stdout)
+
+    def test_a_lookup_that_fails_without_a_message_gives_a_generic_reason(self):
+        for body in ("", "gh: could not connect to api.github.com", '{"status":"502"}', "[]", "not json {"):
+            with self.subTest(body=body):
+                r = self.run_script("--dry-run", **self.lookup(body, 1))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("RULESET unavailable — the rulesets API did not answer\n", r.stdout)
+                self.assertNotIn("would update", r.stdout)
+                self.assertNotIn("would create", r.stdout)
+                r = self.run_script(**self.lookup(body, 1))
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("RULESET unavailable — the rulesets API did not answer\n", r.stderr)
+                self.assertEqual(self.writes(), [])
+
+    def test_a_not_found_is_a_failure_too_and_keeps_the_message_of_the_body(self):
+        body = '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+        r = self.run_script(**self.lookup(body, 1))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("RULESET unavailable — Not Found\n", r.stderr)
+        self.assertEqual(self.writes(), [])
+
+    def test_an_empty_list_is_a_success_and_the_ruleset_is_created(self):
+        r = self.run_script("--dry-run", **self.lookup("", 0))
+        self.assertIn("RULESET would create 'sdlc: protect default branch'", r.stdout)
+        self.assertNotIn("unavailable", r.stdout)
+        r = self.run_script(STUB_GH_COLLAB="3", **self.lookup("", 0))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.writes(), ["api -X POST repos/acme/widgets/rulesets --input -"])
+
+    def test_a_match_is_updated_by_its_id(self):
+        r = self.run_script("--dry-run", **self.lookup("77\n", 0))
+        self.assertIn("RULESET would update #77 'sdlc: protect default branch'", r.stdout)
+        r = self.run_script(STUB_GH_COLLAB="3", **self.lookup("77\n", 0))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.writes(), ["api -X PUT repos/acme/widgets/rulesets/77 --input -"])
+
+    def test_the_first_of_several_matches_is_the_one_updated(self):
+        r = self.run_script("--dry-run", **self.lookup("77\n88\n", 0))
+        self.assertIn("RULESET would update #77 ", r.stdout)
+
+    def test_an_answer_that_is_not_an_id_is_not_used_as_one(self):
+        for body in ('{"message":"surprise"}', "77abc", "abc", "#77", "-1", "7 7", "null"):
+            with self.subTest(body=body):
+                r = self.run_script("--dry-run", **self.lookup(body + "\n", 0))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn("RULESET would create ", r.stdout)
+                self.assertNotIn("update #", r.stdout)
+                r = self.run_script(STUB_GH_COLLAB="3", **self.lookup(body + "\n", 0))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(self.writes()[-1], "api -X POST repos/acme/widgets/rulesets --input -")
+                self.assertFalse([c for c in self.calls() if "-X PUT" in c])
 
 
 class Repository(Setup):

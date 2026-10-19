@@ -96,7 +96,21 @@ elif gh api -X PATCH "repos/$repo" -F allow_auto_merge=true -F delete_branch_on_
 else echo "REPO    could not enable allow_auto_merge / delete_branch_on_merge (permission) — set them under Settings → General" >&2; fi
 
 # ---------- 2. ruleset ----------
-existing=$(gh api "repos/$repo/rulesets" --jq ".[] | select(.name==$(json_escape "$rs_name")) | .id" 2>/dev/null | head -1)
+# The lookup's own exit status decides (head's would hide it). When the API refuses — a private repository without GitHub Pro answers
+# 403, and 404 or no network fail the same way — gh exits non-zero and prints the error body on stdout: that is "rulesets are not
+# available", never a ruleset id to PUT to. A list with no match (or no rulesets yet) is a success with nothing found: create.
+existing=""; rs_unavailable=""
+if lookup=$(gh api "repos/$repo/rulesets" --jq ".[] | select(.name==$(json_escape "$rs_name")) | .id" 2>/dev/null); then
+  existing=$(printf '%s\n' "$lookup" | head -1)
+  case "$existing" in ''|*[!0-9]*) existing="";; esac   # an id is digits; anything else is not one
+else
+  rs_unavailable=$(json_get "$lookup" .message | head -1); [ -z "$rs_unavailable" ] && rs_unavailable="the rulesets API did not answer"
+fi
+rs_plan_hint="        Rulesets on private repositories need GitHub Pro/Team/Enterprise (public repositories: free). The plugin's push guard (protect.block_direct_push) still keeps the agent off the default branch."
+if [ -n "$rs_unavailable" ]; then   # nothing to create or update: say why; a dry run still exits 0, a real run did not set the ruleset up
+  if [ "$dry" = 1 ]; then printf 'RULESET unavailable — %s\n%s\n' "$rs_unavailable" "$rs_plan_hint"; exit 0; fi
+  printf 'RULESET unavailable — %s\n%s\n' "$rs_unavailable" "$rs_plan_hint" >&2; exit 1
+fi
 checks_json=$(printf '%s' "$checks" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' | while IFS= read -r c; do printf '{"context":%s},' "$(json_escape "$c")"; done); checks_json="[${checks_json%,}]"
 bypass_json='[]'   # default: no bypass, so a required check stays enforced even for the owner (approvals 0 already lets a solo owner merge)
 [ "$want_bypass" = 1 ] && [ "$no_bypass" = 0 ] && bypass_json='[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"pull_request"}]'   # --bypass: an admin skips ALL rules on PRs
@@ -141,7 +155,7 @@ if [ $rc -ne 0 ] && [ "$first" = true ]; then
   fi
 elif [ $rc -ne 0 ]; then
   echo "RULESET failed:" >&2; printf '%s\n' "$out" | head -5 >&2
-  echo "        Rulesets on private repositories need GitHub Pro/Team/Enterprise (public repositories: free). The plugin's push guard (protect.block_direct_push) still keeps the agent off the default branch." >&2; exit 1
+  printf '%s\n' "$rs_plan_hint" >&2; exit 1
 else
   echo "RULESET '$rs_name' applied: $(summary "$first")"
 fi
