@@ -3,6 +3,18 @@
 All notable changes to the `sdlc` plugin are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-10-19
+
+### Fixed
+- **`github-setup.sh` no longer reads a rulesets API error as a ruleset id.** On a private repository without GitHub Pro the rulesets API answers 403 and `gh api` prints the error body, which the script took as the id of an existing ruleset: `--dry-run` printed `RULESET would update #{"message":"Upgrade to GitHub Pro…"}` and a real run sent a PUT to that "id". The script now checks the lookup's own exit status and uses only a numeric id. When the API refuses, it says `RULESET unavailable — <GitHub's message>` with the plan hint (rulesets on private repositories need GitHub Pro/Team/Enterprise; the plugin's push guard still keeps the agent off the default branch) and creates or updates nothing — exit 0 on a dry run, 1 on a real one, after the repository settings step as before. Found in an end-to-end trial on a private repository.
+- **A person's merge in team mode is recorded as a merge.** In the same trial a team item waited through its design approval and its merge, a person merged the PR, and the loop ended with `merged=0 awaiting=2`, left the item recorded as `awaiting-merge`, and `sdlc.py status` never listed it: "merged lately" and the cost per merged item read only the loop's own merges, so in team mode they stayed empty. Now:
+  - the loop records the merge (`MERGED  <slug> — merged by a person`, a `merged-by-person` event with the PR, the time in the item's record), as it already did for a needs-human item a person merged;
+  - the run summary counts each item once and moves an item a person merged during the run from `awaiting` (or `needs_human`) to `merged`; a self-check still reviews only the loop's own merges;
+  - `sdlc.py status` lists a person's merges in "merged lately" (`slug (5m ago, by a person)`, `"by": "person"` in `--json`) and counts them in the median cost; "auto-merged, not rated" stays the loop's merges only;
+  - on GitHub the local `sdlc/<slug>` branch is deleted after a person's merge when it sits at exactly the commit the loop pushed; a branch with any other commit stays.
+
+  The first run after the update records team items that were merged earlier, with the time of that run.
+
 ## [1.2.1] - 2026-10-17
 
 ### Fixed

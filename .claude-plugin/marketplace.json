@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "말로 시키면 변경 하나가 작업 문서·구현·리뷰·셸 머지 게이트를 거쳐 머지까지 가고, 여러 건은 백그라운드 루프가 큐로 처리하는 Claude Code 플러그인 마켓플레이스. Anthropic 의 AI-native SDLC 플레이북에서 루프 발상을 따왔습니다.",
-    "version": "1.2.1"
+    "version": "1.2.2"
   },
   "plugins": [
     {
