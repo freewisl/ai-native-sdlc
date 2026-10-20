@@ -19,7 +19,7 @@ for n in $names; do
   case "$n" in
     01-usage) render "$n" 966 ;;
     02-go-flow) render "$n" 874 ;;
-    04-hooks) render "$n" 894 ;;
+    04-hooks) render "$n" 928 ;;
     *) echo "unknown picture: $n" >&2; exit 1 ;;
   esac
 done

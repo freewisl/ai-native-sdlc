@@ -1,7 +1,7 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>훅</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=Gowun+Dodum&display=swap"><link rel="stylesheet" href="_style.css">
 <style>
-body{height:894px}
+body{height:928px}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:24px}
 .pn{background:var(--paper-2);border-radius:22px;padding:18px 20px 20px}
 .pn .hd{display:flex;align-items:center;gap:12px}
@@ -73,10 +73,10 @@ body{height:894px}
         <div><b>셸로 고치거나 지워도 막음</b><span>잠긴 테스트와 설계 전 코드에 <code>rm</code>, <code>mv</code>, <code>cp</code>, <code>sed -i</code>, <code>tee</code>, 리다이렉션, <code>git rm/checkout/restore</code></span></div></div>
       <div class="lk">
         <svg viewBox="0 0 40 40"><rect x="8" y="12" width="24" height="18" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="2"/><path d="M8 21 h24" stroke="var(--ink)" stroke-width="2"/><text x="20" y="19" text-anchor="middle" font-size="7">main</text><path d="M15 28 l10 -6 M15 22 l10 6" stroke="var(--stop)" stroke-width="2.5" stroke-linecap="round"/></svg>
-        <div><b>정문은 잠겨 있어요</b><span>기본 브랜치로 직접 push 차단 — 브랜치 + PR 로만</span></div></div>
+        <div><b>정문은 잠겨 있어요</b><span>기본 브랜치로 직접 push 차단 — 브랜치 + PR 로만<br>sdlc 작업 중엔 <code>git push</code>·<code>gh pr merge</code> 전부 — 엔진 몫</span></div></div>
       <div class="lk">
         <svg viewBox="0 0 40 40"><rect x="7" y="13" width="26" height="18" rx="4" fill="var(--paper)" stroke="var(--ink)" stroke-width="2"/><rect x="14" y="7" width="12" height="10" rx="6" fill="none" stroke="var(--ink)" stroke-width="2"/><text x="20" y="26" text-anchor="middle" font-size="8">PROD</text></svg>
-        <div><b>홀로 나가는 문</b><span>운영 배포 명령은 <code>RELEASE_APPROVAL</code> 없이는 차단</span></div></div>
+        <div><b>홀로 나가는 문</b><span>운영 배포 명령은 <code>RELEASE_APPROVAL</code> 없이는 차단<br>루프 세션에는 이 승인이 넘어가지 않음</span></div></div>
       <div class="lk">
         <svg viewBox="0 0 40 40"><circle cx="13" cy="20" r="7" fill="var(--sun)" stroke="var(--ink)" stroke-width="2.5"/><circle cx="13" cy="20" r="2.2" fill="var(--ink)"/><path d="M20 20 h16 M30 20 v6 M35 20 v5" stroke="var(--ink)" stroke-width="3" stroke-linecap="round" fill="none"/></svg>
         <div><b>커밋에도 열쇠 금지</b><span><code>git commit</code> 이 가져갈 변경을 비밀 스캔<br>같은 줄의 <code>git add</code>·<code>-a</code> 까지</span></div></div>
