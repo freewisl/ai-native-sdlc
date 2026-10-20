@@ -1,0 +1,278 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "/sdlc:run 루프 — 큐에서 머지까지",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "메인"
+    },
+    {
+      "id": "side",
+      "label": "곁가지",
+      "variant": "exception"
+    }
+  ],
+  "mainPath": [
+    "enqueue",
+    "pick",
+    "design",
+    "build",
+    "gate",
+    "pr",
+    "merge"
+  ],
+  "nodes": [
+    {
+      "id": "pick",
+      "lane": "main",
+      "col": 0,
+      "type": "messagebus",
+      "label": "항목 고르기",
+      "sublabel": "의존 순서 · claim",
+      "width": 104
+    },
+    {
+      "id": "design",
+      "lane": "main",
+      "col": 1,
+      "type": "backend",
+      "label": "설계 세션",
+      "sublabel": "opus · Plan + Proof",
+      "width": 104
+    },
+    {
+      "id": "build",
+      "lane": "main",
+      "col": 2,
+      "type": "backend",
+      "label": "구현 세션",
+      "sublabel": "구현 sonnet · 리뷰 opus",
+      "width": 104
+    },
+    {
+      "id": "gate",
+      "lane": "main",
+      "col": 3,
+      "type": "security",
+      "label": "셸 게이트",
+      "sublabel": "토큰 0 · 7가지 검사",
+      "width": 104
+    },
+    {
+      "id": "pr",
+      "lane": "main",
+      "col": 4,
+      "type": "external",
+      "label": "PR · 체크",
+      "sublabel": "체크 대기 최대 30분",
+      "width": 104,
+      "brand": "github"
+    },
+    {
+      "id": "merge",
+      "lane": "main",
+      "col": 5,
+      "type": "external",
+      "label": "머지",
+      "sublabel": "solo 엔진 · team 사람",
+      "width": 104
+    },
+    {
+      "id": "enqueue",
+      "lane": "side",
+      "col": 0,
+      "type": "messagebus",
+      "label": "큐에 올림",
+      "sublabel": "목표 → 작업 문서 N개",
+      "width": 104
+    },
+    {
+      "id": "approval",
+      "lane": "side",
+      "col": 2,
+      "type": "external",
+      "label": "설계 승인 대기",
+      "sublabel": "team · 10분마다 확인",
+      "width": 116
+    },
+    {
+      "id": "fix",
+      "lane": "side",
+      "col": 3,
+      "type": "backend",
+      "label": "수정 세션",
+      "sublabel": "sonnet · 최대 2회",
+      "width": 104
+    },
+    {
+      "id": "needs",
+      "lane": "side",
+      "col": 4,
+      "type": "external",
+      "label": "needs-human",
+      "sublabel": "사람 몫 · PR 라벨",
+      "width": 116
+    },
+    {
+      "id": "stop",
+      "lane": "side",
+      "col": 5,
+      "type": "messagebus",
+      "label": "멈춤",
+      "sublabel": "큐가 비면 · 이유를 말함",
+      "width": 104
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "enqueue",
+      "to": "pick",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e2",
+      "from": "pick",
+      "to": "design",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e3",
+      "from": "design",
+      "to": "build",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e4",
+      "from": "build",
+      "to": "gate",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e5",
+      "from": "gate",
+      "to": "pr",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e6",
+      "from": "pr",
+      "to": "merge",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e7",
+      "from": "merge",
+      "to": "pick",
+      "variant": "dashed",
+      "label": "다음 항목",
+      "role": "return",
+      "route": "up-channel",
+      "fromSide": "top",
+      "toSide": "top"
+    },
+    {
+      "id": "e8",
+      "from": "merge",
+      "to": "stop",
+      "variant": "dashed",
+      "role": "branch",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e9",
+      "from": "design",
+      "to": "approval",
+      "variant": "dashed",
+      "label": "team",
+      "role": "branch",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "e10",
+      "from": "approval",
+      "to": "build",
+      "variant": "dashed",
+      "label": "승인",
+      "role": "branch",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e11",
+      "from": "pr",
+      "to": "needs",
+      "variant": "security",
+      "role": "error",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e12",
+      "from": "gate",
+      "to": "fix",
+      "variant": "security",
+      "role": "error",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e13",
+      "from": "fix",
+      "to": "gate",
+      "variant": "dashed",
+      "role": "return",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "루프가 도는 방식",
+      "items": [
+        "항목마다 새 세션 — 설계는 opus, 구현·수정은 sonnet",
+        "리뷰어(opus)는 또 새 컨텍스트에서 리뷰",
+        "다른 루프가 잡은 항목(claim)은 건너뜀",
+        "큐가 비면 멈춤 — 이유를 말함 (자기 점검은 solo·2건+ 머지 때)"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "셸 게이트는 토큰 0",
+      "items": [
+        "명령 통과 · 리뷰 0건 · 테스트 무결성",
+        "인수 조건 그대로 · 새 의존성 없음",
+        "위험 경로 · checks/"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "멈추는 곳",
+      "items": [
+        "고칠 수 있는 실패(게이트·체크) → 수정 세션 → 게이트 다시",
+        "사람 몫: 테스트·인수 조건·의존성·위험 경로·시간 초과",
+        "→ needs-human 으로 두고 루프는 다음 항목으로",
+        "team 은 큐 PR 머지(목록 승인)·설계 승인·머지를 사람이 함"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "작업 문서 한 건의 일생",
+    "viewBox": [
+      980,
+      630
+    ],
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "status 흐름"
+    },
+    {
+      "id": "side",
+      "label": "되돌림 · 대기"
+    },
+    {
+      "id": "terminal",
+      "label": "끝"
+    }
+  ],
+  "states": [
+    {
+      "id": "proposed",
+      "type": "neutral",
+      "label": "proposed",
+      "sublabel": "제안 · 받아(accept)야 큐로",
+      "tag": "자기 점검이 찾은 문제",
+      "lane": "main",
+      "col": 0
+    },
+    {
+      "id": "ready",
+      "type": "start",
+      "label": "ready",
+      "sublabel": "큐에 있음",
+      "tag": "/sdlc:go · /sdlc:run",
+      "lane": "main",
+      "col": 1
+    },
+    {
+      "id": "planned",
+      "type": "active",
+      "label": "planned",
+      "sublabel": "설계됨 · 조건 고정",
+      "tag": "Plan · Proof 채움",
+      "lane": "main",
+      "col": 2
+    },
+    {
+      "id": "built",
+      "type": "decision",
+      "label": "built",
+      "sublabel": "구현·리뷰 끝 · 게이트 차례",
+      "tag": "sdlc-reviewer 리뷰",
+      "lane": "main",
+      "col": 3
+    },
+    {
+      "id": "done",
+      "type": "active",
+      "label": "done",
+      "sublabel": "게이트 통과 · push → PR",
+      "tag": "셸 게이트 통과",
+      "lane": "main",
+      "col": 4
+    },
+    {
+      "id": "needs-input",
+      "type": "waiting",
+      "label": "needs-input",
+      "sublabel": "질문 대기 · 추천 답 먼저",
+      "tag": "최대 2개",
+      "lane": "side",
+      "col": 0
+    },
+    {
+      "id": "needs-human",
+      "type": "waiting",
+      "label": "needs-human",
+      "sublabel": "사람 몫 · PR 코멘트 + 라벨",
+      "tag": "sdlc:needs-human",
+      "lane": "side",
+      "col": 0,
+      "yOffset": 72
+    },
+    {
+      "id": "fixing",
+      "type": "failure",
+      "label": "수정 세션",
+      "sublabel": "자동 · 최대 2회",
+      "tag": "게이트 다시",
+      "lane": "side",
+      "col": 2
+    },
+    {
+      "id": "dropped",
+      "type": "neutral",
+      "label": "dropped",
+      "sublabel": "접음 · 이유는 Departures",
+      "tag": "## Departures",
+      "lane": "terminal",
+      "col": 0
+    },
+    {
+      "id": "merged",
+      "type": "success",
+      "label": "merged",
+      "sublabel": "머지됨 (끝)",
+      "tag": "기본 브랜치엔 done",
+      "lane": "terminal",
+      "col": 2
+    }
+  ],
+  "transitions": [
+    {
+      "id": "ask",
+      "from": "ready",
+      "to": "needs-input",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "variant": "dashed",
+      "label": "모호하면 질문"
+    },
+    {
+      "id": "answer",
+      "from": "needs-input",
+      "to": "planned",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "variant": "dashed",
+      "label": "답하면 이어서"
+    },
+    {
+      "id": "h1-gate",
+      "from": "built",
+      "to": "needs-human",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "variant": "dashed",
+      "label": "사람 몫",
+      "labelDx": -37,
+      "labelDy": 0,
+      "labelSegment": 0
+    },
+    {
+      "id": "h2-retry",
+      "from": "needs-human",
+      "to": "built",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "variant": "emphasis",
+      "label": "다시 해봐",
+      "labelSegment": 1,
+      "labelDy": 88,
+      "labelDx": 40
+    },
+    {
+      "id": "nh-merge",
+      "from": "needs-human",
+      "to": "merged",
+      "fromSide": "right",
+      "toSide": "top",
+      "variant": "dashed",
+      "label": "사람이 직접 머지",
+      "labelSegment": 0,
+      "labelDx": 70
+    },
+    {
+      "id": "nh-drop",
+      "from": "needs-human",
+      "to": "dropped",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "dashed",
+      "label": "그건 빼(drop)",
+      "labelDy": 30
+    },
+    {
+      "id": "f1-gate-fix",
+      "from": "built",
+      "to": "fixing",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "variant": "security",
+      "label": "게이트 실패",
+      "labelSegment": 1
+    },
+    {
+      "id": "f2-fix-back",
+      "from": "fixing",
+      "to": "built",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "variant": "emphasis",
+      "label": "다시 게이트"
+    },
+    {
+      "id": "pr-fail",
+      "from": "done",
+      "to": "built",
+      "fromSide": "top",
+      "toSide": "top",
+      "route": "top-channel",
+      "variant": "security",
+      "label": "PR 체크 실패 → 수정"
+    },
+    {
+      "id": "merge",
+      "from": "done",
+      "to": "merged",
+      "fromSide": "right",
+      "toSide": "right",
+      "route": "right-channel",
+      "channelX": 850,
+      "variant": "emphasis",
+      "label": "머지 — solo 는 엔진, team 은 사람",
+      "labelDy": 60
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "solo / team",
+      "items": [
+        "solo: 엔진이 PR 체크 통과 후 squash 머지",
+        "team: 설계 PR 승인 뒤 구현, done 뒤 사람이 머지"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "자동으로 고침",
+      "items": [
+        "게이트·PR 체크 실패 → 수정 세션(최대 2회) → 게이트부터 다시"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "사람 몫 (needs-human)",
+      "items": [
+        "기존 테스트·인수 조건 변경, 새 의존성",
+        "위험 경로, 체크 시간 초과",
+        "PR 에 코멘트 + sdlc:needs-human 라벨"
+      ]
+    }
+  ]
+}

@@ -61,6 +61,8 @@ claude plugin update sdlc@ai-native-sdlc      # 열려 있는 세션은 /reload-
 4. **리뷰** — `sdlc-reviewer`(opus)가 `REVIEW.md` 의 세 패스(버그·보안·정합성)를 돌립니다. Important 지적은 새 컨텍스트에서 반박을 시도해 살아남은 것만 세고, 확정된 것은 고칩니다. 결과를 `## Review` 의 집계 줄에 적고 `built` 로 커밋합니다. 리뷰는 반드시 리뷰어 에이전트가 새 컨텍스트에서 합니다 — 루프의 구현 세션이 리뷰어를 한 번도 부르지 않았으면 게이트가 수정 세션을 보내 리뷰부터 하게 합니다(세션 로그에서 확인합니다).
 5. **셸 게이트와 머지** — `sdlc.py ship <slug>` 가 루프와 같은 게이트를 돌립니다([아래](#머지-게이트)). 통과하면 엔진이 `done` 을 커밋하고 push 해 PR 을 열고, GitHub 이면 PR 의 체크가 끝나기를 최대 30분(`loop.checks_wait_minutes`) 기다린 뒤 squash 머지합니다(원격이 없으면 이 컴퓨터에서 바로 squash 머지, 팀 저장소는 기다리지 않고 PR 을 ready 로 두어 사람이 머지). 고칠 수 있는 실패는 — 체크가 실패한 것도 — 고쳐 최대 세 번 다시 돌리고, 사람 몫은 이유와 함께 멈춥니다.
 
+<p align="center"><img src="../../docs/img/archify-lifecycle.png" alt="작업 문서 한 건의 일생: proposed → ready → planned → built → done → merged. ready 에서 모호하면 needs-input(답하면 planned), built 에서 게이트 실패는 수정 세션(최대 2회) 뒤 다시 게이트, done 에서 PR 체크 실패는 built 로, 사람 몫은 needs-human(다시 해봐 → built, 사람이 직접 머지 → merged, 그건 빼 → dropped). 머지는 solo 는 엔진, team 은 사람" width="1000"><br><sub><a href="https://freewisl.github.io/ai-native-sdlc/archify-lifecycle.html">확대·경로 추적이 되는 그림으로 보기</a></sub></p>
+
 작업 문서의 `status` 는 `ready`(큐에 있음) → `planned`(설계됨) → `built`(구현·리뷰 끝, 게이트 차례) → `done`(게이트 통과)로 갑니다. 옆길이 셋입니다: `proposed`(사람이 받아들여야 하는 제안), `needs-input`(답을 기다림), `dropped`(하지 않기로 함 — 이유는 `## Departures` 첫 줄이고, 어느 경로로 접든 기본 브랜치에 기록됩니다). `difficulty`(`easy`·`normal`·`hard`)는 변경의 난이도로, 루프가 세션의 effort 를 고르는 데 씁니다([모델과 비용](#모델과-비용)). `easy` 는 계획이 고칠 곳을 모두 짚고 틀릴 로직이 없는 기계적인 변경(설정, 이름 바꾸기, 문구, 연결, 이미 있는 패턴 베끼기)이고, `hard` 는 동시성, 보안·인증, 데이터 이전이나 저장 형식, 돈이나 정밀도, 알고리즘, 모듈 사이의 계약, 판단이 필요했던 요구사항 중 하나가 걸린 변경이며, 나머지는 `normal` 입니다. `/sdlc:run` 이 목표를 나눌 때 어림해 적고 설계가 계획을 보고 고칩니다. 대소문자는 가리지 않고, 비어 있거나 다른 값이면 `normal` 입니다. 구현이 끝난 문서는 이렇게 생겼습니다. 엔진이 읽는 것은 frontmatter, `## ` 제목으로 나뉜 절, 리뷰 집계 줄이고 나머지는 사람을 위한 글입니다.
 
 ```markdown
@@ -95,7 +97,7 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 
 ## 루프 — `/sdlc:run`
 
-<p align="center"><img src="../../docs/img/03-run-loop.png" alt="/sdlc:run 루프: 목표를 작업 문서로 나눠 큐에 넣고, 항목마다 새 세션으로 설계·구현·셸 게이트·머지, 큐가 비었을 때 루프가 두 건 이상 머지했으면(솔로만) 자기 점검, 멈출 때는 이유를 말하고 멈춤" width="1000"></p>
+<p align="center"><img src="../../docs/img/archify-loop.png" alt="/sdlc:run 루프: 큐에 올림 → 항목 고르기(의존 순서·claim) → 설계 세션(opus) → 구현 세션(sonnet, 리뷰 opus) → 셸 게이트(토큰 0, 7가지 검사) → PR·체크(최대 30분) → 머지(solo 엔진, team 사람) → 다음 항목. 게이트 실패는 수정 세션(sonnet, 최대 2회), 사람 몫은 needs-human, team 은 설계 승인 대기, 큐가 비면 이유를 말하고 멈춤" width="1000"><br><sub><a href="https://freewisl.github.io/ai-native-sdlc/archify-loop.html">확대·경로 추적이 되는 그림으로 보기</a></sub></p>
 
 - **채우기** — 목표를 작업 문서 여러 개(보통 3~12개, PR 하나 크기)로 나눠 `sdlc.py enqueue --new` 로 큐에 올립니다. 큐는 기본 브랜치에 있는 작업 문서이고(진행 단계는 `sdlc/<slug>` 브랜치에서 읽습니다) 새 항목은 `ready` 로 들어갑니다. 솔로는 바로 커밋(GitHub 이면 큐 PR 을 곧바로 머지)하고, 팀은 사람이 큐 PR 을 머지하는 것이 목록의 승인입니다.
 - **항목마다 새 세션** — 설계 세션 → 구현 세션 → 셸 게이트 → 머지. 세션은 항목마다 새로 열려 앞 항목의 맥락을 끌고 가지 않습니다. 팀 저장소는 설계 뒤에 초안 PR 을 열고, 다른 사람의 승인 리뷰나 `sdlc:approved` 라벨이 있어야 구현을 시작합니다.
@@ -288,7 +290,7 @@ SDLC_REVIEW_TALLY important=0 nits=0 validated=yes
 
 ## 구조
 
-<p align="center"><img src="../../docs/img/05-architecture.png" alt="구성: 개발자 기기의 플러그인(스킬 4·에이전트 5·훅 7) → 엔진 scripts/sdlc.py → 프로젝트 저장소(config.json·작업 문서·CLAUDE.md·REVIEW.md) → GitHub(PR 체크 뒤 머지) 또는 로컬 머지, 단계별 모델과 항목마다 자동인 effort" width="1000"></p>
+<p align="center"><img src="../../docs/img/archify-architecture.png" alt="구성: 사람이 말로 시키면 스킬 4(init·go·run·status)가 엔진 sdlc.py(큐·루프·셸 머지 게이트, 토큰 0)를 실행하고, 엔진이 항목마다 새 claude -p 루프 세션을 띄워 프로젝트 저장소(작업 문서 = 작업 큐)에 커밋. 세션은 에이전트 5에 맡기고 훅 7이 편집·Bash 를 막음. GitHub(선택)에는 게이트 뒤 push·PR·Actions 체크·머지와 claim ref, team 은 사람이 설계 승인·머지" width="1000"><br><sub><a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html">확대·경로 추적이 되는 그림으로 보기</a></sub></p>
 
 ```text
 plugins/sdlc/

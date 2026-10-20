@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "sdlc 구성: 무엇이 어디서 도는가",
+    "quality_profile": "showcase",
+    "viewBox": [1270, 625]
+  },
+  "components": [
+    { "id": "human", "type": "external", "label": "사람", "sublabel": "말로 시키고 답함", "tag": "team: 설계 승인·머지", "pos": [30, 190], "size": [140, 76] },
+    { "id": "skills", "type": "frontend", "label": "스킬 4", "sublabel": "init · go · run · status", "pos": [280, 190], "size": [160, 76] },
+    { "id": "engine", "type": "backend", "label": "엔진 sdlc.py", "sublabel": "큐·루프·셸 머지 게이트(토큰 0)", "tag": "Python 표준 라이브러리", "pos": [528, 190], "size": [180, 76] },
+    { "id": "session", "type": "backend", "label": "루프 세션", "sublabel": "항목마다 새 claude -p", "tag": "design opus · build·fix sonnet", "pos": [796, 190], "size": [170, 76] },
+    { "id": "agents", "type": "backend", "label": "에이전트 5", "sublabel": "구현·리뷰·검증·단순화·조사", "pos": [796, 70], "size": [170, 76] },
+    { "id": "hooks", "type": "security", "label": "훅 7", "sublabel": "guard-edit · guard-bash", "tag": "fail closed", "pos": [796, 310], "size": [170, 76] },
+    { "id": "repo", "type": "database", "label": "프로젝트 저장소", "sublabel": "work/<slug>.md = 작업 큐", "tag": "브랜치 sdlc/<slug>", "pos": [1076, 190], "size": [160, 76] },
+    { "id": "github", "type": "cloud", "label": "GitHub", "sublabel": "PR · Actions 체크 · 머지", "tag": "team: 승인 리뷰·라벨", "brand": "github", "pos": [528, 450], "size": [180, 76] },
+    { "id": "claims", "type": "cloud", "label": "claim", "sublabel": "다른 클론과 항목 나눠 가짐", "pos": [240, 450], "size": [200, 76] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "개발자 기기: Claude Code + 플러그인 sdlc", "wraps": ["skills", "engine", "session", "agents", "hooks"], "pad": 20 },
+    { "kind": "region", "label": "GitHub (선택)", "wraps": ["github", "claims"], "pad": 20 }
+  ],
+  "connections": [
+    { "id": "human-to-skills", "from": "human", "to": "skills", "label": "말로 시킴", "variant": "emphasis" },
+    { "id": "skills-to-engine", "from": "skills", "to": "engine", "label": "실행" },
+    { "id": "engine-to-session", "from": "engine", "to": "session", "label": "새 세션" },
+    { "id": "session-to-repo", "from": "session", "to": "repo", "label": "커밋" },
+    { "id": "session-to-agents", "from": "session", "to": "agents", "label": "맡김", "fromSide": "top", "toSide": "bottom" },
+    { "id": "hooks-to-session", "from": "hooks", "to": "session", "label": "편집·Bash 막음", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "engine-to-github", "from": "engine", "to": "github", "label": "게이트 → push·PR", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelDy": 24, "labelDx": 40 },
+    { "id": "engine-to-claims", "from": "engine", "to": "claims", "label": "refs/sdlc/claims/<slug>", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "human-to-github", "from": "human", "to": "github", "label": "team: 설계 승인·머지", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom", "via": [[100, 585], [618, 585]] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "엔진 · 세션 · 에이전트", "items": ["sdlc.py 는 Python 표준 라이브러리", "세션: design opus · build·fix sonnet", "sdlc-builder · sdlc-reviewer · sdlc-verifier", "sdlc-simplifier · sdlc-researcher"] },
+    { "dot": "rose", "title": "훅이 막는 것 (fail closed)", "items": ["기존 테스트 잠금 · 설계 먼저", "비밀값 · 운영 배포", "기본 브랜치 push", "작업 중 git push · gh pr merge"] },
+    { "dot": "emerald", "title": "저장소 · GitHub", "items": [".sdlc/config.json · checks/", "work/<slug>.md (작업 문서 = 큐)", "CLAUDE.md · REVIEW.md · 브랜치 sdlc/<slug>", "GitHub 없으면 엔진이 로컬 squash 머지"] }
+  ]
+}
