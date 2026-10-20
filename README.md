@@ -9,6 +9,18 @@ Anthropic 의 블로그 글 [The AI-native SDLC playbook](https://claude.com/blo
 |---|---|---|
 | `sdlc` | 말로 시키면 변경 하나가 작업 문서 한 장으로 구현·리뷰를 거쳐 머지까지 갑니다. 스킬은 init·go·run·status 네 개. 합격은 세션의 보고가 아니라 셸 머지 게이트가 정하고, 여러 건은 백그라운드 루프가 큐로 처리하며, 사람은 판단이 필요한 곳에서만 답합니다. 훅 7종이 보호 경로·테스트 잠금·비밀·기본 브랜치 직접 push 를 막습니다. | [plugins/sdlc/README.md](plugins/sdlc/README.md) |
 
+## 어떻게 돌아가나
+
+루프(`/sdlc:run`)는 큐의 항목마다 새 세션을 띄워 설계하고 구현합니다. 셸 게이트를 통과한 항목만 PR 을 거쳐 머지되고, 게이트에서 실패하면 수정 세션이 고치며, 사람의 판단이 필요한 항목은 사람에게 넘어갑니다.
+
+<p align="center"><img src="docs/img/archify-loop.png" alt="/sdlc:run 루프: 큐에 올림 → 항목 고르기(의존 순서·claim) → 설계 세션(opus) → 구현 세션(sonnet, 리뷰 opus) → 셸 게이트(토큰 0, 7가지 검사) → PR·체크(최대 30분) → 머지(solo 엔진, team 사람) → 다음 항목. 게이트 실패는 수정 세션(sonnet, 최대 2회), 사람 몫은 needs-human, team 은 설계 승인 대기, 큐가 비면 이유를 말하고 멈춤" width="1000"><br><sub><a href="https://freewisl.github.io/ai-native-sdlc/archify-loop.html">확대·경로 추적이 되는 그림으로 보기</a></sub></p>
+
+사람이 말로 시키면 스킬이 엔진 `sdlc.py` 를 실행하고, 엔진이 항목마다 루프 세션을 띄워 저장소에 커밋합니다. 그동안 훅이 세션의 편집과 명령을 지킵니다. GitHub 은 선택이고, 원격이 없으면 엔진이 이 컴퓨터에서 바로 머지합니다.
+
+<p align="center"><img src="docs/img/archify-architecture.png" alt="구성: 사람이 말로 시키면 스킬 4(init·go·run·status)가 엔진 sdlc.py(큐·루프·셸 머지 게이트, 토큰 0)를 실행하고, 엔진이 항목마다 새 claude -p 루프 세션을 띄워 프로젝트 저장소(작업 문서 = 작업 큐)에 커밋. 세션은 에이전트 5에 맡기고 훅 7이 편집·Bash 를 막음. GitHub(선택)에는 게이트 뒤 push·PR·Actions 체크·머지와 claim ref, team 은 사람이 설계 승인·머지" width="1000"><br><sub><a href="https://freewisl.github.io/ai-native-sdlc/archify-architecture.html">확대·경로 추적이 되는 그림으로 보기</a></sub></p>
+
+작업 문서 한 건의 상태 흐름은 [사용 설명서](plugins/sdlc/README.md#한-건이-머지되기까지--sdlcgo)의 그림(또는 [확대해 보기](https://freewisl.github.io/ai-native-sdlc/archify-lifecycle.html))에 있습니다.
+
 ## 설치
 
 ```bash
